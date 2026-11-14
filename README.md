@@ -8,7 +8,7 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **7 个系统�
 - **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（46 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 docs/23）：**阶段 D 结构优化**——D1 subagents.ts 拆五文件、D2 config initConfig 显式装载、D3 首块 renderTree keyed 更新（reconcileKeyed 样板）**均已完成**（386 测试）→ 剩余渐进项：D3 其余整列表重灌点 keyed 化（独立可停）、可选阶段 B 第二批（docs/21 §2.3 后 8 键）。每项独立验收、独立 commit。
+- **当前进行中**（详见 docs/23）：**阶段 D 结构优化**——D1 subagents.ts 拆五文件、D2 config initConfig 显式装载、D3 首块 renderTree keyed 更新（reconcileKeyed 样板）**均已完成**（388 测试）→ 剩余渐进项：D3 其余整列表重灌点 keyed 化（独立可停）、可选阶段 B 第二批（docs/21 §2.3 后 8 键）。**规划中**：前端「设置」入口编辑 harness.json（全键注释模板已就位于 `~/.ZQQ-harness/harness.json`；后端读写面 = `loadHarnessConfig`/`parseHarnessConfig` 纯函数 + `initConfig()` 可重复调用重绑〔热应用的技术前提已在〕）。每项独立验收、独立 commit。
 
 ## 快速开始
 
@@ -197,7 +197,7 @@ description: 为本项目生成规范的 git 提交信息
 
 ## 用户级配置 harness.json 与外部模块
 
-`~/.ZQQ-harness/harness.json` 是可选文件（缺失 = 全缺省；损坏/字段非法 → 告警并回落缺省，绝不阻止启动；**启动时读取一次，改后需重启**）：
+`~/.ZQQ-harness/harness.json` 是可选文件（缺失 = 全缺省；损坏/字段非法 → 告警并回落缺省，绝不阻止启动；**启动时读取一次，改后需重启**）。**支持 JSONC 注释**（`//` 行注释与 `/* */` 块注释，字符串内的注释符不受影响）——可逐键标注用途；纯 JSON 同样合法：
 
 ```json
 {

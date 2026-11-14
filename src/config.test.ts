@@ -16,6 +16,7 @@ import {
   parseCredentialsYaml,
   reasoningPassbackEnabled,
   resolveThresholds,
+  stripJsonComments,
   SUBAGENT_MAX_CONCURRENT,
   SUBAGENT_MAX_TOTAL,
   SUBAGENT_MAX_TOOL_ROUNDS,
@@ -262,6 +263,43 @@ test("loadHarnessConfig：缺失/损坏文件全缺省，合法文件生效", ()
     const c = loadHarnessConfig(join(dir, "ok.json"));
     assert.deepEqual(c.disabledModules, []);
     assert.equal(c.thresholds.maxToolRounds, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("stripJsonComments：行/块注释剥离，字符串内的注释符原样保留（harness.json 允许 JSONC）", () => {
+  assert.equal(stripJsonComments('{"a": 1} // 行尾注释\n'), '{"a": 1} \n');
+  assert.equal(stripJsonComments('// 整行注释\n{"a": 1}'), '\n{"a": 1}');
+  assert.equal(stripJsonComments('{"a": /* 块注释 */ 1}'), '{"a":   1}');
+  // 字符串字面量内的 // 与 /* 不剥（URL/路径/转义引号）
+  assert.equal(stripJsonComments('{"u": "https://x//y/*z*/", "e": "a\\"b//c"}'), '{"u": "https://x//y/*z*/", "e": "a\\"b//c"}');
+  // 块注释跨行 + 未闭合容忍（剥到末尾）
+  assert.equal(stripJsonComments('{"a": 1 /* 跨\n行 */ , "b": 2}'), '{"a": 1   , "b": 2}');
+  assert.equal(stripJsonComments('{"a": 1 /* 未闭合'), '{"a": 1  ');
+});
+
+test("loadHarnessConfig：JSONC 注释文件正常解析（全键注释模板的读取路径）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-harness-jsonc-"));
+  try {
+    writeFileSync(
+      join(dir, "c.json"),
+      [
+        "// 顶部说明注释",
+        "{",
+        '  "disabledModules": [], // 模块启停',
+        '  "thresholds": {',
+        '    "maxToolRounds": 5, // 整数 ≥1',
+        '    "compactionPressure": 0.7 /* 块注释 */',
+        "  }",
+        "}",
+      ].join("\n"),
+      "utf8",
+    );
+    const c = loadHarnessConfig(join(dir, "c.json"));
+    assert.deepEqual(c.disabledModules, []);
+    assert.equal(c.thresholds.maxToolRounds, 5);
+    assert.equal(c.thresholds.compactionPressure, 0.7);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

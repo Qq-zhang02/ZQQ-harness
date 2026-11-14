@@ -230,7 +230,52 @@ export function harnessFilePath(): string {
   return join(homedir(), USER_DIR_NAME, USER_DIR_LAYOUT.harnessFile);
 }
 
-/** 读取 harness.json（lenient）：缺失 → 全缺省；JSON 损坏 → 全缺省 + 告警；字段非法 → 逐项忽略 + 告警。 */
+/** 剥离 JSONC 注释（`//` 行注释与 `/* … *\/` 块注释）：逐字符扫描并跟踪字符串字面量与
+ *  转义——字符串内的注释符（如 URL `"https://…"`）原样保留；行注释保留换行、块注释替换
+ *  为单空格（防相邻 token 粘连）。harness.json 因此允许自带文档注释（逐键说明用途的
+ *  全键模板见用户目录；写回方可以不写注释，解析两种都接受）。纯函数，供测试。 */
+export function stripJsonComments(text: string): string {
+  let out = "";
+  let i = 0;
+  let inStr = false;
+  while (i < text.length) {
+    const c = text[i]!;
+    if (inStr) {
+      out += c;
+      if (c === "\\") {
+        out += text[i + 1] ?? "";
+        i += 2;
+        continue;
+      }
+      if (c === '"') inStr = false;
+      i += 1;
+      continue;
+    }
+    if (c === '"') {
+      inStr = true;
+      out += c;
+      i += 1;
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1; // 行注释：连同内容丢弃，保留换行
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i += 1;
+      i = Math.min(i + 2, text.length);
+      out += " ";
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+/** 读取 harness.json（lenient）：缺失 → 全缺省；JSON 损坏 → 全缺省 + 告警；字段非法 → 逐项忽略 + 告警。
+ *  支持 JSONC 注释（见 stripJsonComments）——注释不是必需，纯 JSON 同样合法。 */
 export function loadHarnessConfig(path = harnessFilePath()): HarnessConfig {
   let text: string;
   try {
@@ -240,7 +285,7 @@ export function loadHarnessConfig(path = harnessFilePath()): HarnessConfig {
   }
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    raw = JSON.parse(stripJsonComments(text));
   } catch (e) {
     console.error(`[harness.json] 解析失败（${e instanceof Error ? e.message : String(e)}），本次启动全部使用缺省值`);
     return { disabledModules: [], thresholds: {} };
