@@ -6,7 +6,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildContext } from "../../core/context.ts";
@@ -485,6 +485,70 @@ test("/api/subagent/context：活动句柄实时值（liveContextPct）、归档
     assert.equal(r5.status, 200);
     assert.equal((r5.data as { live?: boolean }).live, true);
     assert.equal((r5.data as { contextPct?: number }).contextPct, 42);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------- 会话拖动排序：孤儿组（工作区已不在 workspaces.json 但会话仍在） ----------
+
+test("/api/sessions/reorder：孤儿组可排序（有会话即合法）；完全未知的工作区仍 400", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-websessions-reord-"));
+  try {
+    const ctx = buildContext(
+      {
+        userDir: dir,
+        globalSkillsDir: join(dir, "skills"),
+        globalMcpFile: join(dir, "mcp.json"),
+        workspacesFile: join(dir, "workspaces.json"),
+        sessionsDir: join(dir, "sessions"),
+      },
+      loadConfig(),
+    );
+    const store = new SessionStore(dir);
+    const orphanId = "11111111-2222-3333-4444-5555555555a1";
+    store.save({
+      id: orphanId,
+      title: "孤儿组会话",
+      updatedAt: new Date().toISOString(),
+      workspace: "F:\\orphan",
+      messageCount: 1,
+      messages: [{ role: "user", content: "hi" }],
+      totals: { prompt: 0, completion: 0 },
+    });
+    const host = {
+      recentWorkspaces: () => ["F:\\listed"], // 列表里没有 F:\orphan
+      sessions: () => store,
+      broadcast: () => {},
+      sessionsPayload: () => ({ current: "", viewSeq: 0, running: [], groups: [], recycled: [] }),
+    } as unknown as SessionHost;
+    ctx.sessionHost = host;
+    webSessions.setup(ctx);
+    const route = ctx.routes.get("/api/sessions/reorder");
+    const call = async (body: Record<string, unknown>) => {
+      const responses: Array<{ status: number; data: unknown }> = [];
+      const r: ServerRequest = {
+        req: {} as never,
+        res: {} as never,
+        url: new URL("http://localhost/api/sessions/reorder"),
+        body: async () => body,
+        json: (status, data) => responses.push({ status, data }),
+      };
+      await route!.handler(r);
+      return responses[0]!;
+    };
+
+    // 孤儿组：不在 recentWorkspaces 但有会话 → 200（此前 400「工作区不在列表中」= 拖不动的根因）
+    const ok = await call({ workspace: "F:\\orphan", ids: [orphanId] });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(
+      (JSON.parse(readFileSync(join(dir, "sessions", "order.json"), "utf8")) as Record<string, string[]>)["F:\\orphan"],
+      [orphanId],
+      "排序落盘",
+    );
+    // 列表内工作区照常 200；完全未知（既不在列表也无会话）仍 400
+    assert.equal((await call({ workspace: "F:\\listed", ids: [] })).status, 200);
+    assert.equal((await call({ workspace: "F:\\nowhere", ids: [] })).status, 400);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

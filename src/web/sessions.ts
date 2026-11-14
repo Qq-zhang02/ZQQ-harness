@@ -133,6 +133,7 @@ export class SessionStore {
     this.spillRoot = join(baseDir, USER_DIR_LAYOUT.spill);
     mkdirSync(this.dir, { recursive: true });
     this.orderPath = join(this.dir, "order.json");
+    this.pruneOrder(); // 启动自愈：清死 id/空键（见方法注释——不清理则手动删档/历史测试工作区会永久留尸）
   }
 
   /** id 严格校验为 UUID，防路径穿越 */
@@ -288,6 +289,28 @@ export class SessionStore {
       if (o[k].some((x) => drop.has(x))) o[k] = o[k].filter((x) => !drop.has(x));
     }
     this.saveOrder();
+  }
+
+  /** order.json 自愈（构造时调用一次）：删掉已无会话文件的死 id 与清空后的空键。
+   *  removeFromOrder 只覆盖 API 删除路径——手动删会话文件、历史测试工作区（如 Temp\zqq-*）
+   *  等都会在 order.json 留尸并随缓存原样写回（用户手删文件后重启仍见"来路不明"的记录即此）。
+   *  有会话存活的键（含孤儿工作区组——工作区已不在 workspaces.json 但会话仍在）保持原样。 */
+  pruneOrder(): void {
+    const live = new Set(this.list().filter((s) => !s.recycled).map((s) => s.id));
+    const o = this.loadOrder();
+    let changed = false;
+    for (const k of Object.keys(o)) {
+      const kept = o[k]!.filter((id) => live.has(id));
+      if (kept.length !== o[k]!.length) {
+        o[k] = kept;
+        changed = true;
+      }
+      if (kept.length === 0) {
+        delete o[k];
+        changed = true;
+      }
+    }
+    if (changed) this.saveOrder();
   }
 
   // ---- 回收站 ----

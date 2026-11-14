@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionStore, sweepStaleSpill } from "./sessions.ts";
@@ -323,6 +323,28 @@ test("sweepStaleSpill（docs/22 §4.2）：超龄会话 spill 目录整删、新
     assert.ok(existsSync(join(s.spillDir(fresh)!, "20260101-120000", "transcript.json")), "新鲜目录保留");
     // 根目录不存在 → 静默返回不抛错
     sweepStaleSpill(join(dir, "no-such-spill"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("SessionStore 构造自愈 order.json：死 id 与空键清理，存活键（含孤儿工作区组）保留", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-sess-prune-"));
+  try {
+    const s = new SessionStore(dir);
+    s.save(sampleData("11111111-2222-3333-4444-5555555555a1"));
+    s.save({ ...sampleData("11111111-2222-3333-4444-5555555555a2"), workspace: "F:\\orphan" });
+    // 拖动顺序混入死 id（会话文件不存在——手动删档/历史测试残留的形态）+ 纯死 id 键 + 空键
+    s.setOrder("F:\\proj", ["11111111-2222-3333-4444-5555555555a1", "deadbeef-0000-0000-0000-00000000dead"]);
+    s.setOrder("F:\\gone", ["deadbeef-0000-0000-0000-00000000dead"]);
+    s.setOrder("F:\\empty", []);
+    s.setOrder("F:\\orphan", ["11111111-2222-3333-4444-5555555555a2"]);
+    // 重启（新构造）→ 自愈：死 id 剔除、清空键删除、孤儿工作区组（有会话存活）原样保留
+    new SessionStore(dir);
+    const pruned = JSON.parse(readFileSync(join(dir, "sessions", "order.json"), "utf8")) as Record<string, string[]>;
+    assert.deepEqual(Object.keys(pruned).sort(), ["F:\\orphan", "F:\\proj"]);
+    assert.deepEqual(pruned["F:\\proj"], ["11111111-2222-3333-4444-5555555555a1"]);
+    assert.deepEqual(pruned["F:\\orphan"], ["11111111-2222-3333-4444-5555555555a2"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

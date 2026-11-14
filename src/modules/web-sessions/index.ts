@@ -372,7 +372,12 @@ export const webSessions: HarnessModule = {
         const body = await r.body();
         const ws = resolve(String(body.workspace ?? "").trim());
         const ids = Array.isArray(body.ids) ? body.ids.map((x: unknown) => String(x)) : [];
-        if (!host.recentWorkspaces().some((w) => sameDir(w, ws))) {
+        // 孤儿组（会话仍在、工作区已被移出 workspaces.json）也在树里渲染成组——可见即应可拖，
+        // 只拒绝既不在列表、也没有任何会话的未知路径（防脏写 order.json）
+        const known =
+          host.recentWorkspaces().some((w) => sameDir(w, ws)) ||
+          host.sessions().list().some((s) => !s.recycled && sameDir(s.workspace, ws));
+        if (!known) {
           r.json(400, { error: "工作区不在列表中" });
           return;
         }

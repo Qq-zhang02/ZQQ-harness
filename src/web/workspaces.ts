@@ -33,13 +33,16 @@ export function rememberWorkspace(file: string, list: string[], p: string): stri
   return next;
 }
 
-/** 手动排序（工作区拖动后调用）：按 ids 顺序重排，缺失的保持原相对顺序补后。 */
+/** 手动排序（工作区拖动后调用）：按 ids 顺序重排，缺失的保持原相对顺序补后。
+ *  不在列表中的 id（孤儿组——会话仍在、工作区已被移出 workspaces.json）按拖放位置
+ *  插入收编：与「点击工作区行会把它记住」（rememberWorkspace）同语义——树里可见即可排序。 */
 export function reorderWorkspaces(file: string, list: string[], ids: string[]): string[] {
   const rest = [...list];
   const out: string[] = [];
   for (const id of ids) {
     const i = rest.findIndex((w) => sameDir(w, id));
     if (i >= 0) out.push(...rest.splice(i, 1));
+    else if (!out.some((w) => sameDir(w, id))) out.push(id); // 孤儿组按拖放位置收编
   }
   out.push(...rest);
   try {

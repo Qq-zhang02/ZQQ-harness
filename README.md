@@ -192,7 +192,7 @@ description: 为本项目生成规范的 git 提交信息
 
 ## 用户数据与工作区指令
 
-- 用户数据统一存放在 `~/.ZQQ-harness/`（`~` 即用户主目录，Windows 下为 `C:\Users\<用户>`；代码用 `os.homedir()` 动态定位，非硬编码）：`.credentials.yaml`（API key，仅首次迁移期读取）、`providers.json`（提供方配置，含 key）、`harness.json`（用户级覆盖：模块启停 + 运行阈值，见下节）、`modules\`（外部模块目录，见下节）、`sessions\`（对话记录、拖动排序 `order.json`、压缩前备份 `*.precompact-*.json` 环形保留最近 `precompactKeep` 份，默认 3）、`workspaces.json`（工作区列表与树顺序，不设上限）、`mcp.json`（全局 MCP）、`AGENTS.md`（全局工作区指令）、`skills\`（全局技能）、`spill\`（超长工具输出全文，随会话删除清理；启动时按 `spillMaxAgeHours`（默认 168h）清扫超龄）、`tmp\`（沙箱私有临时目录；out/err 采集文件运行结束即删，docs/19；启动时按 `sandboxTmpMaxAgeHours`（默认 24h）清扫残留兜底）；旧版本放在项目根的数据**首次启动自动迁移**（跨盘亦可）
+- 用户数据统一存放在 `~/.ZQQ-harness/`（`~` 即用户主目录，Windows 下为 `C:\Users\<用户>`；代码用 `os.homedir()` 动态定位，非硬编码）：`.credentials.yaml`（API key，仅首次迁移期读取）、`providers.json`（提供方配置，含 key）、`harness.json`（用户级覆盖：模块启停 + 运行阈值，见下节）、`modules\`（外部模块目录，见下节）、`sessions\`（对话记录；拖动排序 `order.json`——只存各工作区对话的手动顺序、不删对话本体，启动自愈清死 id/空键；会话所属工作区被移出列表后作为「孤儿组」显示在树尾，组内可拖动排序、拖动工作区行即把它收编回列表；压缩前备份 `*.precompact-*.json` 环形保留最近 `precompactKeep` 份，默认 3）、`workspaces.json`（工作区列表与树顺序，不设上限）、`mcp.json`（全局 MCP）、`AGENTS.md`（全局工作区指令）、`skills\`（全局技能）、`spill\`（超长工具输出全文，随会话删除清理；启动时按 `spillMaxAgeHours`（默认 168h）清扫超龄）、`tmp\`（沙箱私有临时目录；out/err 采集文件运行结束即删，docs/19；启动时按 `sandboxTmpMaxAgeHours`（默认 24h）清扫残留兜底）；旧版本放在项目根的数据**首次启动自动迁移**（跨盘亦可）
 - **AGENTS.md（两级注入）**：全局 `~/.ZQQ-harness/AGENTS.md` 对所有工作区生效；工作区根目录的 `AGENTS.md` 仅该工作区生效，与全局冲突时**以工作区为准**。两者都作为附加系统指令注入（每轮对话开始自动重读，改动即时生效；过长各截断至 16k 字符），在系统提示中全局段在前、工作区段在后
 
 ## 用户级配置 harness.json 与外部模块

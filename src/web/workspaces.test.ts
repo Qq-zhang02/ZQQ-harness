@@ -58,3 +58,18 @@ test("workspaces：文件损坏/缺失时加载为空，非法条目被过滤", 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("workspaces：排序收编孤儿组（不在列表的工作区按拖放位置插入，sameDir 去重）", () => {
+  const { dir, file } = tempFile();
+  try {
+    const list = ["F:\\a", "F:\\b"];
+    // 把孤儿组 F:\orphan 拖到 b 之后、a 之前：按拖放位置收编进列表
+    const out = reorderWorkspaces(file, list, ["F:\\b", "F:\\orphan", "F:\\a"]);
+    assert.deepEqual(out, ["F:\\b", "F:\\orphan", "F:\\a"]);
+    assert.deepEqual(loadRecentWorkspaces(file), out, "收编结果持久化");
+    // 大小写/结尾斜杠归一：已收编的不重复插入，仅按新序移动
+    assert.deepEqual(reorderWorkspaces(file, out, ["f:\\ORPHAN\\", "F:\\a", "F:\\b"]), ["F:\\orphan", "F:\\a", "F:\\b"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
