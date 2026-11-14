@@ -157,7 +157,6 @@ try {
   await loadModules(ctx, BUILTIN_MODULES);
   const sh = {
     ctx,
-    config: loadConfig(),
     sessions: new SessionStore(userDir),
     providerFile: {
       path: join(userDir, "providers.json"),

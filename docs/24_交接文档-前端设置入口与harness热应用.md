@@ -16,6 +16,10 @@
 - **哨兵（§5）**：contract.test.ts 新增 docs/24 哨兵——①设置模态区域（HTML 块 + JS 段切片）不得出现任何阈值键名 + 必须经 `setSchema.entries` 渲染 + 经 `/api/settings/harness` 通信（**全文件键名检查不可行**：`defaultContextLength` 等是 meta 契约的合法消费，与表单硬编码无关；默认值数字字面量同理不做断言——0/3/8 等小数字无法与 CSS 区分，键名已锁住硬编码路径）；②web-settings 源码必须含 `validateThresholdsStrict(` / `writeTextAtomic(` / `initConfig(`（fail-closed + 原子写 + 热应用唯一出口，沿 P8 锁法）。
 - **活服验证（隔离 USERPROFILE，全程零真机数据触碰）**：GET 25 键/六组 schema → POST `compactionPressure=0.5` → **`/api/meta` 立即 0.5**（热生效证据）→ 落盘纯 JSON（`JSON.parse` 直读通过、无 `.tmp` 残留）→ **杀进程重启后 meta 仍 0.5**（持久性）→ 越界 POST（`subagentMaxConcurrent:0`）→ 400 指名该键、**文件逐字节未动、meta 未变** → pwsh 交叉（只提交 timeout=400000）→ 400 提示同步调大 max。**GUI 冒烟（浏览器自动化，7 项全过）**：模态打开六组渲染/初值=持久化值（截图取证）、单键 ↺ 恢复、客户端越界标红+错误文案（截图取证）、服务端开边界 400 标红且模态不关、合法保存后模态关+确认行+meta 热更新、两步关闭确认（拒绝保持/确认关闭）、组内恢复默认；关闭未保存的脏值（maxToolRounds=22）**未泄漏进文件**。
 
+### 修复（2026-11-15，用户真机反馈：maxToolRounds 热应用不生效——须重启）
+
+**症状**：设置页把 `maxToolRounds` 调成 1 并保存后，工具仍多轮调用，重启服务才生效。**根因有两层快照**：①`server.ts` bootstrap 的 `const appConfig = loadConfig()` 把 `DEFAULTS.maxToolRounds` 拍成一次性快照，`initConfig()` 重绑 `DEFAULTS` 后它永远不刷新；②`createRuntime` 又把 `sh.config.maxToolRounds`（=①）传进 Agent 构造期参数。两层叠加 → **连新会话都拿旧值**（实施记录宣称的「新会话生效」实际不成立）。**修复**：`AgentDeps.maxToolRounds` 改可选，Agent 新增私有 getter `maxToolRounds`（`deps 值 ?? live DEFAULTS.maxToolRounds`）——轮循环与达上限文案每轮经此取值；`session-runtime` 主会话**不再传该字段**（完全 live，运行中会话下一轮即用新值）；worker 仍显式传 `SUBAGENT_MAX_TOOL_ROUNDS`（worker 创建时读 live binding，热应用对后续派发生效）。**顺手拆除死管线**：`SessionShell.config` 字段删除（其三字段消费者已全部直读 live `DEFAULTS`——pwsh 超时/采集上限/修剪预算本就如此，maxToolRounds 是最后一个），server.ts 与 2 个测试 + 4 个冒烟脚本的 shell 字面量同步去掉 `config:` 行。**验证**：agent.test 新增回归（"live" 形态 + initConfig 热改 1→2 两段断言，396 全绿）；端到端单进程验证（validateThresholdsStrict→initConfig→按 session-runtime 真实形态装配 Agent→两轮工具脚本）实测一轮即强制收尾、文案显示新值——**无需重启**。设置页说明文案同步（删「构造期参数沿用旧值」句）。**注记**：`ctx.config`（buildContext 第二参）现为纯惰性管线（零消费者），彻底退役待后续清理（牵动 ~20 处测试/冒烟调用面，超出本修复范围）。
+
 ---
 
 ## 1. 当前状态（接手前确认）

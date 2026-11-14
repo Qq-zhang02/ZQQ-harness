@@ -115,7 +115,6 @@ const providerFile = ensureProvidersFile(USER_DIR, process.cwd(), ctx.providerFo
 const sessions = new SessionStore(USER_DIR);
 shell = {
   ctx,
-  config: appConfig,
   sessions,
   providerFile,
   runtimes: new Map(),

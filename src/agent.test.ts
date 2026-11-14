@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Agent, runSubagent, type AgentSettings, type AgentUi } from "./agent.ts";
 import type { ChatMessage, ChatParams, ChatResult, EffortSetting, LLMProvider } from "./llm/provider.ts";
 import { estTokens, messageTokens } from "./tokens.ts";
-import { isThinkingEffort, reasoningPassbackEnabled } from "./config.ts";
+import { initConfig, isThinkingEffort, reasoningPassbackEnabled } from "./config.ts";
 import { ToolRegistry, type Tool } from "./tools/registry.ts";
 import { createWorkspace } from "./workspace.ts";
 
@@ -77,7 +77,7 @@ function stubUi(sink: string[]): AgentUi {
 
 function makeAgent(
   script: ChatResult[],
-  maxToolRounds = 5,
+  maxToolRounds: number | "live" = 5,
   settingsOver: Partial<AgentSettings> = {},
   providerOver: { name?: string; model?: string; passback?: (m: ChatMessage, effort: EffortSetting) => boolean } = {},
 ) {
@@ -92,7 +92,8 @@ function makeAgent(
     ui: stubUi(sink),
     requestApproval: async () => "allowed-once",
     settings: { alwaysConfirm: false, effort: "high", ...settingsOver },
-    maxToolRounds,
+    // "live" = 不传该字段：Agent 每轮 live 读 DEFAULTS.maxToolRounds（主会话真实形态，docs/24）
+    ...(maxToolRounds === "live" ? {} : { maxToolRounds }),
   });
   return { agent, provider, sink };
 }
@@ -132,6 +133,30 @@ test("达到轮次上限后强制收尾（不带工具）", async () => {
   assert.ok(lastUser && lastUser.role === "user" && lastUser.content.includes("上限"));
   const lastMsg = agent.messages[agent.messages.length - 1];
   assert.ok(lastMsg && lastMsg.role === "assistant" && lastMsg.content === "收尾");
+});
+
+test("maxToolRounds 缺省 = live 读 DEFAULTS：initConfig 热应用对已装配 Agent 即时生效（docs/24 修复回归）", async () => {
+  try {
+    // 主会话真实形态（不传 maxToolRounds）：上限跟随 DEFAULTS——设 1 后一次工具往返即强制收尾
+    initConfig({ disabledModules: [], thresholds: { maxToolRounds: 1 } });
+    const toolRound = (id: string): ChatResult => ({
+      content: "",
+      toolCalls: [{ id, name: "echo_tool", arguments: "{}" }],
+      usage: null,
+    });
+    const { agent, provider, sink } = makeAgent([toolRound("c1"), { content: "收尾", toolCalls: [], usage: null }], "live");
+    await agent.run("继续");
+    assert.equal(provider.calls.length, 2, "上限 1：一轮工具往返 + 一次收尾请求");
+    assert.equal(agent.messages.filter((m) => m.role === "tool").length, 1);
+    assert.ok(sink.some((s) => s.includes("上限（1）")), "达上限文案显示热应用后的值 1");
+    // 热改回 2：同一 Agent 下一 run 立即跟随（证明是每轮 live 读，非构造期快照）
+    initConfig({ disabledModules: [], thresholds: { maxToolRounds: 2 } });
+    const { agent: a2, provider: p2 } = makeAgent([toolRound("d1"), toolRound("d2"), { content: "收尾", toolCalls: [], usage: null }], "live");
+    await a2.run("继续");
+    assert.equal(p2.calls.length, 3, "上限 2：两轮工具往返 + 一次收尾请求");
+  } finally {
+    initConfig({ disabledModules: [], thresholds: {} }); // 恢复纯缺省，不泄漏给同文件其他测试
+  }
 });
 
 test("clear 重置为仅系统提示", async () => {

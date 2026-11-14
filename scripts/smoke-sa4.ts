@@ -100,7 +100,6 @@ try {
   const broadcasts: { event: string; data: unknown }[] = [];
   const sh = {
     ctx,
-    config: loadConfig(),
     sessions: new SessionStore(userDir),
     providerFile: {
       path: join(userDir, "providers.json"),

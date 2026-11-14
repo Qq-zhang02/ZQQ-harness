@@ -84,7 +84,6 @@ function makeShell(
   if (subagent) ctx.subagent = () => subagent;
   return {
     ctx,
-    config: loadConfig(),
     sessions: new SessionStore(userDir),
     providerFile: {
       path: join(userDir, "providers.json"),

@@ -2708,7 +2708,7 @@ function setRender(d) {
     ? "已禁用模块（只读）：" + dis.join("、") + "——编辑请直接改 harness.json（重启生效）"
     : "已禁用模块：无");
   bits.push("保存写回纯 JSON，文件里的注释会被移除（值与行为不变）");
-  bits.push("大部分键保存即热生效（运行中会话的构造期参数沿用旧值，新会话生效）；标注「重启后生效」的键下次启动生效");
+  bits.push("保存即热生效（各读取点下一次读取即用新值；正在执行的当轮不受影响）；标注「重启后生效」的键下次启动生效");
   setNote.textContent = bits.join("；") + "。";
   setBody.innerHTML = ""; // 仅清空（无动态内容注入）
   const byGroup = {};

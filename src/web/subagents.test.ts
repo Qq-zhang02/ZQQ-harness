@@ -113,7 +113,6 @@ function makeHarness(
   const broadcasts: { event: string; data: unknown }[] = [];
   const sh: SessionShell = {
     ctx,
-    config: loadConfig(),
     sessions: new SessionStore(userDir),
     providerFile: {
       path: "",
@@ -228,7 +227,6 @@ test("subagentServiceFor：缺省名自动编号 sub-1/sub-2（服务实例内�
   const broadcasts: { event: string; data: unknown }[] = [];
   const sh = {
     ctx,
-    config: loadConfig(),
     sessions: new SessionStore(userDir),
     providerFile: { path: "", data: { active: "", providers: [] } },
     runtimes: new Map(),

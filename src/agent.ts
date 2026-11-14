@@ -6,7 +6,7 @@ import { estTokens, estimateBreakdown, contextPressure as contextPressureOf, mes
 import type { ApprovalDecision, ApprovalRequest } from "./approval/types.ts";
 import type { SandboxMode } from "./sandbox/types.ts";
 import { chooseCutIndex, isContextOverflowError, type CompactionRecord, type CompactOutcome } from "./compaction.ts";
-import { COMPACTION_KEEP_RATIO } from "./config.ts";
+import { COMPACTION_KEEP_RATIO, DEFAULTS } from "./config.ts";
 import { assembleSystemPrompt, BUILTIN_PROMPT_SECTIONS, toolDocsOf } from "./core/sections.ts";
 import type { Registry } from "./core/registry.ts";
 import type { PromptSection, SectionContext, SubagentRequest, SubagentResult } from "./core/types.ts";
@@ -55,7 +55,11 @@ export interface AgentDeps {
   ui: AgentUi;
   requestApproval(req: ApprovalRequest): Promise<ApprovalDecision>;
   settings: AgentSettings;
-  maxToolRounds: number;
+  /** 工具调用轮次上限（可选）：**缺省不传 = 每轮循环 live 读 config.ts 的
+   *  DEFAULTS.maxToolRounds**（docs/24 热应用——initConfig 后对已装配的运行中会话也即时生效，
+   *  正在执行的当轮不受影响）。显式传入 = 创建时快照（子代理 worker 传
+   *  SUBAGENT_MAX_TOOL_ROUNDS：worker 创建时读 live binding，按派发生效）。 */
+  maxToolRounds?: number;
   /** 工作区 AGENTS.md 内容（可选），作为附加系统指令注入 */
   agentsMd?: string | null;
   /** 全局 AGENTS.md 内容（~/.ZQQ-harness/AGENTS.md，可选），对所有工作区生效；与工作区指令冲突时以工作区为准 */
@@ -133,6 +137,11 @@ export class Agent {
   constructor(deps: AgentDeps) {
     this.deps = deps;
     this.history.push({ role: "system", content: this.buildSystemPrompt() });
+  }
+
+  /** 轮次上限：显式 deps 值优先；否则 live 读 DEFAULTS（每轮循环与达上限文案都经此——单一取值点） */
+  private get maxToolRounds(): number {
+    return this.deps.maxToolRounds ?? DEFAULTS.maxToolRounds;
   }
 
   private buildSystemPrompt(): string {
@@ -477,7 +486,7 @@ export class Agent {
     let overflowCompacted = false; // overflow 兼顾：每轮 run 最多自动压缩+重试一次
     let rounds = 0; // 入档的助手消息数 = 实际请求轮数（供子代理报告 rounds）
 
-    for (let round = 0; round < this.deps.maxToolRounds; round++) {
+    for (let round = 0; round < this.maxToolRounds; round++) {
       // 每轮重取工具 schema：manage_mcp 热重载后新 MCP 工具下一轮即可调用（token 估算随之间源）
       const tools = registry.schemas();
       // 输入 token 分类估算：按本次实际请求的消息、工具 schema、技能与 MCP 说明计算
@@ -613,7 +622,7 @@ export class Agent {
     }
 
     // 达到轮次上限：注入提示，让模型不带工具直接收尾
-    ui.printInfo(`已达工具调用轮次上限（${this.deps.maxToolRounds}），要求模型直接总结。`);
+    ui.printInfo(`已达工具调用轮次上限（${this.maxToolRounds}），要求模型直接总结。`);
     this.history.push({
       role: "user",
       content: "（系统提示：工具调用轮次已达上限，请不要再调用工具，直接基于已获得的信息给出最终回答。）",

@@ -7,7 +7,7 @@
  */
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { COMPACTION_PRESSURE, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, IMAGE_RULES, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT, type AppConfig } from "../config.ts";
+import { COMPACTION_PRESSURE, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, IMAGE_RULES, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT } from "../config.ts";
 import { COMPACTION_PROMPT } from "../compaction.ts";
 import { pruneToolResult } from "../tools/prune.ts";
 import type { ChatMessage, LLMProvider, UsageBreakdown, UsageInfo } from "../llm/provider.ts";
@@ -43,7 +43,6 @@ import type { RuntimeSettings, SessionRuntime } from "../core/host.ts";
  */
 export interface SessionShell {
   ctx: HarnessContext;
-  config: AppConfig;
   sessions: SessionStore;
   providerFile: ProviderFile;
   runtimes: Map<string, SessionRuntime>;
@@ -494,7 +493,7 @@ export async function createRuntime(
     ui: makeUi(sh, rt),
     requestApproval: requestApprovalFor(sh, rt),
     settings: rt.settings,
-    maxToolRounds: sh.config.maxToolRounds,
+    // maxToolRounds 不传：Agent 每轮 live 读 DEFAULTS（docs/24 热应用——保存即对运行中会话生效）
     skills: rt.skills,
     // AGENTS.md 两级注入：全局 ~/.ZQQ-harness/AGENTS.md + 工作区根 AGENTS.md（冲突以工作区为准）
     agentsMd: workspace ? readAgentsMd(workspace.root) : null,
