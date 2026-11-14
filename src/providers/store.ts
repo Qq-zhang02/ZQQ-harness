@@ -67,7 +67,17 @@ export interface ProviderFile {
 }
 
 // DEFAULT_CONTEXT_LENGTH 自 P8 起从 config.ts 导入（harness.json 可覆盖），本地重复定义已消灭
-const DEFAULT_DEEPSEEK_BASE = "https://api.deepseek.com";
+
+/** 首启种子提供方（docs/21 §2.4 常量收敛）：id/名称/格式/接口地址/模型/思考档位集中一处，
+ *  首启生成与旧档回填（validateProvider 的 deepseek 特例）共用，防漂移。 */
+const DEFAULT_PROVIDER_SEED = {
+  id: "deepseek",
+  name: "DeepSeek",
+  format: "openai",
+  baseUrl: "https://api.deepseek.com",
+  model: "deepseek-flash",
+  effort: "high",
+} as const;
 
 function readKeyFromYaml(path: string): string {
   try {
@@ -84,7 +94,7 @@ function legacyDeepseek(cwd: string, userDir: string): Pick<ProviderConfig, "api
     readKeyFromYaml(join(userDir, ".credentials.yaml")) ||
     readKeyFromYaml(join(cwd, ".credentials.yaml")) ||
     "";
-  const model = process.env.DEEPSEEK_MODEL?.trim() || "deepseek-flash";
+  const model = process.env.DEEPSEEK_MODEL?.trim() || DEFAULT_PROVIDER_SEED.model;
   const maxEnv = Number(process.env.DEEPSEEK_MAX_TOKENS);
   const ctxEnv = Number(process.env.DEEPSEEK_CONTEXT_LENGTH);
   return {
@@ -108,7 +118,7 @@ function validateProvider(p: unknown, formats: FormatLookup): ProviderConfig | n
   if (!(Number.isFinite(contextLength) && contextLength > 0)) return null;
   if (maxTokens !== null && !(Number.isFinite(maxTokens) && maxTokens > 0)) return null;
   // 旧文件缺 effort：deepseek 保持 high，其他（如不支持思考档位的模型）回退 default
-  const effort = normalizeEffort(v.effort) ?? (str("id") === "deepseek" ? "high" : "default");
+  const effort = normalizeEffort(v.effort) ?? (str("id") === DEFAULT_PROVIDER_SEED.id ? DEFAULT_PROVIDER_SEED.effort : "default");
   return {
     id: str("id"),
     name: str("name"),
@@ -155,17 +165,14 @@ export function ensureProvidersFile(userDir: string, cwd: string, formats: Forma
     }
   }
   const legacy = legacyDeepseek(cwd, userDir);
+  const seed = DEFAULT_PROVIDER_SEED;
   const data: ProviderStore = {
-    active: "deepseek",
+    active: seed.id,
     providers: [
       {
-        id: "deepseek",
-        name: "DeepSeek",
-        format: "openai",
-        baseUrl: DEFAULT_DEEPSEEK_BASE,
+        ...seed,
         apiKey: legacy.apiKey,
         model: legacy.model,
-        effort: "high",
         contextLength: legacy.contextLength,
         maxTokens: legacy.maxTokens,
       },

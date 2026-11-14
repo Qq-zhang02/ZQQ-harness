@@ -11,6 +11,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  *  图片校验拦截，原图 ≳700KB 即被拒，"每张 ≤5MB"实际不可达。 */
 export const HTTP_BODY_MAX_BYTES = 32 * 1024 * 1024;
 
+/** SSE 心跳间隔（docs/21 §2.4 提名；与 MCP 握手超时同量级，不配置化）：server.ts 每 20s 写 :ping
+ *  注释行保活连接。 */
+export const SSE_PING_MS = 20_000;
+
 export async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;

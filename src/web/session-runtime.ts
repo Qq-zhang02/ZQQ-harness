@@ -29,7 +29,7 @@ import {
 } from "../approval/types.ts";
 import { normalizeSandboxMode } from "../sandbox/types.ts";
 import { scanSkills, skillDirsOf, type SkillInfo } from "../core/skills.ts";
-import { SSE_EVENTS, type SseEventName } from "../core/events.ts";
+import { AUTO_DELIVERY_PREFIXES, SSE_EVENTS, type SseEventName } from "../core/events.ts";
 import type { HarnessContext } from "../core/context.ts";
 import { createFileLedger } from "../core/file-tools.ts";
 import { Registry } from "../core/registry.ts";
@@ -112,6 +112,15 @@ export function applyProvider(sh: SessionShell, rt: SessionRuntime, cfg: Provide
   rt.settings.effort = cfg.effort;
 }
 
+/** 新会话运行时缺省设置（docs/21 §2.4 单一出处）：防与提供方表单缺省漂移；
+ *  消费点用展开拷贝，后续 per-session 修改不回写本常量。 */
+export const DEFAULT_RUNTIME_SETTINGS: RuntimeSettings = {
+  alwaysConfirm: false,
+  effort: "high",
+  askMode: "ask",
+  sandboxMode: "workspace-write",
+};
+
 const totalsSnapshot = (rt: SessionRuntime) => ({
   prompt: rt.totals.prompt,
   completion: rt.totals.completion,
@@ -138,6 +147,9 @@ export const metaSnapshot = (sh: SessionShell) => ({
   // docs/22 §4.1：消息图片规则（张数/单张字节/mime 白名单）单一出处 config.IMAGE_RULES——
   // 前端校验与按钮 title 由此渲染，不再硬编码（HTML 静态 accept 保留作无 JS 降级）。
   imageRules: IMAGE_RULES,
+  // docs/21 §2.4 协议解耦：自动送达消息前缀——前端判别/剥前缀用 startsWith(meta)，不写死文案
+  autoReportPrefix: AUTO_DELIVERY_PREFIXES.report,
+  autoStatusPrefix: AUTO_DELIVERY_PREFIXES.status,
 });
 
 export function currentState(sh: SessionShell, rt: SessionRuntime) {
@@ -357,7 +369,7 @@ export async function createRuntime(
     agent: null as unknown as Agent,
     llm: null as unknown as LLMProvider,
     providerId: sh.providerFile.data.active,
-    settings: { alwaysConfirm: false, effort: "high", askMode: "ask", sandboxMode: "workspace-write" } satisfies RuntimeSettings,
+    settings: { ...DEFAULT_RUNTIME_SETTINGS },
     totals: { prompt: 0, completion: 0, cacheHit: 0, reasoning: 0, breakdown: zeroBreakdown() },
     runMs: 0,
     turnStartedAt: null,

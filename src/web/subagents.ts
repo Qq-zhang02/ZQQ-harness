@@ -62,7 +62,7 @@ import type { ProviderConfig } from "../providers/store.ts";
 import type { ChatMessage, EffortSetting } from "../llm/provider.ts";
 import { Registry } from "../core/registry.ts";
 import { readerLedger } from "../core/file-tools.ts";
-import { SSE_EVENTS } from "../core/events.ts";
+import { SSE_EVENTS, AUTO_DELIVERY_PREFIXES } from "../core/events.ts";
 import type { ApprovalDecision, ApprovalRequest } from "../approval/types.ts";
 import type { PromptSection, SectionContext, SubagentDispatch, SubagentRequest, SubagentResult, SubagentService, SubagentFollowup, SystemToolDeps } from "../core/types.ts";
 import { assembleSystemPrompt } from "../core/sections.ts";
@@ -124,7 +124,7 @@ function workerDirTag(seq: number, name: string): string {
   return `sub-${seq}-${safe}`;
 }
 
-/** 过程流单字段字符预算（方案 B 事件量控制）：preview 本身已由 previewArgs 截到 ~160，
+/** 过程流单字段字符预算（方案 B 事件量控制）：preview 已由 agent.ts 的 previewArgs（160）截断，
  *  output（工具完整输出）在这里截到预算内 + 截断标记；全文始终有 A 的 transcript 落盘兜底。 */
 const SUBAGENT_EVENT_TEXT_MAX = 500;
 
@@ -336,7 +336,7 @@ function createWorkerSession(
         deliverToCoordinator(
           sh,
           rt,
-          `[子代理状态 · 自动送达] 子代理 ${name}#${seq} 的当前任务已被用户打断：进行中的请求与工具执行已中止` +
+          `${AUTO_DELIVERY_PREFIXES.status} 子代理 ${name}#${seq} 的当前任务已被用户打断：进行中的请求与工具执行已中止` +
             `${reusable ? `，它转为空闲待命（保留已有上下文）——继续该方向的工作请用 agent_followup 向它发新任务书（没有「恢复」，被打断的任务不会自动续跑）` : `，该子代理（一次性）已随之归档`}。` +
             `任务的结算报告会作为新消息自动送达。`,
         );
@@ -769,7 +769,7 @@ function deliverToCoordinator(sh: SessionShell, rt: SessionRuntime, text: string
 function reportMessage(res: SubagentResult, name: string): string {
   const body = formatWorkerResult(res, name, { warnPct: SUBAGENT_WARN_CONTEXT_PCT, followupPct: SUBAGENT_FOLLOWUP_CONTEXT_PCT });
   const tail = res.reusable ? "" : "\n（该子代理为一次性：任务结束已自动归档。）";
-  return `[子代理任务报告 · 自动送达]\n${body}${tail}`;
+  return `${AUTO_DELIVERY_PREFIXES.report}\n${body}${tail}`;
 }
 
 /** 归档入口（docs/9，句柄 requestArchive 的实现）：执行中 → 中止当前任务并在其收尾时
@@ -798,7 +798,7 @@ function requestArchiveWorker(
       ? `可复用子代理 ${ws.name}#${ws.subId} 已被用户归档（不可再用 agent_followup 追加任务；需要继续该方向的工作时用 agent_task 重新派发，任务书可让它先用 read_archive（subId=${ws.subId}）读过程存档接续上下文 [[过程档案#${ws.subId}]]）。`
       : `可复用子代理 ${ws.name}#${ws.subId} 已被用户归档（不可再用 agent_followup 追加任务；需要继续该方向的工作时用 agent_task 重新派发）。`;
   finalizeArchive(sh, rt, ws, reusables);
-  if (via === "ui") deliverToCoordinator(sh, rt, `[子代理状态 · 自动送达] ${archiveNotice}`);
+  if (via === "ui") deliverToCoordinator(sh, rt, `${AUTO_DELIVERY_PREFIXES.status} ${archiveNotice}`);
   return `已归档子代理：${ws.name}#${ws.subId}（共完成 ${ws.tasks} 次任务）。归档后仅可查看过程存档，不可再派任务。`;
 }
 

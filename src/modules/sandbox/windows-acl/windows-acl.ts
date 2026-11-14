@@ -397,6 +397,10 @@ export class WindowsAclRunner implements SandboxRunner {
       // WaitForSingleObject(200) 是同步 FFI 调用，长命令（如 Start-Sleep 20s）运行期间
       // 整个服务进程的事件循环被堵死——同进程的子代理/会话 HTTP·SSE 全部无响应，
       // abort 信号也无法投递（UI 暂停点了没反应）；短命令只各堵几百毫秒，不易察觉。
+      // 执行等待轮询组（docs/21 §2.4 提名；性能参数，值不变）
+      const POLL_INTERVAL_MS = 200; // 退出探测间隔
+      const KILL_POLL_INTERVAL_MS = 50; // 终结核确认的快轮询
+      const KILL_WAIT_MS = 5_000; // 终结核最长死等（超界交 KILL_ON_JOB_CLOSE 兜底）
       const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
       let timedOut = false;
       const start = Date.now();
@@ -409,12 +413,12 @@ export class WindowsAclRunner implements SandboxRunner {
           // 死等终结核同样不能同步堵 5s：有界异步轮询（超界放弃，finally 关 job 句柄
           // 仍会 KILL_ON_JOB_CLOSE 杀树兜底）
           const killStart = Date.now();
-          while (F().WaitForSingleObject(hProcess, 0) !== 0 && Date.now() - killStart < 5_000) {
-            await pause(50);
+          while (F().WaitForSingleObject(hProcess, 0) !== 0 && Date.now() - killStart < KILL_WAIT_MS) {
+            await pause(KILL_POLL_INTERVAL_MS);
           }
           break;
         }
-        await pause(200);
+        await pause(POLL_INTERVAL_MS);
       }
 
       const codeOut = native(4);

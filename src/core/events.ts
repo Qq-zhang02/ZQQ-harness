@@ -44,3 +44,11 @@ export const SSE_EVENTS = {
 } as const;
 
 export type SseEventName = (typeof SSE_EVENTS)[keyof typeof SSE_EVENTS];
+
+/** 自动送达消息前缀（docs/16 产生；docs/21 §2.4 协议解耦）：后端 subagents.ts 送达任务报告/
+ *  状态通知以此开头，session-lifecycle.isAutoReport 与前端判别/剥前缀都比对这两个常量
+ *  （经 /api/meta 下发为 autoReportPrefix/autoStatusPrefix）——文案调整不破协议。 */
+export const AUTO_DELIVERY_PREFIXES = {
+  report: "[子代理任务报告 · 自动送达]",
+  status: "[子代理状态 · 自动送达]",
+} as const;

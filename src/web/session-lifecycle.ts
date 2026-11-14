@@ -9,7 +9,7 @@ import type { ChatImage, ChatMessage } from "../llm/provider.ts";
 import { createWorkspace, readAgentsMd } from "../workspace.ts";
 import { loadMcpConfig } from "../mcp/manager.ts";
 import { rememberWorkspace } from "./workspaces.ts";
-import { SSE_EVENTS } from "../core/events.ts";
+import { AUTO_DELIVERY_PREFIXES, SSE_EVENTS } from "../core/events.ts";
 import type { SessionData } from "./sessions.ts";
 import type { SessionsPayload, SessionRuntime } from "../core/host.ts";
 import { join } from "node:path";
@@ -22,6 +22,9 @@ import {
   type SessionShell,
 } from "./session-runtime.ts";
 import { workerMcpToolsOf } from "./subagents.ts";
+
+/** 会话标题截断（首条用户消息前 N 字符；docs/21 §2.4 低优先提名）。 */
+export const SESSION_TITLE_MAX = 24;
 
 /** 会话存档字段装配的单一出处（原三份重复字面量收敛）。title/messages 由调用方给定：
  *  创建即存档的空占位传 "" 与 []，persistSession 传首条用户消息标题与实际历史。 */
@@ -54,7 +57,7 @@ export function persistSession(sh: SessionShell, rt: SessionRuntime | undefined)
   const msgs = rt.agent.messages.filter((m) => m.role !== "system");
   const firstUser = msgs.find((m) => m.role === "user");
   if (!firstUser || !firstUser.content) return;
-  sh.sessions.save(toSessionData(rt, firstUser.content.slice(0, 24), msgs));
+  sh.sessions.save(toSessionData(rt, firstUser.content.slice(0, SESSION_TITLE_MAX), msgs));
   sh.broadcast(SSE_EVENTS.sessions, sessionsPayload(sh));
 }
 
@@ -184,7 +187,7 @@ export async function doCompact(sh: SessionShell, rt: SessionRuntime, opts?: { k
 /** 自动送达消息识别（docs/16）：子代理任务报告/状态通知的前缀——deliverToCoordinator 送达
  *  的两类消息（subagents.ts reportMessage 与 pause/archive 状态通知）都以此开头。 */
 export function isAutoReport(text: string): boolean {
-  return text.startsWith("[子代理任务报告 · 自动送达]") || text.startsWith("[子代理状态 · 自动送达]");
+  return text.startsWith(AUTO_DELIVERY_PREFIXES.report) || text.startsWith(AUTO_DELIVERY_PREFIXES.status);
 }
 
 /** 从协调者收件箱取下一条待处理消息（docs/16）：队头 + 紧随其后的**连续**自动送达报告合并

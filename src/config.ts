@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { USER_DIR_LAYOUT, USER_DIR_NAME } from "./userdir.ts";
 import type { SandboxMode } from "./sandbox/types.ts";
 import { SANDBOX_MODES } from "./sandbox/types.ts";
 import type { EffortSetting } from "./llm/provider.ts";
@@ -221,7 +222,7 @@ export function resolveThresholds(t: ThresholdOverrides): EffectiveThresholds {
 
 /** harness.json 的规范位置：~/.ZQQ-harness/harness.json */
 export function harnessFilePath(): string {
-  return join(homedir(), ".ZQQ-harness", "harness.json");
+  return join(homedir(), USER_DIR_NAME, USER_DIR_LAYOUT.harnessFile);
 }
 
 /** 读取 harness.json（lenient）：缺失 → 全缺省；JSON 损坏 → 全缺省 + 告警；字段非法 → 逐项忽略 + 告警。 */
@@ -412,7 +413,7 @@ export function parseCredentialsYaml(text: string): Record<string, string> {
 
 /** API key 文件的规范位置：~/.ZQQ-harness/.credentials.yaml（用户目录，随账号自动定位） */
 export function credentialsFilePath(): string {
-  return join(homedir(), ".ZQQ-harness", ".credentials.yaml");
+  return join(homedir(), USER_DIR_NAME, USER_DIR_LAYOUT.credentialsFile);
 }
 
 /** 环境变量优先；否则按顺序在给定候选路径里找 .credentials.yaml。找不到抛错。 */

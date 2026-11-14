@@ -273,7 +273,7 @@
   footer { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 14px; background: var(--panel);
            border-top: 1px solid var(--border); }
   #input { flex: 1; resize: none; background: var(--bg); color: var(--text); border: 1px solid var(--border);
-           border-radius: 8px; padding: 9px 12px; font: inherit; max-height: 160px; }
+           border-radius: 8px; padding: 9px 12px; font: inherit; max-height: 160px; } /* INPUT_MAX_H——JS CFG.INPUT_MAX_H 同值互指（docs/21 §3.2-①） */
   /* 图片上传（docs/10 R3）：预览条占满首行（flex-wrap），气泡内图片独立渲染（不进 mdLite） */
   #imgBar { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; }
   #imgBar .imgprev { position: relative; }
@@ -490,6 +490,20 @@
 const $ = (s) => document.querySelector(s);
 const chat = $("#chat"), input = $("#input"), sendBtn = $("#sendBtn");
 
+// ---------- 前端运行常量（docs/21 §2.4 / §3.2-①：单一出处，改动只看这里） ----------
+const CFG = {
+  CLOCK_TICK_MS: 1000,     // ⏱ 计时器滴答间隔
+  POLL_CTX_MS: 2000,       // 运行中子代理 context 轮询
+  POLL_DETAIL_MS: 1500,    // 抽屉运行中详情页轮询
+  TRUNC_TOOL_FULL: 20000,  // 工具结果全文显示截断（完整内容已给模型，仅显示层截断）
+  TRUNC_PREVIEW: 300,      // 工具结果行内预览截断
+  CONFIRM_SESS_MS: 3000,   // 会话删除两步确认自动复位
+  CONFIRM_WS_MS: 3000,     // 工作区删除两步确认自动复位
+  CONFIRM_PURGE_MS: 2500,  // 回收站彻底删除两步确认自动复位
+  CONFIRM_PROV_MS: 2500,   // 提供方删除两步确认自动复位
+  INPUT_MAX_H: 160,        // 输入框自动伸展最大高度（px；CSS #input max-height 同值——无构建拿不到 CSS 变量，两处互指）
+};
+
 let state = {
   busy: false, effort: "high", contextLimit: 0, workspace: "", model: "",
   providerId: "", providerName: "", kind: "normal",
@@ -556,13 +570,16 @@ function renderSettingOptions() {
 }
 
 // ---------- 基础工具 ----------
-function el(tag, cls, html) {
+function el(tag, cls, trustedHtml) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
-  if (html != null) e.innerHTML = html;
+  // 第三参是**已信任的 HTML**（docs/21 §3.2-②）：动态内容必须先 esc()（或走 mdLite——内部先 esc），
+  // 仅静态文案/受控标记可直接写；新代码优先不传第三参、用 textContent。
+  if (trustedHtml != null) e.innerHTML = trustedHtml;
   return e;
 }
-function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+/** HTML 转义（docs/21 §3.2-②）：含引号（属性注入面）；所有 innerHTML 拼接的动态内容必经此函数。 */
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function mdLite(s) {
   const blocks = [];
   let h = esc(s).replace(/```[a-zA-Z]*\n?([\s\S]*?)```/g, (m, c) => {
@@ -627,6 +644,16 @@ function ensureGroup() {
   if (!curGroup) { curGroup = el("div", "msg assistant"); chat.appendChild(curGroup); }
   return curGroup;
 }
+/** docs/21 §2.4 协议解耦：自动送达消息判别/拆解——前缀经 meta 下发（autoReportPrefix/
+ *  autoStatusPrefix，单一出处 core/events.ts），不再正则反推文案；meta 未到返回 null
+ *  （按普通文本渲染，不写死兜底文案）。 */
+function splitAutoText(t) {
+  const m = metaOf();
+  if (typeof t !== "string" || m.autoReportPrefix == null || m.autoStatusPrefix == null) return null;
+  if (t.startsWith(m.autoReportPrefix)) return { status: false, body: t.slice(m.autoReportPrefix.length).replace(/^\n?/, "") };
+  if (t.startsWith(m.autoStatusPrefix)) return { status: true, body: t.slice(m.autoStatusPrefix.length).replace(/^\n?/, "") };
+  return null;
+}
 function userBubble(text, imgs) {
   finishSegments();
   const m = el("div", "msg user");
@@ -634,15 +661,18 @@ function userBubble(text, imgs) {
   // docs/16：自动送达的子代理报告/状态通知（作为用户消息开轮）加 🤖 徽标，与真实用户消息区分。
   // docs/18 W2：默认只显示一行摘要（哪个子代理·完成/失败/状态），全文收起、点击展开；
   // 展开后 [[过程档案#N]] 标记与工具结果同款替换为可点的「📄 过程」入口（docs/11 W1）。
-  const isReport = typeof text === "string" && (text.startsWith("[子代理任务报告 · 自动送达]") || text.startsWith("[子代理状态 · 自动送达]"));
+  const isReport = splitAutoText(text) != null;
   if (isReport) { renderAutoReportBubble(bubble, text); }
   else if (typeof text === "string" && text.includes("[[过程档案#")) linkifyTranscriptTags(bubble, text);
   else bubble.appendChild(document.createTextNode(String(text)));
   m.appendChild(bubble);
   if (imgs && imgs.length > 0) {
-    // docs/10 R3：图片独立 <img> 渲染（data URI，mime 白名单四类；不进 mdLite）
+    // docs/10 R3：图片独立 <img> 渲染（data URI，不进 mdLite）；docs/21 §3.2-②——历史档
+    // 回放的 mime 先经白名单复验（meta.imageRules.mimes，与上传同一规则），白名单外拒绝渲染。
+    const mimes = imgRules()?.mimes;
     const bar = el("div", "msgimgs");
     for (const im of imgs) {
+      if (!mimes || !mimes.includes(im.mime)) continue;
       const img = document.createElement("img");
       img.src = "data:" + im.mime + ";base64," + im.data;
       img.alt = "用户图片";
@@ -654,12 +684,12 @@ function userBubble(text, imgs) {
   autoscroll(chat);
 }
 /** docs/18 W2：自动送达消息的摘要提取——任务报告取正文首行（[子代理 X 完成/失败] 行本身
- *  就是自带统计的一行摘要）；状态通知（单长行）截到首个句读为止。 */
+ *  就是自带统计的一行摘要）；状态通知（单长行）截到首个句读为止。
+ *  前缀拆解走 splitAutoText（meta 下发，docs/21 §2.4）；兜底分支仅在 meta 缺失时按报告处理。 */
 function autoReportSummary(text) {
-  const isStatus = text.startsWith("[子代理状态");
-  const body = text.replace(/^\[子代理(?:任务报告|状态) · 自动送达\]\n?/, "");
-  const firstLine = body.split("\n", 1)[0].trim();
-  if (isStatus) {
+  const sp = splitAutoText(text) ?? { status: false, body: String(text ?? "") };
+  const firstLine = sp.body.split("\n", 1)[0].trim();
+  if (sp.status) {
     const m = firstLine.match(/^(.+?[：:。])/);
     return m ? m[1] : firstLine.slice(0, 60) + (firstLine.length > 60 ? "…" : "");
   }
@@ -668,8 +698,8 @@ function autoReportSummary(text) {
 /** docs/18 W2：自动送达消息的气泡渲染——🤖 徽标 + 一行摘要（完成=绿/失败=红），全文默认
  *  收起、点击「展开全文」显示（展开后 [[过程档案#N]] 转可点入口）。刷新/切回重渲染同路径。 */
 function renderAutoReportBubble(bubble, text) {
-  const isStatus = text.startsWith("[子代理状态");
-  bubble.appendChild(el("span", "autotag", "🤖 子代理" + (isStatus ? "状态" : "报告") + " · 自动送达"));
+  const sp = splitAutoText(text) ?? { status: false, body: String(text ?? "") };
+  bubble.appendChild(el("span", "autotag", "🤖 子代理" + (sp.status ? "状态" : "报告") + " · 自动送达"));
   const sum = autoReportSummary(text);
   const sumEl = el("div", "autosum");
   const m = sum.match(/^\[子代理 (.+?) (完成|失败)\](.*)$/);
@@ -684,8 +714,7 @@ function renderAutoReportBubble(bubble, text) {
   const exp = el("a", "autoexp", "展开全文");
   const full = el("div", "autofull");
   full.style.display = "none";
-  const body = text.replace(/^\[子代理(?:任务报告|状态) · 自动送达\]\n?/, "");
-  linkifyTranscriptTags(full, body);
+  linkifyTranscriptTags(full, sp.body);
   exp.addEventListener("click", (ev) => {
     ev.stopPropagation();
     const show = full.style.display === "none";
@@ -793,7 +822,7 @@ function addToolRes(output, meta, callId) {
     }
     body.appendChild(el("div", "tres-cap", "返回结果"));
     const pre = el("pre", "tres");
-    linkifyTranscriptTags(pre, text.length > 20000 ? text.slice(0, 20000) + "\n…（显示已截断，完整内容已交给模型）" : text);
+    linkifyTranscriptTags(pre, text.length > CFG.TRUNC_TOOL_FULL ? text.slice(0, CFG.TRUNC_TOOL_FULL) + "\n…（显示已截断，完整内容已交给模型）" : text);
     body.appendChild(pre);
     // 需求三（docs/8 §3.2）：agent_task(s) 摘要行随结果定格为本批统计——从结果文本自身的
     // 完成/失败行推断（历史/重放渲染走同一 addToolRes 路径，统计不依赖实时事件曾到达）。
@@ -815,7 +844,7 @@ function addToolRes(output, meta, callId) {
     blk.classList.add("collapsed");
     autoscroll(chat);
   } else {
-    ensureGroup().appendChild(el("div", "toolres", "↳ " + esc(text.slice(0, 300))));
+    ensureGroup().appendChild(el("div", "toolres", "↳ " + esc(text.slice(0, CFG.TRUNC_PREVIEW))));
   }
 }
 function finishSegments() { endThink(); curAnswer = null; curTool = null; curGroup = null; toolBlocks.clear(); }
@@ -1159,7 +1188,7 @@ function ensureCtxPoll() {
     } finally {
       ctxBusy = false;
     }
-  }, 2000);
+  }, CFG.POLL_CTX_MS);
 }
 function stopCtxPoll() {
   if (ctxTimer !== null) { clearInterval(ctxTimer); ctxTimer = null; }
@@ -1199,7 +1228,7 @@ function tickClock() {
   const drow = drawer.workers.get(drawer.detail);
   if (drow && drow.status === "run") renderDetailHead(drow);
 }
-setInterval(tickClock, 1000);
+setInterval(tickClock, CFG.CLOCK_TICK_MS);
 function updateDrwBtn() {
   const n = drawer.workers.size;
   const show = state.kind === "coordinator" && n > 0;
@@ -1380,7 +1409,7 @@ function scheduleLivePoll(row, seq) {
     if (seq !== drawer.renderSeq || !drawer.poll) return;
     await pollLiveDetail(row, seq);
     scheduleLivePoll(row, seq);
-  }, 1500);
+  }, CFG.POLL_DETAIL_MS);
 }
 
 /** 工具事件步骤流 → 扁平时间线（无存档时的保底视图：subagent tool/toolResult 事件缓存）。
@@ -1484,10 +1513,10 @@ function makeTimeline(container, expand, keepOpen) {
     if (blk) {
       if (toolCallId) callBlks.delete(toolCallId);
       const pre = el("pre", "tres");
-      pre.textContent = text.length > 20000 ? text.slice(0, 20000) + "\n…（已截断）" : text;
+      pre.textContent = text.length > CFG.TRUNC_TOOL_FULL ? text.slice(0, CFG.TRUNC_TOOL_FULL) + "\n…（已截断）" : text;
       blk.querySelector(".tblock-b").appendChild(pre);
     } else {
-      container.appendChild(el("div", "toolres", "↳ " + esc(text.slice(0, 300))));
+      container.appendChild(el("div", "toolres", "↳ " + esc(text.slice(0, CFG.TRUNC_PREVIEW))));
     }
     stick();
   }
@@ -1952,7 +1981,7 @@ function sessionItem(s, currentId, wsPath, wsItems) {
     if (del.textContent !== "确认") {
       del.textContent = "确认";
       del.classList.add("armed");
-      setTimeout(() => { del.textContent = "✕"; del.classList.remove("armed"); }, 3000);
+      setTimeout(() => { del.textContent = "✕"; del.classList.remove("armed"); }, CFG.CONFIRM_SESS_MS);
       return;
     }
     void post("/api/sessions/delete", { id: s.id }).then((r) => { if (!r.ok) sysLine(r.data.error ?? "删除失败", "err"); });
@@ -2009,7 +2038,7 @@ function wsHead(g) {
     if (del.textContent !== "确认？") {
       del.textContent = "确认？";
       del.classList.add("armed");
-      setTimeout(() => { del.textContent = "🗑"; del.classList.remove("armed"); }, 3000);
+      setTimeout(() => { del.textContent = "🗑"; del.classList.remove("armed"); }, CFG.CONFIRM_WS_MS);
       return;
     }
     void post("/api/workspace/delete", { path: g.workspace }).then((r) => {
@@ -2106,7 +2135,7 @@ function renderRecycle(recycled) {
     purge.addEventListener("click", async () => {
       if (purge.textContent !== "确认") {
         purge.textContent = "确认";
-        setTimeout(() => (purge.textContent = "✕"), 2500);
+        setTimeout(() => (purge.textContent = "✕"), CFG.CONFIRM_PURGE_MS);
         return;
       }
       const r = await post("/api/sessions/purge", { id: s.id });
@@ -2311,7 +2340,7 @@ sendBtn.addEventListener("click", send);
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
-function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 160) + "px"; }
+function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, CFG.INPUT_MAX_H) + "px"; }
 input.addEventListener("input", autosize);
 
 // ---------- 批准 ----------
@@ -2457,7 +2486,7 @@ function renderProvList() {
     del.addEventListener("click", async () => {
       if (del.textContent !== "确认删除") {
         del.textContent = "确认删除";
-        setTimeout(() => (del.textContent = "删除"), 2500);
+        setTimeout(() => (del.textContent = "删除"), CFG.CONFIRM_PROV_MS);
         return;
       }
       const r = await post("/api/providers/delete", { id: p.id });

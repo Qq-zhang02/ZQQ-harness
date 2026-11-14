@@ -337,6 +337,56 @@ test("哨兵（P8 已启用）：阈值常量经 harness.json 生效值解析，
   );
 });
 
+// ---------- 哨兵（阶段 C，docs/21 §2.4/§3.2：常量收敛 + 协议解耦 + 前端 CFG/XSS 机制化） ----------
+
+test("哨兵（阶段 C 已启用）：高风险字面量单一出处（userdir/送达前缀/种子提供方/SSE 心跳）", () => {
+  const all = listTsFiles(join(HERE, "..")); // 递归扫全部 src（.test.ts 除外）
+  const srcOf = (f: string) => readFileSync(f, "utf8");
+  // 1) ".ZQQ-harness" 引号字面量只在 userdir.ts
+  const dirLit = all.filter((f) => srcOf(f).includes('".ZQQ-harness"'));
+  assert.equal(dirLit.length, 1, `".ZQQ-harness" 字面量应只在 userdir.ts，实际在 ${dirLit.join(",")}`);
+  assert.ok(dirLit[0]!.endsWith(join("userdir.ts")), "");
+  // 2) 自动送达前缀只在 core/events.ts（协议契约同源）；前端不写死（经 meta 下发）
+  const prefixHit = all.filter((f) => srcOf(f).includes("[子代理任务报告 · 自动送达]"));
+  assert.ok(prefixHit.length === 1 && prefixHit[0]!.endsWith(join("core", "events.ts")), "送达前缀唯一出处 = core/events.ts");
+  assert.ok(
+    !html.includes("[子代理任务报告 · 自动送达]") && !html.includes("[子代理状态 · 自动送达]"),
+    "前端不得写死送达前缀（splitAutoText 经 meta 判别，docs/21 §2.4 协议解耦）",
+  );
+  // 3) meta 下发两前缀（前端消费的依赖面）
+  const runtimeSrc = readFileSync(join(HERE, "..", "web", "session-runtime.ts"), "utf8");
+  assert.ok(runtimeSrc.includes("autoReportPrefix: AUTO_DELIVERY_PREFIXES.report"), "metaSnapshot 应下发 autoReportPrefix");
+  // 4) 种子提供方单一出处
+  const storeSrc2 = readFileSync(join(HERE, "..", "providers", "store.ts"), "utf8");
+  assert.equal((storeSrc2.match(/"deepseek-flash"/g) ?? []).length, 1, "种子模型字面量只在 DEFAULT_PROVIDER_SEED");
+  // 5) SSE 心跳单一出处（http.ts 定义、server.ts 消费）
+  const httpSrc = readFileSync(join(HERE, "..", "core", "http.ts"), "utf8");
+  assert.ok(httpSrc.includes("SSE_PING_MS = 20_000") && serverSrc.includes("SSE_PING_MS"), "SSE 心跳 = SSE_PING_MS 单一出处");
+});
+
+test("哨兵（阶段 C 已启用）：前端 CFG 常量区 + XSS 机制化（docs/21 §3.2-①②）", () => {
+  assert.ok(html.includes("const CFG = {"), "script 头部应有 CFG 常量区");
+  for (const stray of ["> 20000", "slice(0, 300)", ", 3000)", ", 2500)", "scrollHeight, 160"]) {
+    assert.ok(!html.includes(stray), `index.html 不应再有散落字面量 "${stray}"（统一走 CFG）`);
+  }
+  assert.ok(html.includes("&quot;") && html.includes("&#39;"), "esc() 应转义引号（属性注入面）");
+  assert.ok(html.includes("function el(tag, cls, trustedHtml)"), "el() 第三参应命名 trustedHtml（命名即文档）");
+  assert.ok(/mimes\.includes\(im\.mime\)/.test(html), "历史图片回放应经 mime 白名单复验");
+});
+
+test("哨兵（阶段 C 已启用）：提供方 SDK 隐式超时/重试显式化（docs/21 §2.4 末行）", () => {
+  const openaiSrc = readFileSync(join(HERE, "..", "modules", "providers", "openai", "provider.ts"), "utf8");
+  assert.ok(
+    /timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES/.test(openaiSrc),
+    "new OpenAI 应显式传 timeout/maxRetries（不依赖 SDK 缺省的隐式行为）",
+  );
+  const anthropicSrc = readFileSync(join(HERE, "..", "modules", "providers", "anthropic", "provider.ts"), "utf8");
+  assert.ok(
+    anthropicSrc.includes("ANTHROPIC_FETCH_TIMEOUT_MS") && anthropicSrc.includes("AbortSignal.any"),
+    "anthropic 裸 fetch 应有 AbortSignal.timeout 兜底且与外部 signal 合并",
+  );
+});
+
 // ---------- d) import 图哨兵 ----------
 
 function listTsFiles(root: string): string[] {

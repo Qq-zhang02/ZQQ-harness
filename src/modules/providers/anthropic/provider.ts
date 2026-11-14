@@ -35,6 +35,11 @@ export interface AnthropicOptions {
 const API_VERSION = "2023-06-01";
 // 思考档位 → budget_tokens（Anthropic 要求 budget ≥1024 且 < max_tokens）
 const EFFORT_BUDGET: Partial<Record<string, number>> = { low: 4096, high: 16384, max: 32768 };
+// 输出上限推导（docs/21 §2.4 提名）：无 budget 缺省 8192；有 budget = budget + 8192 余量；
+// 1024 = 协议下限（max_tokens 须 > budget）与无 budget 时的输出下限。
+const DEFAULT_OUTPUT_TOKENS = 8_192;
+const OUTPUT_HEADROOM_TOKENS = 8_192;
+const BUDGET_MIN_HEADROOM_TOKENS = 1_024;
 
 interface SseEvent {
   type?: string;
@@ -134,6 +139,10 @@ function endpoint(baseUrl: string): string {
   const b = baseUrl.replace(/\/+$/, "");
   return /\/v\d+$/.test(b) ? `${b}/messages` : `${b}/v1/messages`;
 }
+// docs/21 §2.4：裸 fetch 无 signal 时无超时上限——显式兜底（20min > 最长合法流：32k budget+余量
+// 按 ~50 tok/s ≈ 12min）；外部中止信号经 AbortSignal.any 合并，语义不变。
+const ANTHROPIC_FETCH_TIMEOUT_MS = 1_200_000;
+
 
 export class AnthropicProvider implements LLMProvider {
   readonly name = "anthropic";
@@ -168,10 +177,10 @@ export class AnthropicProvider implements LLMProvider {
     // 会话档位优先，其次提供方配置；"default"=不发送思考参数；off=显式关闭；low/high/max 映射 budget
     const effort = params.effort ?? this.effort;
     const budget = effort !== "default" ? EFFORT_BUDGET[effort] : undefined;
-    const maxTokens = this.maxTokens ?? (budget ? budget + 8192 : 8192);
+    const maxTokens = this.maxTokens ?? (budget ? budget + OUTPUT_HEADROOM_TOKENS : DEFAULT_OUTPUT_TOKENS);
     const body: Record<string, unknown> = {
       model: this.model,
-      max_tokens: Math.max(maxTokens, budget ? budget + 1024 : 1024),
+      max_tokens: Math.max(maxTokens, budget ? budget + BUDGET_MIN_HEADROOM_TOKENS : BUDGET_MIN_HEADROOM_TOKENS),
       // 思考开启才回放 thinking 块（签名对齐/降级见 replayableThinking）；思考关闭保持纯净历史
       messages: toAnthropicMessages(params.messages, budget ? { model: this.model, onDegrade: params.onReplayDegrade } : undefined),
       stream: true,
@@ -198,7 +207,9 @@ export class AnthropicProvider implements LLMProvider {
         "anthropic-version": API_VERSION,
       },
       body: JSON.stringify(body),
-      signal: params.signal,
+      signal: params.signal
+        ? AbortSignal.any([params.signal, AbortSignal.timeout(ANTHROPIC_FETCH_TIMEOUT_MS)])
+        : AbortSignal.timeout(ANTHROPIC_FETCH_TIMEOUT_MS),
     });
     if (!res.ok || !res.body) {
       let detail = "";

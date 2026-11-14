@@ -72,6 +72,10 @@ export function toSdkMessages(
   // 结构与 SDK 参数类型一致，此处一次受控断言收口
   return mapped as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[];
 }
+// docs/21 §2.4：SDK 隐式超时/重试显式化（值 = SDK 缺省，行为不变）——先显式再谈配置化
+const OPENAI_TIMEOUT_MS = 600_000;
+const OPENAI_MAX_RETRIES = 2;
+
 
 /** DeepSeek：OpenAI 兼容格式（base_url https://api.deepseek.com），流式 + tool calling。 */
 export class OpenAICompatProvider implements LLMProvider {
@@ -82,7 +86,7 @@ export class OpenAICompatProvider implements LLMProvider {
   private maxTokens?: number;
 
   constructor(opts: OpenAICompatOptions) {
-    this.client = new OpenAI({ apiKey: opts.apiKey, baseURL: opts.baseUrl });
+    this.client = new OpenAI({ apiKey: opts.apiKey, baseURL: opts.baseUrl, timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES });
     this.model = opts.model;
     this.effort = opts.effort ?? "high";
     this.maxTokens = opts.maxTokens;

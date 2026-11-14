@@ -13,6 +13,7 @@ import type { AuditEvent, AskMode } from "../approval/types.ts";
 import type { SandboxMode } from "../sandbox/types.ts";
 import type { CompactionRecord } from "../compaction.ts";
 import { sameDir } from "./workspaces.ts";
+import { USER_DIR_LAYOUT } from "../userdir.ts";
 
 export interface SessionMeta {
   id: string;
@@ -128,8 +129,8 @@ export class SessionStore {
   private orderCache: Record<string, string[]> | null = null;
 
   constructor(baseDir: string) {
-    this.dir = join(baseDir, "sessions");
-    this.spillRoot = join(baseDir, "spill");
+    this.dir = join(baseDir, USER_DIR_LAYOUT.sessions);
+    this.spillRoot = join(baseDir, USER_DIR_LAYOUT.spill);
     mkdirSync(this.dir, { recursive: true });
     this.orderPath = join(this.dir, "order.json");
   }

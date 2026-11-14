@@ -11,6 +11,7 @@ import type { SubagentRequest, SubagentResult } from "../../../core/types.ts";
 import { normalizeEffort } from "../../../providers/store.ts";
 // docs/21 §2.2-③：timeoutMs 下限单一出处（schema/校验/提示词三处曾各自写死 60000）
 import { SUBAGENT_TIMEOUT_MIN_MS } from "../../../config.ts";
+import { AUTO_DELIVERY_PREFIXES } from "../../../core/events.ts";
 
 /** 单个任务项的参数 schema（agent_task 平铺；agent_tasks 包一层 tasks 数组）。 */
 export const TASK_ITEM_PROPERTIES: Record<string, unknown> = {
@@ -143,7 +144,7 @@ export function formatWorkerResult(r: SubagentResult, name: string, thresholds?:
 export function dispatchAck(name: string, subId: number, reusable: boolean): string {
   return (
     `[子代理 ${name}#${subId} 已派发] 任务已在后台启动；本调用立即返回、不等待其完成。` +
-    `它结算（完成/失败/打断/归档）后，报告会以「[子代理任务报告 · 自动送达]」开头的消息自动送达本会话，收到后再处理。` +
+    `它结算（完成/失败/打断/归档）后，报告会以「${AUTO_DELIVERY_PREFIXES.report}」开头的消息自动送达本会话，收到后再处理。` +
     `本轮可直接向用户说明派发情况；全部报告到齐前不要编造或提前汇总结果。` +
     (reusable ? `\n（可复用子代理：任务完成后驻留待命，后续用 agent_followup 按 name=${name} 或 subId=${subId} 追加任务。）` : "")
   );
@@ -159,7 +160,7 @@ export function createAgentTaskTool(deps: SystemToolDeps): Tool {
       "派出一个子代理独立完成一项任务，立即返回派发回执（非阻塞——本调用不等待其完成）。子代理拥有完整工具（run_pwsh/文件读写等），" +
       "但看不到本对话历史——任务书必须自包含：写清目标、背景约束、涉及路径、期望产出（产出文件落点 + 报告结构）。" +
       "互不依赖、写入范围不重叠的任务，在同一轮里发多个 agent_task 调用即可并行派出（超出并发上限的调用立即报错回执、不排队）。" +
-      "任务结算（完成/失败/打断/归档）后，其报告会以「[子代理任务报告 · 自动送达]」开头的消息按完成顺序自动送达本会话，到齐后再汇总交付。" +
+      "任务结算（完成/失败/打断/归档）后，其报告会以「" + AUTO_DELIVERY_PREFIXES.report + "」开头的消息按完成顺序自动送达本会话，到齐后再汇总交付。" +
       "同一专业方向要跨多次任务延续时给 reusable=true" +
       "（它完成后保留全部上下文待命，后续 agent_followup 追加任务、archive_subagent 归档；缺省一次性用完即归档）。",
     parameters: { type: "object", properties: TASK_ITEM_PROPERTIES, required: ["description", "task"] },
@@ -223,7 +224,7 @@ export function createAgentFollowupTool(deps: SystemToolDeps): Tool {
       "向一个空闲待命的可复用子代理（agent_task 带 reusable=true 派出的）追加新任务，立即返回派发回执（非阻塞——本调用不等待其完成）。" +
       "它保留之前全部任务的历史上下文——任务书可引用之前的进展（如「继续上次的重构，接着处理 X」），但新目标与期望产出要写清。" +
       "只接受空闲待命状态；已归档或一次性子代理不可追加，请改用 agent_task。任务结算（完成/失败/打断/归档）后，" +
-      "其报告会以「[子代理任务报告 · 自动送达]」开头的消息自动送达本会话。",
+      "其报告会以「" + AUTO_DELIVERY_PREFIXES.report + "」开头的消息自动送达本会话。",
     parameters: {
       type: "object",
       properties: {

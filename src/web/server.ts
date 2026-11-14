@@ -14,13 +14,13 @@ import { loadConfig, HARNESS_CONFIG, SANDBOX_TMP_MAX_AGE_HOURS } from "../config
 import { ensureProvidersFile } from "../providers/store.ts";
 import { SessionStore, sweepStaleSpill } from "./sessions.ts";
 import { loadRecentWorkspaces, workspacesFilePath } from "./workspaces.ts";
-import { ensureUserDir } from "../userdir.ts";
+import { ensureUserDir, USER_DIR_LAYOUT as UDL } from "../userdir.ts";
 import { setSandboxRunner } from "../sandbox/runner.ts";
 import { sweepStaleSandboxTmp } from "../modules/sandbox/windows-acl/windows-acl.ts";
 import { buildContext } from "../core/context.ts";
 import { loadModules, loadExternalModules } from "../core/module.ts";
 import { SSE_EVENTS } from "../core/events.ts";
-import { json, toServerRequest } from "../core/http.ts";
+import { json, toServerRequest, SSE_PING_MS } from "../core/http.ts";
 import type { SessionHost } from "../core/host.ts";
 import {
   applyProvider,
@@ -57,10 +57,10 @@ const appConfig = loadConfig(process.cwd());
 const ctx = buildContext(
   {
     userDir: USER_DIR,
-    globalSkillsDir: join(USER_DIR, "skills"),
-    globalMcpFile: join(USER_DIR, "mcp.json"),
+    globalSkillsDir: join(USER_DIR, UDL.skills),
+    globalMcpFile: join(USER_DIR, UDL.mcpFile),
     workspacesFile: WORKSPACES_FILE,
-    sessionsDir: join(USER_DIR, "sessions"),
+    sessionsDir: join(USER_DIR, UDL.sessions),
   },
   appConfig,
 );
@@ -104,7 +104,7 @@ for (const name of HARNESS_CONFIG.disabledModules) {
 }
 const enabledBuiltins = BUILTIN_MODULES.filter((m) => !disabled.has(m.name));
 const loadedExternals = await loadExternalModules(
-  join(USER_DIR, "modules"),
+  join(USER_DIR, UDL.modules),
   enabledBuiltins.map((m) => m.name),
 );
 const externals = loadedExternals.filter((m) => !disabled.has(m.name));
@@ -123,8 +123,8 @@ shell = {
   recentWorkspaces: loadRecentWorkspaces(WORKSPACES_FILE),
   workspacesFile: WORKSPACES_FILE,
   userDir: USER_DIR,
-  globalMcpFile: join(USER_DIR, "mcp.json"),
-  sandboxTmpRoot: join(USER_DIR, "tmp"),
+  globalMcpFile: join(USER_DIR, UDL.mcpFile),
+  sandboxTmpRoot: join(USER_DIR, UDL.tmp),
   broadcast,
 };
 // P8 预留 seam：子代理服务工厂挂上 ctx（同 sessionHost 模式；服务按会话取 provider/工作区）
