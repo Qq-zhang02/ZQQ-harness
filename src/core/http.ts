@@ -5,11 +5,13 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-/** 请求体上限（docs/21 §2.2-①）：32MB——覆盖 /api/chat 图片消息的合法上限
- *  （4 张 × 5MB 解码后 base64 膨胀 ≈ 27.3MB）+ 余量；单张图片的 5MB 闸在
- *  web-sessions 的 parseChatImages（那才是生效的业务校验）。此前 1MB 会先于
- *  图片校验拦截，原图 ≳700KB 即被拒，"每张 ≤5MB"实际不可达。 */
-export const HTTP_BODY_MAX_BYTES = 32 * 1024 * 1024;
+/** 请求体上限（docs/21 §2.2-① → 阶段 B 第二批阈值键 httpBodyMaxBytes）：缺省 32MB——覆盖
+ *  /api/chat 图片消息的合法上限（4 张 × 5MB 解码后 base64 膨胀 ≈ 27.3MB）+ 余量；**校验强制
+ *  ≥ HTTP_BODY_FLOOR_BYTES（config.ts 由 IMAGE_RULES 派生的地板值）**——此前 1MB 会先于图片
+ *  校验拦截，原图 ≳700KB 即被拒。单张图片的 5MB 闸在 web-sessions 的 parseChatImages（那才是
+ *  生效的业务校验）。config.ts 单一出处（initConfig 热重绑），此处 re-export 供既有 import 不变。 */
+export { HTTP_BODY_MAX_BYTES } from "../config.ts";
+import { HTTP_BODY_MAX_BYTES } from "../config.ts";
 
 /** SSE 心跳间隔（docs/21 §2.4 提名；与 MCP 握手超时同量级，不配置化）：server.ts 每 20s 写 :ping
  *  注释行保活连接。 */

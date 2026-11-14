@@ -7,7 +7,7 @@
  */
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { COMPACTION_PRESSURE, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, IMAGE_RULES, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT } from "../config.ts";
+import { COMPACTION_PRESSURE, COMPACTION_SUMMARY_MAX_CHARS, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, IMAGE_RULES, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT } from "../config.ts";
 import { COMPACTION_PROMPT } from "../compaction.ts";
 import { pruneToolResult } from "../tools/prune.ts";
 import type { ChatMessage, LLMProvider, UsageBreakdown, UsageInfo } from "../llm/provider.ts";
@@ -324,8 +324,9 @@ export function compactionDepsOf(sh: SessionShell, rt: SessionRuntime, opts?: { 
         })
         .join("\n\n");
       // 摘要输入本身也要防超长：只保留头部（docs/10 R2 起 pruneToolResult 为 head-only，
-      // 不再保留尾部；超过部分的信息损失可接受，备份里仍有全文）
-      const capped = pruneToolResult(text, 300_000).text;
+      // 不再保留尾部；超过部分的信息损失可接受，备份里仍有全文）——预算为阈值键
+      // compactionSummaryMaxChars（默认 300k，initConfig 热重绑）
+      const capped = pruneToolResult(text, COMPACTION_SUMMARY_MAX_CHARS).text;
       const r = await rt.llm.chat({
         messages: [{ role: "user", content: COMPACTION_PROMPT + "\n\n" + capped }],
         effort: "off", // 辅助调用强制关思考（openai 路线显式 thinking:disabled；anthropic 路线不发思考参数）：不付思考成本，思考流也不串进前端

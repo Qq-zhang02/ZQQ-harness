@@ -49,14 +49,14 @@ function makeSetup() {
   return { dir, ctx, call, harnessFile: join(dir, "harness.json") };
 }
 
-test("GET：schema 25 键六组、effective=缺省（导入态）、fileExists=false；POST 后翻 true", async () => {
+test("GET：schema 34 键七组、effective=缺省（导入态）、fileExists=false；POST 后翻 true", async () => {
   const s = makeSetup();
   try {
     const g = await s.call("/api/settings/harness", {});
     assert.equal(g.status, 200);
     const d = g.data as { config: unknown; effective: Record<string, number>; schema: { entries: unknown[]; groups: unknown[] }; fileExists: boolean };
-    assert.equal(d.schema.entries.length, 25);
-    assert.equal(d.schema.groups.length, 6);
+    assert.equal(d.schema.entries.length, 34);
+    assert.equal(d.schema.groups.length, 7);
     assert.equal(d.effective.compactionPressure, resolveThresholds({}).compactionPressure);
     assert.equal(d.fileExists, false, "临时目录无 harness.json");
     assert.deepEqual(d.config, { disabledModules: [], thresholds: {} });

@@ -1,9 +1,9 @@
 import type { Tool } from "../../../tools/registry.ts";
 import type { SystemToolDeps } from "../../../core/types.ts";
-import { fileStamp, ledgerKey, readTextFile, resolveTarget, toLf, TEXT_FILE_MAX_BYTES } from "../../../core/file-tools.ts";
-
-const DEFAULT_LIMIT = 2000;
-const MAX_CHARS = 100_000; // 单次返回上限（注册表修剪之前先自己收口，避免必然被剪的无效传输）
+import { fileStamp, ledgerKey, readTextFile, resolveTarget, toLf } from "../../../core/file-tools.ts";
+// 阶段 B 第二批阈值键（textFileMaxBytes/readFileDefaultLines/readFileMaxChars）：config.ts
+// 单一出处（initConfig 热重绑）——别名沿用本地旧名，消费点零改动
+import { TEXT_FILE_MAX_BYTES, READ_FILE_DEFAULT_LINES as DEFAULT_LIMIT, READ_FILE_MAX_CHARS as MAX_CHARS } from "../../../config.ts";
 
 /**
  * read_file：读文本文件（UTF-8），输出带行号（行号是定位辅助，不是文件内容——编辑时

@@ -42,8 +42,12 @@ test("readBody：超过 HTTP_BODY_MAX_BYTES 抛「请求体过大」", async () 
   await assert.rejects(() => readBody(reqOf(payload)), /请求体过大/);
 });
 
-test("HTTP_BODY_MAX_BYTES 覆盖 4 张 5MB 图的 base64 上限（哨兵：防回退到 1MB 时代的隐式拦截）", () => {
-  const fourImagesBase64 = Math.ceil((5 * 1024 * 1024 * 4) * 4 / 3); // 解码后 20MB → base64 ≈ 26.7MB
-  assert.ok(HTTP_BODY_MAX_BYTES >= fourImagesBase64 + 1024 * 1024, `上限 ${HTTP_BODY_MAX_BYTES} 应覆盖 4×5MB 图 + 余量`);
-  assert.ok(HTTP_BODY_MAX_BYTES > 1_000_000, "不再是旧的 1MB");
+test("HTTP_BODY_MAX_BYTES 哨兵（阶段 B 第二批起为阈值键）：地板值派生自 IMAGE_RULES，缺省在其上（防回退 1MB 时代）", async () => {
+  // 阈值化后上限可被用户改小——防回退的锁从「常量 ≥ 公式」改为「规则地板 = 公式 + 缺省 ≥ 地板」
+  const { HTTP_BODY_FLOOR_BYTES, IMAGE_RULES, resolveThresholds, THRESHOLD_RULES } = await import("../config.ts");
+  const fourImagesBase64 = Math.ceil((IMAGE_RULES.maxCount * IMAGE_RULES.maxBytes * 4) / 3); // 4×5MB 解码后 base64 ≈ 26.7MB
+  assert.ok(HTTP_BODY_FLOOR_BYTES >= fourImagesBase64 + 1024 * 1024, "地板值须覆盖 4×5MB 图 base64 + 1MB 余量");
+  assert.equal(THRESHOLD_RULES.httpBodyMaxBytes.range.min, HTTP_BODY_FLOOR_BYTES, "规则下限 = 地板值（lenient/严格共用）");
+  assert.ok(resolveThresholds({}).httpBodyMaxBytes >= HTTP_BODY_FLOOR_BYTES, "缺省 32MB 在地板之上");
+  assert.ok(HTTP_BODY_MAX_BYTES >= HTTP_BODY_FLOOR_BYTES, "当前生效值（导入态缺省）在地板之上");
 });

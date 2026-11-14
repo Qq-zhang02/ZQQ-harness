@@ -412,7 +412,7 @@ test("哨兵（阶段 D1 已启用）：子代理家族五文件各 ≤400 行�
 
 test("哨兵（docs/24 已启用）：前端零硬编码阈值——键名/文案/默认值只经 schema 下发；写路由热应用必经 initConfig", () => {
   const schema = thresholdSchema();
-  assert.equal(schema.entries.length, 25, "schema 应为 25 个活跃阈值键（新增键需同步登记规则表）");
+  assert.equal(schema.entries.length, 34, "schema 应为 34 个活跃阈值键（新增键需同步登记规则表与计数）");
   // ① 设置模态区域（HTML 块 + JS 段）不写死任何阈值键名——说明/范围/默认值/分组的唯一来源
   //    = GET /api/settings/harness 的 schema。全文件检查不可行：defaultContextLength 等键名是
   //    meta 契约的合法消费（metaOf().defaultContextLength），与设置表单硬编码无关。

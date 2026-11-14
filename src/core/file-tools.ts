@@ -157,7 +157,10 @@ export type ReadOutcome =
 
 /** 文本文件读取上限（docs/21 §2.2-⑥）：file-tools 与 read-file 工具共用的单一出处
  *  （此前两处各自写死 5MB，会漂移）；错误文案经 maxBytes 动态拼接。 */
-export const TEXT_FILE_MAX_BYTES = 5 * 1024 * 1024;
+/** 文件三工具的适用文件大小边界（阶段 B 第二批阈值键 textFileMaxBytes——config.ts 单一
+ *  出处，initConfig 热重绑；此处 re-export 供既有 import 路径不变）。 */
+export { TEXT_FILE_MAX_BYTES } from "../config.ts";
+import { TEXT_FILE_MAX_BYTES } from "../config.ts";
 
 /** 读一个文本文件（UTF-8）：不存在/目录/超大/疑似二进制都返回可读错误，不抛异常。 */
 export function readTextFile(abs: string, maxBytes = TEXT_FILE_MAX_BYTES): ReadOutcome {

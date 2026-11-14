@@ -39,10 +39,12 @@ const CJK_TOKEN_PER_CHAR = 0.6;
 const OTHER_TOKEN_PER_CHAR = 0.3;
 const MESSAGE_FRAME_TOKENS = 4;
 
-/** 单张图片的 token 估算（docs/10 R3）：各 vision API 按分辨率 tiles 计量且规则互不相同，
- *  本地无法真实分词——按典型中档分辨率固定估算，与实际计量的差由 withOther 归入 other
- *  （六类合计=实际输入的不变量保持）。 */
-export const IMAGE_TOKEN_EST = 800;
+/** 单张图片的 token 估算（docs/10 R3；阶段 B 第二批阈值键 imageTokenEst）：各 vision API 按
+ *  分辨率 tiles 计量且规则互不相同，本地无法真实分词——按典型中档分辨率固定估算，与实际计量的
+ *  差由 withOther 归入 other（六类合计=实际输入的不变量保持）。config.ts 单一出处（initConfig
+ *  热重绑，换视觉模型后可校准），此处 re-export 供既有 import 路径不变。 */
+export { IMAGE_TOKEN_EST } from "./config.ts";
+import { IMAGE_TOKEN_EST } from "./config.ts";
 
 function isCjk(cp: number): boolean {
   return (

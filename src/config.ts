@@ -84,6 +84,26 @@ export interface EffectiveThresholds {
   spillMaxAgeHours: number;
   /** 沙箱 tmp 目录年龄清扫阈值（≥1 整数小时；启动时清理，与 spill 同策略） */
   sandboxTmpMaxAgeHours: number;
+  // ---- 阶段 B 第二批（docs/21 §2.3 后 9 键；随 docs/24 设置页同批可视化）----
+  /** view_image 视觉分析超时（≥1000ms；图片理解普遍慢于纯文本，默认给足 120s） */
+  visionTimeoutMs: number;
+  /** 提供方「测试连接」超时（≥1000ms；慢端点/中转站可调大） */
+  providerTestTimeoutMs: number;
+  /** 文件三工具（read/write/edit）的适用文件大小边界（>0 整数字节；超出提示改用 run_pwsh） */
+  textFileMaxBytes: number;
+  /** read_file 缺省读取行数（≥1 整数；大文件/日志分析可调大） */
+  readFileDefaultLines: number;
+  /** read_file 单次返回字符上限（>0 整数；注册表修剪前先自行收口） */
+  readFileMaxChars: number;
+  /** agent_task/followup 可申请超时的最小值（≥1000ms；schema/校验/提示词三处共用） */
+  subagentTimeoutMinMs: number;
+  /** 压缩摘要输入预算（>0 整数字符；超长会话的摘要质量上限，超出截头部） */
+  compactionSummaryMaxChars: number;
+  /** HTTP 请求体上限（整数字节；**不得低于图片消息 base64 地板值**——规则校验强制，
+   *  历史 bug：1MB 上限曾先于图片校验拦截全部图片上传） */
+  httpBodyMaxBytes: number;
+  /** 每张图片的 token 固定估算（≥1 整数；换视觉模型后可校准口径） */
+  imageTokenEst: number;
 }
 
 /** harness.json thresholds 的覆盖项：键可省略 = 用缺省。 */
@@ -103,6 +123,22 @@ export interface HarnessConfig {
   thresholds: ThresholdOverrides;
 }
 
+/** 消息图片规则（docs/10 R3；docs/22 §4.1 四重定义收敛）：≤4 张、单张解码后 ≤5MB、
+ *  mime 白名单——后端 parseChatImages 校验与前端校验/按钮 title（经 /api/meta 下发）的
+ *  单一出处。mimes 取值须与 ChatImage["mime"] 联合类型一致（web-sessions.test.ts 锁定）。
+ *  view_image 工具的磁盘文件规则（≤8MB）是另一套语义，不在此收敛。
+ *  （定义在阈值规则表之前——HTTP_BODY_FLOOR_BYTES 由它派生。） */
+export const IMAGE_RULES = {
+  maxCount: 4,
+  maxBytes: 5 * 1024 * 1024,
+  mimes: ["image/png", "image/jpeg", "image/gif", "image/webp"],
+};
+
+/** httpBodyMaxBytes 的地板值（≥ 图片消息极限体积）：maxCount 张解码图 base64 膨胀 ×4/3 + 1MB 余量。
+ *  历史 bug 教训（docs/21 §2.2-①）：1MB 请求体上限曾先于图片校验拦截全部图片上传——
+ *  该键可配置后必须挡在地板值之上（rules 校验 + 严格写 400 双闸），config.test 锁定。 */
+export const HTTP_BODY_FLOOR_BYTES = Math.ceil((IMAGE_RULES.maxCount * IMAGE_RULES.maxBytes * 4) / 3) + 1024 * 1024;
+
 // ---- 阈值规则表（docs/24 上提为模块级导出）：每键合法范围的唯一出处 ----
 // lenient 读（parseHarnessConfig 逐项忽略+告警）与 fail-closed 写（validateThresholdsStrict
 // 整体 400 拒绝）共用同一份定义，仅包装语义不同；thresholdSchema() 把它（+缺省值/分组/
@@ -115,6 +151,7 @@ export const THRESHOLD_GROUPS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "pwsh", label: "run_pwsh（PowerShell 工具）" },
   { key: "subagent", label: "子代理" },
   { key: "mcp", label: "MCP" },
+  { key: "vision", label: "图片与视觉" },
   { key: "sweep", label: "启动清扫" },
 ];
 
@@ -173,6 +210,26 @@ export const THRESHOLD_RULES: Readonly<Record<keyof EffectiveThresholds, Thresho
     hint: "≥1 的整数", desc: "审批升级额度——沙箱拒绝后「带理由转人工」的每会话累计上限", group: "general",
     range: { integer: true, min: 1 },
   },
+  textFileMaxBytes: {
+    hint: ">0 的整数字节数", desc: "文件三工具（read/write/edit）的适用文件大小边界——超出提示改用 run_pwsh", group: "general",
+    range: { integer: true, exclusiveMin: 0 },
+  },
+  readFileDefaultLines: {
+    hint: "≥1 的整数行数", desc: "read_file 缺省读取行数——大文件/日志分析可调大（limit 参数可单次覆盖）", group: "general",
+    range: { integer: true, min: 1 },
+  },
+  readFileMaxChars: {
+    hint: ">0 的整数字符数", desc: "read_file 单次返回字符上限——进注册表修剪前先自行收口", group: "general",
+    range: { integer: true, exclusiveMin: 0 },
+  },
+  httpBodyMaxBytes: {
+    hint: `≥${Math.round(HTTP_BODY_FLOOR_BYTES / 1024 / 1024)}MB 的整数字节数`, desc: "HTTP 请求体上限——不得低于图片消息 base64 地板值（防图片上传被提前拦截）", group: "general",
+    range: { integer: true, min: HTTP_BODY_FLOOR_BYTES },
+  },
+  providerTestTimeoutMs: {
+    hint: "≥1000 的毫秒数", desc: "提供方「测试连接」超时——慢端点/中转站可调大", group: "general",
+    range: { min: 1_000 },
+  },
   compactionPressure: {
     hint: "(0,1] 的小数", desc: "自动压缩触发线——上下文占用达到该比例先压缩再跑轮", group: "compaction",
     range: { exclusiveMin: 0, max: 1 },
@@ -188,6 +245,10 @@ export const THRESHOLD_RULES: Readonly<Record<keyof EffectiveThresholds, Thresho
   precompactKeep: {
     hint: "≥1 的整数份数", desc: "压缩前备份保留份数（环形覆写）——写新份前删最老", group: "compaction",
     range: { integer: true, min: 1 },
+  },
+  compactionSummaryMaxChars: {
+    hint: ">0 的整数字符数", desc: "压缩摘要输入预算——超长会话的摘要质量上限（超出截头部，备份里仍有全文）", group: "compaction",
+    range: { integer: true, exclusiveMin: 0 },
   },
   pwshTimeoutMs: {
     hint: "≥1000 的毫秒数", desc: "run_pwsh 缺省超时", group: "pwsh",
@@ -237,6 +298,10 @@ export const THRESHOLD_RULES: Readonly<Record<keyof EffectiveThresholds, Thresho
     hint: ">0 的整数字符数", desc: "read_archive 渲染预算（字符）——存档转可读文本超出截头部，防整档灌满接收方上下文", group: "subagent",
     range: { integer: true, exclusiveMin: 0 },
   },
+  subagentTimeoutMinMs: {
+    hint: "≥1000 的毫秒数", desc: "agent_task/followup 可申请超时（timeoutMs）的最小值——schema/校验/提示词三处同源", group: "subagent",
+    range: { min: 1_000 },
+  },
   mcpHandshakeTimeoutMs: {
     hint: "≥1000 的毫秒数", desc: "MCP stdio 握手超时——首次运行要下载依赖/模型的服务器可调大", group: "mcp",
     range: { min: 1_000 },
@@ -244,6 +309,14 @@ export const THRESHOLD_RULES: Readonly<Record<keyof EffectiveThresholds, Thresho
   mcpCallTimeoutMs: {
     hint: "≥1000 的毫秒数", desc: "MCP 工具调用缺省超时——全部 mcp__ 工具生效", group: "mcp",
     range: { min: 1_000 },
+  },
+  visionTimeoutMs: {
+    hint: "≥1000 的毫秒数", desc: "view_image 视觉分析超时——图片理解普遍慢于纯文本，大图/慢模型可调大", group: "vision",
+    range: { min: 1_000 },
+  },
+  imageTokenEst: {
+    hint: "≥1 的整数 token", desc: "每张图片的 token 固定估算——仅影响用量估算显示与压缩判定，换视觉模型后可校准", group: "vision",
+    range: { integer: true, min: 1 },
   },
   spillMaxAgeHours: {
     hint: "≥1 的整数小时", desc: "spill 过程档案清扫年龄（小时）——启动时删除超龄的会话 spill 目录", group: "sweep",
@@ -428,6 +501,15 @@ export function resolveThresholds(t: ThresholdOverrides): EffectiveThresholds {
     precompactKeep: t.precompactKeep ?? 3,
     spillMaxAgeHours: t.spillMaxAgeHours ?? 168,
     sandboxTmpMaxAgeHours: t.sandboxTmpMaxAgeHours ?? 24,
+    visionTimeoutMs: t.visionTimeoutMs ?? 120_000,
+    providerTestTimeoutMs: t.providerTestTimeoutMs ?? 20_000,
+    textFileMaxBytes: t.textFileMaxBytes ?? 5 * 1024 * 1024,
+    readFileDefaultLines: t.readFileDefaultLines ?? 2_000,
+    readFileMaxChars: t.readFileMaxChars ?? 100_000,
+    subagentTimeoutMinMs: t.subagentTimeoutMinMs ?? 60_000,
+    compactionSummaryMaxChars: t.compactionSummaryMaxChars ?? 300_000,
+    httpBodyMaxBytes: t.httpBodyMaxBytes ?? 32 * 1024 * 1024,
+    imageTokenEst: t.imageTokenEst ?? 800,
   };
   if (out.pwshMaxTimeoutMs < out.pwshTimeoutMs) out.pwshMaxTimeoutMs = out.pwshTimeoutMs;
   return out;
@@ -595,6 +677,32 @@ export let MCP_HANDSHAKE_TIMEOUT_MS = DEFAULT_EFFECTIVE.mcpHandshakeTimeoutMs;
 /** MCP 工具调用缺省超时（默认 60s；manager 不传参时全部 mcp__ 工具生效此值）。 */
 export let MCP_CALL_TIMEOUT_MS = DEFAULT_EFFECTIVE.mcpCallTimeoutMs;
 
+// ---- 阶段 B 第二批（docs/21 §2.3 后 9 键；文件大小/读取行数/超时/估算口径的边界类） ----
+
+/** view_image 视觉分析超时（默认 120s——图片理解普遍慢于纯文本）。 */
+export let VISION_TIMEOUT_MS = DEFAULT_EFFECTIVE.visionTimeoutMs;
+
+/** 提供方「测试连接」超时（默认 20s）。 */
+export let PROVIDER_TEST_TIMEOUT_MS = DEFAULT_EFFECTIVE.providerTestTimeoutMs;
+
+/** 文件三工具（read/write/edit）的适用文件大小边界（默认 5MB；file-tools 消费并 re-export）。 */
+export let TEXT_FILE_MAX_BYTES = DEFAULT_EFFECTIVE.textFileMaxBytes;
+
+/** read_file 缺省读取行数（默认 2000）。 */
+export let READ_FILE_DEFAULT_LINES = DEFAULT_EFFECTIVE.readFileDefaultLines;
+
+/** read_file 单次返回字符上限（默认 100k——注册表修剪前先自行收口）。 */
+export let READ_FILE_MAX_CHARS = DEFAULT_EFFECTIVE.readFileMaxChars;
+
+/** 压缩摘要输入预算（默认 300k 字符；超出截头部，备份里仍有全文）。 */
+export let COMPACTION_SUMMARY_MAX_CHARS = DEFAULT_EFFECTIVE.compactionSummaryMaxChars;
+
+/** HTTP 请求体上限（默认 32MB；校验强制 ≥ HTTP_BODY_FLOOR_BYTES——core/http 消费并 re-export）。 */
+export let HTTP_BODY_MAX_BYTES = DEFAULT_EFFECTIVE.httpBodyMaxBytes;
+
+/** 每张图片的 token 固定估算（默认 800；tokens.ts 消费并 re-export）。 */
+export let IMAGE_TOKEN_EST = DEFAULT_EFFECTIVE.imageTokenEst;
+
 /**
  * 显式装载 harness.json 并重绑全部生效常量（docs/21 §3.3 / docs/23 D2）：
  * - server.ts bootstrap 调用一次（缺省参读规范位置文件，lenient）；
@@ -633,24 +741,23 @@ export function initConfig(cfg: HarnessConfig = loadHarnessConfig()): HarnessCon
   SANDBOX_TMP_MAX_AGE_HOURS = eff.sandboxTmpMaxAgeHours;
   MCP_HANDSHAKE_TIMEOUT_MS = eff.mcpHandshakeTimeoutMs;
   MCP_CALL_TIMEOUT_MS = eff.mcpCallTimeoutMs;
+  VISION_TIMEOUT_MS = eff.visionTimeoutMs;
+  PROVIDER_TEST_TIMEOUT_MS = eff.providerTestTimeoutMs;
+  TEXT_FILE_MAX_BYTES = eff.textFileMaxBytes;
+  READ_FILE_DEFAULT_LINES = eff.readFileDefaultLines;
+  READ_FILE_MAX_CHARS = eff.readFileMaxChars;
+  SUBAGENT_TIMEOUT_MIN_MS = eff.subagentTimeoutMinMs;
+  COMPACTION_SUMMARY_MAX_CHARS = eff.compactionSummaryMaxChars;
+  HTTP_BODY_MAX_BYTES = eff.httpBodyMaxBytes;
+  IMAGE_TOKEN_EST = eff.imageTokenEst;
   return cfg;
 }
 
-// ---- 跨文件共享的运行常量（docs/21 §2.2/§2.4：单一出处，消重复定义；阶段 B 第二批候选键） ----
+// ---- 跨文件共享的运行常量（docs/21 §2.2/§2.4：单一出处，消重复定义） ----
 
 /** 子代理任务 timeoutMs 的最小值（agent-task schema/校验/提示词三处共用同一出处；
- *  阶段 B 候选阈值键 subagentTimeoutMinMs） */
-export const SUBAGENT_TIMEOUT_MIN_MS = 60_000;
-
-/** 消息图片规则（docs/10 R3；docs/22 §4.1 四重定义收敛）：≤4 张、单张解码后 ≤5MB、
- *  mime 白名单——后端 parseChatImages 校验与前端校验/按钮 title（经 /api/meta 下发）的
- *  单一出处。mimes 取值须与 ChatImage["mime"] 联合类型一致（web-sessions.test.ts 锁定）。
- *  view_image 工具的磁盘文件规则（≤8MB）是另一套语义，不在此收敛。 */
-export const IMAGE_RULES = {
-  maxCount: 4,
-  maxBytes: 5 * 1024 * 1024,
-  mimes: ["image/png", "image/jpeg", "image/gif", "image/webp"],
-};
+ *  阶段 B 第二批已配置化——阈值键 subagentTimeoutMinMs，initConfig 重绑） */
+export let SUBAGENT_TIMEOUT_MIN_MS = DEFAULT_EFFECTIVE.subagentTimeoutMinMs;
 
 /**
  * 前端设置项唯一出处（模块化架构重构 §4.11/§5）：随 /api/meta 下发，

@@ -13,11 +13,11 @@ import type { Tool } from "../../../tools/registry.ts";
 import { resolveTarget } from "../../../core/file-tools.ts";
 import { createProvider } from "../../../providers/store.ts";
 import type { ChatImage } from "../../../llm/provider.ts";
+// 视觉分析超时（阶段 B 第二批阈值键 visionTimeoutMs）：config.ts 单一出处（initConfig 热重绑）
+import { VISION_TIMEOUT_MS } from "../../../config.ts";
 
 /** 单图大小上限：base64 后 ~10.7MB，请求体可控。 */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-/** 视觉分析超时：图片理解普遍慢于纯文本，给足余量。 */
-const VISION_TIMEOUT_MS = 120_000;
 
 /** magic bytes → mime（四种双端点通吃格式）；不认识返回 null。 */
 function sniffImage(buf: Uint8Array): ChatImage["mime"] | null {

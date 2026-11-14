@@ -23,6 +23,11 @@ import {
   SUBAGENT_RESULT_MAX_CHARS,
   thresholdSchema,
   validateThresholdsStrict,
+  HTTP_BODY_FLOOR_BYTES,
+  IMAGE_RULES,
+  IMAGE_TOKEN_EST,
+  READ_FILE_DEFAULT_LINES,
+  SUBAGENT_TIMEOUT_MIN_MS,
 } from "./config.ts";
 import type { EffortSetting } from "./llm/provider.ts";
 
@@ -412,11 +417,11 @@ test("parseHarnessConfig/resolveThresholds：阶段 B 8 键覆盖生效、非法
 
 // ---- docs/24：thresholdSchema（前端设置页单一出处）与严格写校验 ----
 
-test("thresholdSchema：25 活跃键全覆盖（无废弃键）、六组不重不漏、def 与 resolveThresholds({}) 同源、清扫两键标 restart", () => {
+test("thresholdSchema：34 活跃键全覆盖（无废弃键）、七组不重不漏、def 与 resolveThresholds({}) 同源、清扫两键标 restart", () => {
   const s = thresholdSchema();
-  assert.equal(s.entries.length, 25, "活跃键 = 25（spillThreshold 废弃不入表）");
+  assert.equal(s.entries.length, 34, "活跃键 = 34（25 + 阶段 B 第二批 9；spillThreshold 废弃不入表）");
   assert.ok(s.entries.every((e) => e.key !== "spillThreshold"), "废弃键不下发");
-  assert.deepEqual(s.groups.map((g) => g.key), ["general", "compaction", "pwsh", "subagent", "mcp", "sweep"]);
+  assert.deepEqual(s.groups.map((g) => g.key), ["general", "compaction", "pwsh", "subagent", "mcp", "vision", "sweep"]);
   const d = resolveThresholds({});
   const seen = new Set<string>();
   for (const e of s.entries) {
@@ -490,5 +495,64 @@ test("THRESHOLD_RULES 与 lenient 读语义一致：rangePass 等价旧谓词（
     const adopted = config.thresholds[key as keyof typeof config.thresholds] !== undefined;
     assert.equal(adopted, shouldPass, `${key}=${String(val)} 采纳应为 ${shouldPass}`);
     if (!shouldPass) assert.ok(warnings.some((w) => w.includes(key)), `${key} 非法应告警`);
+  }
+});
+
+// ---- 阶段 B 第二批（docs/21 §2.3 后 9 键）：缺省/覆盖/非法三态 + httpBody 地板值 ----
+
+test("阶段 B 第二批 9 键：缺省值（120s/20s/5MB/2000/100k/60s/300k/32MB/800）与 initConfig 重绑", () => {
+  const d = resolveThresholds({});
+  assert.equal(d.visionTimeoutMs, 120_000);
+  assert.equal(d.providerTestTimeoutMs, 20_000);
+  assert.equal(d.textFileMaxBytes, 5 * 1024 * 1024);
+  assert.equal(d.readFileDefaultLines, 2_000);
+  assert.equal(d.readFileMaxChars, 100_000);
+  assert.equal(d.subagentTimeoutMinMs, 60_000);
+  assert.equal(d.compactionSummaryMaxChars, 300_000);
+  assert.equal(d.httpBodyMaxBytes, 32 * 1024 * 1024);
+  assert.equal(d.imageTokenEst, 800);
+  try {
+    initConfig({ disabledModules: [], thresholds: { readFileDefaultLines: 500, imageTokenEst: 1200, subagentTimeoutMinMs: 30_000 } });
+    assert.equal(READ_FILE_DEFAULT_LINES, 500, "read-file 行数 live 重绑");
+    assert.equal(IMAGE_TOKEN_EST, 1200, "图片 token 估算 live 重绑");
+    assert.equal(SUBAGENT_TIMEOUT_MIN_MS, 30_000, "agent-task 最小超时 live 重绑（const→let 过渡透明）");
+  } finally {
+    initConfig({ disabledModules: [], thresholds: {} });
+  }
+});
+
+test("httpBodyMaxBytes 地板值：由 IMAGE_RULES 派生（4×5MB base64 + 1MB 余量）；低于地板 lenient 忽略、严格写拒绝", () => {
+  const floor = Math.ceil((IMAGE_RULES.maxCount * IMAGE_RULES.maxBytes * 4) / 3) + 1024 * 1024;
+  assert.equal(HTTP_BODY_FLOOR_BYTES, floor, "地板值单一出处派生");
+  assert.ok(resolveThresholds({}).httpBodyMaxBytes >= floor, "缺省 32MB 在地板之上");
+  // lenient 读：手写文件里的低值逐项忽略+告警（不阻止启动），回落缺省
+  const bad = parseHarnessConfig({ thresholds: { httpBodyMaxBytes: 1_000_000 } });
+  assert.equal(bad.config.thresholds.httpBodyMaxBytes, undefined, "低于地板被忽略（历史 1MB bug 不可复现）");
+  assert.ok(bad.warnings.some((w) => w.includes("httpBodyMaxBytes")));
+  // 严格写：UI 提交低值整体 400（即时反馈）
+  const strict = validateThresholdsStrict({ httpBodyMaxBytes: 1_000_000 });
+  assert.equal(strict.ok, false);
+  if (!strict.ok) assert.equal(strict.errors[0].key, "httpBodyMaxBytes");
+});
+
+test("阶段 B 第二批 9 键：非法值 lenient 忽略并告警（三态之非法面）", () => {
+  const bad = parseHarnessConfig({
+    thresholds: {
+      visionTimeoutMs: 999,          // ≥1000
+      providerTestTimeoutMs: 99,     // ≥1000
+      textFileMaxBytes: 0,           // >0
+      readFileDefaultLines: 0,       // ≥1
+      readFileMaxChars: 0,           // >0
+      subagentTimeoutMinMs: 500,     // ≥1000
+      compactionSummaryMaxChars: -1, // >0
+      imageTokenEst: 0,              // ≥1
+    },
+  });
+  for (const k of [
+    "visionTimeoutMs", "providerTestTimeoutMs", "textFileMaxBytes", "readFileDefaultLines",
+    "readFileMaxChars", "subagentTimeoutMinMs", "compactionSummaryMaxChars", "imageTokenEst",
+  ]) {
+    assert.equal((bad.config.thresholds as Record<string, number | undefined>)[k], undefined, `${k} 非法应忽略`);
+    assert.ok(bad.warnings.some((w) => w.includes(`"${k}"`)), `${k} 应有告警`);
   }
 });
