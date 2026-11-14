@@ -10,7 +10,7 @@ import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig, HARNESS_CONFIG, SANDBOX_TMP_MAX_AGE_HOURS } from "../config.ts";
+import { initConfig, loadConfig, HARNESS_CONFIG, SANDBOX_TMP_MAX_AGE_HOURS } from "../config.ts";
 import { ensureProvidersFile } from "../providers/store.ts";
 import { SessionStore, sweepStaleSpill } from "./sessions.ts";
 import { loadRecentWorkspaces, workspacesFilePath } from "./workspaces.ts";
@@ -48,9 +48,10 @@ import { BUILTIN_MODULES } from "../modules.ts";
 const PORT = Number(process.env.PORT ?? 8787);
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-// ---- 用户数据目录 ~/.ZQQ-harness ----
+// ---- 用户数据目录 ~/.ZQQ-harness；initConfig() 显式装载 harness.json 生效值（docs/23 D2）----
 const USER_DIR = ensureUserDir(process.cwd());
 const WORKSPACES_FILE = workspacesFilePath(USER_DIR);
+initConfig(); // 须先于一切生效常量消费（loadConfig/HARNESS_CONFIG/清扫阈值；导入期为纯缺省）
 const appConfig = loadConfig(process.cwd());
 
 // ---- 内核上下文 + 宿主接缝 + 组合清单装配 ----
@@ -130,8 +131,7 @@ shell = {
 // P8 预留 seam：子代理服务工厂挂上 ctx（同 sessionHost 模式；服务按会话取 provider/工作区）
 ctx.subagent = (rt) => subagentServiceFor(shell, rt);
 
-// ---- 沙箱后端选型（§4.9，只发生一次）：注册表里第一个可用的后端注入接缝； ----
-// 全都不可用（非 Windows / koffi 缺失）时保持 runner.ts 的 fail-closed 缺省，受约束模式一律拒
+// ---- 沙箱后端选型（§4.9，只发生一次）：第一个可用后端注入接缝；全不可用（非 Windows/koffi 缺失）保持 fail-closed 缺省 ----
 const sandboxBackend = ctx.sandboxBackends.all().find((b) => b.available());
 if (sandboxBackend) {
   sweepStaleSandboxTmp(shell.sandboxTmpRoot, SANDBOX_TMP_MAX_AGE_HOURS * 3600_000); // 生效值传参（docs/22 §4.2）

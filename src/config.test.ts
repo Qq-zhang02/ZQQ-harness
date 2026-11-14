@@ -4,6 +4,11 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DEFAULTS,
+  HARNESS_CONFIG,
+  COMPACTION_PRESSURE,
+  ESCALATION_MAX,
+  initConfig,
   isThinkingEffort,
   loadApiKey,
   loadHarnessConfig,
@@ -221,6 +226,30 @@ test("子代理阈值生效常量与 resolveThresholds 缺省同源（harness.js
   assert.equal(SUBAGENT_MAX_TOTAL, d.subagentMaxTotal);
   assert.equal(SUBAGENT_MAX_TOOL_ROUNDS, d.subagentMaxToolRounds);
   assert.equal(SUBAGENT_RESULT_MAX_CHARS, d.subagentResultMaxChars);
+});
+
+test("initConfig：显式装载重绑全部生效常量，空配置重置回缺省（docs/21 §3.3 / docs/23 D2）", () => {
+  try {
+    // 导入态 = 纯缺省（不读真机 harness.json——本测试在任何机器上都必须同值通过）
+    const d = resolveThresholds({});
+    assert.equal(COMPACTION_PRESSURE, d.compactionPressure);
+    assert.equal(ESCALATION_MAX, d.escalationMax);
+    assert.equal(DEFAULTS.pwshTimeoutMs, d.pwshTimeoutMs);
+    // 显式装载覆盖值 → live binding 立即生效（含 DEFAULTS 整对象替换与交叉校验）
+    const cfg = initConfig({ disabledModules: ["demo.x"], thresholds: { subagentMaxConcurrent: 7, compactionPressure: 0.5, pwshTimeoutMs: 120_000, pwshMaxTimeoutMs: 90_000 } });
+    assert.deepEqual(cfg, HARNESS_CONFIG);
+    assert.equal(SUBAGENT_MAX_CONCURRENT, 7);
+    assert.equal(COMPACTION_PRESSURE, 0.5);
+    assert.equal(DEFAULTS.pwshTimeoutMs, 120_000);
+    assert.equal(DEFAULTS.pwshMaxTimeoutMs, 120_000); // 交叉校验：最大 < 缺省时抬到缺省
+    // 空配置重置回纯缺省（可重复调用，最后一次生效）
+    initConfig({ disabledModules: [], thresholds: {} });
+    assert.equal(SUBAGENT_MAX_CONCURRENT, d.subagentMaxConcurrent);
+    assert.equal(COMPACTION_PRESSURE, d.compactionPressure);
+    assert.deepEqual(HARNESS_CONFIG, { disabledModules: [], thresholds: {} });
+  } finally {
+    initConfig({ disabledModules: [], thresholds: {} }); // 恢复导入态，不泄漏给同文件后续测试
+  }
 });
 
 test("loadHarnessConfig：缺失/损坏文件全缺省，合法文件生效", () => {

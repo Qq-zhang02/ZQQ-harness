@@ -320,12 +320,23 @@ test("哨兵（P6 已启用）：server.ts 瘦壳 ≤250 行", () => {
   assert.ok(lines <= 250, `server.ts 应只剩 bootstrap/静态/SSE/meta/分发，当前 ${lines} 行`);
 });
 
-test("哨兵（P8 已启用）：阈值常量经 harness.json 生效值解析，重复定义与绕行已消灭", () => {
+test("哨兵（P8 已启用；docs/23 D2 改显式装载）：阈值常量经 initConfig() 重绑的生效值，导入期不读 harness.json", () => {
   const configSrc = readFileSync(join(HERE, "..", "config.ts"), "utf8");
   assert.ok(
-    /const EFFECTIVE = resolveThresholds\(HARNESS\.thresholds\)/.test(configSrc),
-    "config.ts 的阈值常量必须是 resolveThresholds(HARNESS.thresholds) 的生效值（harness.json 覆盖的唯一出口）",
+    /export function initConfig\(cfg: HarnessConfig = loadHarnessConfig\(\)\)/.test(configSrc) &&
+      /const eff = resolveThresholds\(cfg\.thresholds\)/.test(configSrc),
+    "生效常量必须由 initConfig() 以 resolveThresholds(cfg.thresholds) 重绑（harness.json 覆盖的唯一出口）",
   );
+  assert.equal(
+    configSrc.split("loadHarnessConfig()").length - 1,
+    1,
+    "loadHarnessConfig() 只允许出现在 initConfig 缺省参——导入期禁读 ~/.ZQQ-harness/harness.json（测试确定性）",
+  );
+  assert.ok(
+    /export let (HARNESS_CONFIG|DEFAULTS|COMPACTION_PRESSURE|SUBAGENT_MAX_CONCURRENT|MCP_HANDSHAKE_TIMEOUT_MS)/.test(configSrc),
+    "生效常量应为 export let（live binding，initConfig 后消费方自动见到新值）",
+  );
+  assert.ok(serverSrc.includes("initConfig();"), "server.ts bootstrap 应在消费生效常量前显式 initConfig()");
   const storeSrc = readFileSync(join(HERE, "..", "providers", "store.ts"), "utf8");
   assert.ok(
     !/const DEFAULT_CONTEXT_LENGTH/.test(storeSrc),

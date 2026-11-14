@@ -10,13 +10,16 @@ import {
 // docs/21 §2.2-③：超时文案与 transport 同源（config.ts 单一出处），调参后提示不失真
 import { MCP_CALL_TIMEOUT_MS, MCP_HANDSHAKE_TIMEOUT_MS } from "../../../config.ts";
 
-/** 原技能（mcp-setup）排错经验的收敛：add 后启动失败时回传给模型的排查清单。 */
-const TROUBLESHOOT = [
-  "命令不存在：npx/npm/pnpm/yarn/bun 及 .cmd/.bat 会被自动经 cmd /c 启动，直接写 npx 即可；其他可执行文件必须写绝对路径（JSON 里用正斜杠）",
-  "服务器向 stdout 打印了日志/横幅（stdout 只允许协议 JSON，日志必须走 stderr）",
-  `首次运行要下载依赖/模型，超过 ${MCP_HANDSHAKE_TIMEOUT_MS / 1000} 秒握手超时：先在终端手动跑一次预热，再重试本工具`,
-  "依赖缺失：先 run_pwsh 执行 pip install / npm install",
-].map((s) => `  - ${s}`);
+/** 原技能（mcp-setup）排错经验的收敛：add 后启动失败时回传给模型的排查清单。
+ *  docs/23 D2 起惰性构造：MCP_HANDSHAKE_TIMEOUT_MS 是 initConfig() 重绑的生效常量，
+ *  导入期插值会把缺省值冻结进文案（渲染文本在缺省下逐字节不变）。 */
+const troubleshootLines = () =>
+  [
+    "命令不存在：npx/npm/pnpm/yarn/bun 及 .cmd/.bat 会被自动经 cmd /c 启动，直接写 npx 即可；其他可执行文件必须写绝对路径（JSON 里用正斜杠）",
+    "服务器向 stdout 打印了日志/横幅（stdout 只允许协议 JSON，日志必须走 stderr）",
+    `首次运行要下载依赖/模型，超过 ${MCP_HANDSHAKE_TIMEOUT_MS / 1000} 秒握手超时：先在终端手动跑一次预热，再重试本工具`,
+    "依赖缺失：先 run_pwsh 执行 pip install / npm install",
+  ].map((s) => `  - ${s}`);
 
 /** 已合并条目的一行摘要（list 用）：命令 + 参数 + 可选 cwd。 */
 function entryLine(command: string, args: string[] | undefined, cwd: string | undefined): string {
@@ -153,7 +156,7 @@ async function addServer(
     return (
       head +
       "\n服务器启动失败，可按以下清单排查后重试：\n" +
-      TROUBLESHOOT.join("\n") +
+      troubleshootLines().join("\n") +
       "\n修复后再次 add 即可覆盖更新。"
     );
   }
