@@ -387,6 +387,15 @@ test("哨兵（阶段 C 已启用）：提供方 SDK 隐式超时/重试显式�
   );
 });
 
+// ---------- 哨兵（阶段 D1，docs/21 §3.1：subagents.ts 五向拆分，纯移动不改行为） ----------
+
+test("哨兵（阶段 D1 已启用）：子代理家族五文件各 ≤400 行（单文件不再承载 10+ 职责）", () => {
+  for (const f of ["subagents.ts", "subagent-worker.ts", "subagent-report.ts", "subagent-archive.ts", "subagent-records.ts"]) {
+    const lines = readFileSync(join(HERE, "..", "web", f), "utf8").split("\n").length;
+    assert.ok(lines <= 400, `${f} 应 ≤400 行（D1 拆分不变量；超出=职责又堆回单文件），当前 ${lines}`);
+  }
+});
+
 // ---------- d) import 图哨兵 ----------
 
 function listTsFiles(root: string): string[] {

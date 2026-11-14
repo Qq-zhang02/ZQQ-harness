@@ -4,11 +4,11 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **7 个系统�
 
 ## 维护导航（新对话/新协作者先读）
 
-- **架构体检与改进路线**：[docs/21_开发文档-架构可维护性审计与参数化改进.md](docs/21_开发文档-架构可维护性审计与参数化改进.md)——2026-11-14 全项目审计基线，含**硬编码参数全清单（P0–P3 分级）**、参数间矛盾、分阶段实施路线图（§4）与不变量清单（§5）。**阶段 A（P0）8/8、阶段 B 第一批（P1 8 键）、阶段 C（P2 常量收敛+协议解耦+前端 CFG/XSS）均已完成**（实施记录见文档头部）；阶段 D 接力看 [docs/23 交接文档](docs/23_交接文档-阶段D结构优化接力.md)。改参数/改架构前先看它。
+- **架构体检与改进路线**：[docs/21_开发文档-架构可维护性审计与参数化改进.md](docs/21_开发文档-架构可维护性审计与参数化改进.md)——2026-11-14 全项目审计基线，含**硬编码参数全清单（P0–P3 分级）**、参数间矛盾、分阶段实施路线图（§4）与不变量清单（§5）。**阶段 A（P0）8/8、阶段 B 第一批（P1 8 键）、阶段 C（P2 常量收敛+协议解耦+前端 CFG/XSS）、阶段 D1（subagents.ts 拆五文件）均已完成**（实施记录见文档头部）；阶段 D 后续（D2 config 惰性化 / D3 前端 keyed 渲染）接力看 [docs/23 交接文档](docs/23_交接文档-阶段D结构优化接力.md)。改参数/改架构前先看它。
 - **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（46 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 docs/23）：**阶段 D 结构优化**——D1 subagents.ts（1,390 行）拆五块（首项）→ D2 config 惰性化 → D3 前端渲染 keyed 统一；可选阶段 B 第二批（docs/21 §2.3 后 8 键）。每项独立验收、独立 commit。
+- **当前进行中**（详见 docs/23）：**阶段 D 结构优化**——D1 subagents.ts 拆五文件**已完成**（385 测试，行数哨兵锁定 ≤400）→ 下一步 D2 config 惰性化 → D3 前端渲染 keyed 统一；可选阶段 B 第二批（docs/21 §2.3 后 8 键）。每项独立验收、独立 commit。
 
 ## 快速开始
 
@@ -308,14 +308,24 @@ src/
     ├── session-lifecycle.ts  工作区绑定/视图切换/存档（kind/subagents 审计随档）/
     │                     空占位清扫/运行轮 + 协调者收件箱轮末排空（相邻自动送达
     │                     报告合并为一轮，docs/16）
-    ├── subagents.ts      子代理（worker）运行机制：Agent 装配（一次性/可复用驻留/重启唤醒共用
-    │                     装配体，docs/9+17）+
-    │                     非阻塞派发（tryStartWorker 同步段配额+登记+回执；docs/16）+
-    │                     结算报告一律经收件箱自动送达协调者（deliverToCoordinator FIFO；
-    │                     docs/11 的 facing 暂停先行返回通道已退役）+ followup 追加/归档 +
-    │                     上下文治理（contextPct 快照/35% followup 门槛/50% 强制归档，docs/10）+
-    │                     运行计时（本次/累计 elapsedMs 进结果/记录/事件，liveElapsedMs 句柄实时）+
-    │                     界面打断/归档状态通知送达（docs/18）+ scope/乐观锁/审批标注 + SSE subagent 事件与审计记录
+    ├── subagents.ts      子代理家族门面（docs/21 §3.1 D1 拆分）：SubagentService
+    │                     （subagentServiceFor）+ 非阻塞派发（tryStartWorker/startWorker
+    │                     同步段配额+登记+回执，docs/16）+ 控制入口（applySubagentControl）+
+    │                     协调者「子代理系统提示词说明」段（docs/20）；家族公共面 re-export
+    │                     （消费方 import 路径不变）
+    ├── subagent-worker.ts    worker 装配三态共用件（createWorkerSession 控制句柄/驻留登记 +
+    │                     mountWorkerAgent 独立 registry+系统提示 + makeWorkerUi 过程流 UI
+    │                     聚合器 + workerMcpToolsOf 会话共享 MCP 懒加载）
+    ├── subagent-report.ts    任务执行结算（runOneTask：信号/审批闭包/报告修剪/transcript
+    │                     累积/用量守恒/idle↔归档分流）+ 报告格式化（reportMessage）+
+    │                     收件箱送达（deliverToCoordinator FIFO，docs/11+16）+
+    │                     上下文治理三档（contextPctOf + 35% followup 门槛/50% 强制归档，docs/10）+ 失败归因（docs/18）
+    ├── subagent-archive.ts   transcript 落盘（SessionData 同构，docs/17）+ 存档宽容解析 +
+    │                     read_archive 解析接缝（archiveSourceOf）+ 归档入口
+    │                     （requestArchiveWorker）+ 重启唤醒（reviveFollowup）
+    ├── subagent-records.ts   WorkerSession 驻留类型（用量/计时/累计字段）+ 审计记录
+    │                     （upsert/reusable/finish）+ 用量聚合上报（守恒）+ 归档终结
+    │                     （finalizeArchive）——家族叶子
     ├── sessions.ts       会话存档 + 回收站 + 手动排序 + spill 清理
     ├── workspaces.ts     工作区注册表（树顺序/重排/删除遗忘）
     └── public/index.html 单文件前端（无构建）：多会话路由 + 事件缓冲重放 +
