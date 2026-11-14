@@ -1960,20 +1960,35 @@ function reordered(ids, dragId, targetId, below) {
   return out;
 }
 
-/** 工作区内的一条对话（组内拖动排序；运行中/待审批有标记，点击切换查看不中断后台任务） */
-function sessionItem(s, currentId, wsPath, wsItems) {
-  const running = ((state.runningIds || lastSessions.running || [])).includes(s.id);
-  const it = el("div", "sitem" + (s.id === currentId ? " cur" : ""));
-  it.draggable = true;
-  it.title = (s.kind === "coordinator" ? "协调者会话\n" : "") + (s.title || "") + "\n" + (s.workspace || "") + (running ? "\n（运行中，点击切换查看）" : "");
-  if (s.kind === "coordinator") it.appendChild(el("span", "srun co", "🎯")); // 会话形态徽标（按存档记录）
-  if (cacheOf(s.id).approval) it.appendChild(el("span", "srun ap", "❓"));
-  if (running) it.appendChild(el("span", "srun", "⏳"));
-  it.appendChild(el("span", "st", esc(s.title || "(无标题)")));
-  it.appendChild(el("span", "sd", time(s)));
-  function time(x) {
-    return new Date(x.updatedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+/** keyed 重排（docs/21 §3.2-④ D3）：按新 key 序列复用旧子节点——已存在的按新顺序移动并交
+ *  update 刷新动态部分，新增的调 make 建骨架（make 只负责静态结构+事件，数据由 update 回填），
+ *  消失的移除。key 同批唯一；节点经 _key 认领。事件监听器建时绑定一次（keyed 复用不再重灌），
+ *  随快照变化的数据由 update 写到节点字段（_sid 等），事件里读节点字段、不闭包旧快照。 */
+function reconcileKeyed(parent, entries) {
+  const old = new Map();
+  for (const n of [...parent.childNodes]) if (n._key !== undefined) old.set(n._key, n);
+  let cursor = null; // 已就位的最末节点：后续项都应排在它后面
+  const used = new Set();
+  for (const e of entries) {
+    let n = old.get(e.key);
+    if (n) used.add(e.key);
+    else { n = e.make(); n._key = e.key; }
+    if (e.update) e.update(n);
+    const ref = cursor ? cursor.nextSibling : parent.firstChild;
+    if (n !== ref) parent.insertBefore(n, ref); // DOM 位置与数据序同步（移动即重排，不重建）
+    cursor = n;
   }
+  for (const [k, n] of old) if (!used.has(k)) n.remove();
+}
+
+/** 工作区内的一条对话（组内拖动排序；运行中/待审批有标记，点击切换查看不中断后台任务）。
+ *  D3 keyed 化：骨架与事件**建时一次**（sessionItemNode），随快照变化的选中/徽标/标题/时间
+ *  由 updateSessionItem 刷新；事件不闭包快照——经节点上的 _sid/_wsPath/_wsItems 取最新值。 */
+function sessionItemNode() {
+  const it = el("div", "sitem");
+  it.draggable = true;
+  it.appendChild(el("span", "st"));
+  it.appendChild(el("span", "sd"));
   const del = el("button", "sdel", "✕");
   del.title = "删除该记录";
   del.addEventListener("click", (ev) => {
@@ -1984,18 +1999,18 @@ function sessionItem(s, currentId, wsPath, wsItems) {
       setTimeout(() => { del.textContent = "✕"; del.classList.remove("armed"); }, CFG.CONFIRM_SESS_MS);
       return;
     }
-    void post("/api/sessions/delete", { id: s.id }).then((r) => { if (!r.ok) sysLine(r.data.error ?? "删除失败", "err"); });
+    void post("/api/sessions/delete", { id: it._sid }).then((r) => { if (!r.ok) sysLine(r.data.error ?? "删除失败", "err"); });
   });
   it.appendChild(del);
-  it.addEventListener("click", () => { void switchSession(s.id); });
+  it.addEventListener("click", () => { void switchSession(it._sid); });
   it.addEventListener("dragstart", (e) => {
-    dragSessionId = s.id;
+    dragSessionId = it._sid;
     it.classList.add("dragging");
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
   });
   it.addEventListener("dragend", () => { it.classList.remove("dragging"); dragSessionId = null; });
   it.addEventListener("dragover", (e) => {
-    if (!dragSessionId || dragSessionId === s.id) return;
+    if (!dragSessionId || dragSessionId === it._sid) return;
     e.preventDefault();
     e.stopPropagation();
     const rect = it.getBoundingClientRect();
@@ -2011,10 +2026,10 @@ function sessionItem(s, currentId, wsPath, wsItems) {
     it.classList.remove("drop-above", "drop-below");
     const dragId = dragSessionId;
     dragSessionId = null;
-    if (!dragId || dragId === s.id) return;
-    const ids = reordered(wsItems.map((x) => x.id), dragId, s.id, below);
+    if (!dragId || dragId === it._sid) return;
+    const ids = reordered(it._wsItems.map((x) => x.id), dragId, it._sid, below);
     if (!ids) return;
-    const r = await post("/api/sessions/reorder", { workspace: wsPath, ids });
+    const r = await post("/api/sessions/reorder", { workspace: it._wsPath, ids });
     if (!r.ok) { sysLine(r.data.error ?? "排序失败", "err"); return; }
     lastSessions = r.data;
     renderTree();
@@ -2022,15 +2037,34 @@ function sessionItem(s, currentId, wsPath, wsItems) {
   return it;
 }
 
-/** 工作区行：chev 折叠/展开；行点击选中并展开；🗑 两步确认删除；拖动排序 */
-function wsHead(g) {
-  const head = el("div", "wshead" + (normWs(g.workspace) === normWs(state.workspace || "") ? " cur" : ""));
+/** 会话条目的动态部分刷新（keyed 复用时每轮调用）：选中态/title/徽标（🎯❓⏳，无事件可重建，
+ *  插在 .st 前保持与历史 DOM 序一致）/标题/时间；两步确认的 armed 态因节点复用自然保留。 */
+function updateSessionItem(n, s, currentId, g) {
+  n._sid = s.id;
+  n._wsPath = g.workspace;
+  n._wsItems = g.items;
+  const running = ((state.runningIds || lastSessions.running || [])).includes(s.id);
+  n.classList.toggle("cur", s.id === currentId);
+  n.title = (s.kind === "coordinator" ? "协调者会话\n" : "") + (s.title || "") + "\n" + (s.workspace || "") + (running ? "\n（运行中，点击切换查看）" : "");
+  for (const b of [...n.children]) if (b.classList.contains("srun")) b.remove();
+  const st = [...n.children].find((c) => c.classList.contains("st"));
+  if (s.kind === "coordinator") n.insertBefore(el("span", "srun co", "🎯"), st); // 会话形态徽标（按存档记录）
+  if (cacheOf(s.id).approval) n.insertBefore(el("span", "srun ap", "❓"), st);
+  if (running) n.insertBefore(el("span", "srun", "⏳"), st);
+  st.textContent = s.title || "(无标题)";
+  n.querySelector(".sd").textContent = new Date(s.updatedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+/** 工作区行：chev 折叠/展开；行点击选中并展开；🗑 两步确认删除；拖动排序。
+ *  D3 keyed 化：骨架与事件建时一次（wsHeadNode，数据经节点字段 _ws 取最新），动态部分由
+ *  updateWsHead 刷新——两步确认的 armed 态因节点复用自然保留（不再被重灌打断）。 */
+function wsHeadNode() {
+  const head = el("div", "wshead");
   head.draggable = true;
-  head.title = g.workspace + "\n（点击选中并展开，拖动排序）";
-  head.appendChild(el("span", "chev", wsExpanded.has(normWs(g.workspace)) ? "▾" : "▸"));
-  head.appendChild(el("span", "wname", esc(g.workspace.split(/[\\/]/).pop() || g.workspace)));
-  head.appendChild(el("span", "wcount", String(g.items.length)));
-  head.querySelector(".chev").addEventListener("click", (e) => { e.stopPropagation(); toggleWs(g.workspace); });
+  head.appendChild(el("span", "chev"));
+  head.appendChild(el("span", "wname"));
+  head.appendChild(el("span", "wcount"));
+  head.querySelector(".chev").addEventListener("click", (e) => { e.stopPropagation(); toggleWs(head._ws); });
   const del = el("button", "wsdel", "🗑");
   del.title = "删除该工作区（其中对话移入回收站）";
   del.addEventListener("click", (e) => {
@@ -2041,32 +2075,32 @@ function wsHead(g) {
       setTimeout(() => { del.textContent = "🗑"; del.classList.remove("armed"); }, CFG.CONFIRM_WS_MS);
       return;
     }
-    void post("/api/workspace/delete", { path: g.workspace }).then((r) => {
+    void post("/api/workspace/delete", { path: head._ws }).then((r) => {
       if (!r.ok) { sysLine(r.data.error ?? "删除失败", "err"); return; }
-      wsExpanded.delete(normWs(g.workspace));
+      wsExpanded.delete(normWs(head._ws));
       saveExpanded();
       recycleOpen = true;
       updateRecycleVis();
-      sysLine("已删除工作区 " + g.workspace + "，" + r.data.moved + " 个对话已移入回收站" + (r.data.cleared ? "（已退出该工作区）" : ""));
+      sysLine("已删除工作区 " + head._ws + "，" + r.data.moved + " 个对话已移入回收站" + (r.data.cleared ? "（已退出该工作区）" : ""));
     });
   });
   head.appendChild(del);
   head.addEventListener("click", () => {
-    wsExpanded.add(normWs(g.workspace));
+    wsExpanded.add(normWs(head._ws));
     saveExpanded();
     renderTree(); // 立即给展开反馈；切换结果由服务端广播后重渲染（运行中的后台会话不受影响）
-    if (normWs(g.workspace) !== normWs(state.workspace || "")) {
-      void post("/api/workspace", { path: g.workspace }).then((r) => { if (!r.ok) sysLine(r.data.error ?? "切换失败", "err"); });
+    if (normWs(head._ws) !== normWs(state.workspace || "")) {
+      void post("/api/workspace", { path: head._ws }).then((r) => { if (!r.ok) sysLine(r.data.error ?? "切换失败", "err"); });
     }
   });
   head.addEventListener("dragstart", (e) => {
-    dragWsId = g.workspace;
+    dragWsId = head._ws;
     head.classList.add("dragging");
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
   });
   head.addEventListener("dragend", () => { head.classList.remove("dragging"); dragWsId = null; });
   head.addEventListener("dragover", (e) => {
-    if (!dragWsId || normWs(dragWsId) === normWs(g.workspace)) return;
+    if (!dragWsId || normWs(dragWsId) === normWs(head._ws)) return;
     e.preventDefault();
     const rect = head.getBoundingClientRect();
     const below = e.clientY > rect.top + rect.height / 2;
@@ -2080,8 +2114,8 @@ function wsHead(g) {
     head.classList.remove("drop-above", "drop-below");
     const dragId = dragWsId;
     dragWsId = null;
-    if (!dragId || normWs(dragId) === normWs(g.workspace)) return;
-    const ids = reordered(lastSessions.groups.map((x) => x.workspace), dragId, g.workspace, below);
+    if (!dragId || normWs(dragId) === normWs(head._ws)) return;
+    const ids = reordered(lastSessions.groups.map((x) => x.workspace), dragId, head._ws, below);
     if (!ids) return;
     const r = await post("/api/workspaces/reorder", { ids });
     if (!r.ok) { sysLine(r.data.error ?? "排序失败", "err"); return; }
@@ -2091,18 +2125,44 @@ function wsHead(g) {
   return head;
 }
 
+/** 工作区行动态部分刷新（keyed 复用时每轮调用）：选中态/title/chev 方向/名称/条数。 */
+function updateWsHead(n, g) {
+  n._ws = g.workspace;
+  n.classList.toggle("cur", normWs(g.workspace) === normWs(state.workspace || ""));
+  n.title = g.workspace + "\n（点击选中并展开，拖动排序）";
+  n.querySelector(".chev").textContent = wsExpanded.has(normWs(g.workspace)) ? "▾" : "▸";
+  n.querySelector(".wname").textContent = g.workspace.split(/[\\/]/).pop() || g.workspace;
+  n.querySelector(".wcount").textContent = String(g.items.length);
+}
+
 function renderTree() {
+  // D3 keyed 更新（docs/21 §3.2-④）：按 key（ws:/box:<规范化工作区>、s:<会话id>、空态占位）
+  // 复用既有节点，只增删/移动/刷新差异——选中、折叠、运行/审批标记与两步确认的 armed 态
+  // 不再因整树重灌丢失；组内条目递归 reconcile（box 内独立 keyed 列表）。
   const tree = $("#wsTree");
-  tree.innerHTML = "";
-  if (!(lastSessions.groups || []).length) {
-    tree.appendChild(el("div", "sempty", "暂无工作区<br>点击「添加工作区」开始"));
+  const groups = lastSessions.groups || [];
+  if (!groups.length) {
+    reconcileKeyed(tree, [{ key: "empty", make: () => el("div", "sempty", "暂无工作区<br>点击「添加工作区」开始") }]);
+    return;
   }
-  for (const g of lastSessions.groups || []) {
-    tree.appendChild(wsHead(g));
-    const box = el("div", "wsitems" + (wsExpanded.has(normWs(g.workspace)) ? "" : " collapsed"));
-    for (const s of g.items) box.appendChild(sessionItem(s, lastSessions.current, g.workspace, g.items));
-    tree.appendChild(box);
+  const entries = [];
+  for (const g of groups) {
+    const k = normWs(g.workspace);
+    entries.push({ key: "ws:" + k, make: wsHeadNode, update: (n) => updateWsHead(n, g) });
+    entries.push({
+      key: "box:" + k,
+      make: () => el("div", "wsitems"),
+      update: (box) => {
+        box.classList.toggle("collapsed", !wsExpanded.has(k));
+        reconcileKeyed(box, (g.items || []).map((s) => ({
+          key: "s:" + s.id,
+          make: sessionItemNode,
+          update: (n) => updateSessionItem(n, s, lastSessions.current, g),
+        })));
+      },
+    });
   }
+  reconcileKeyed(tree, entries);
 }
 
 function renderRecycle(recycled) {
