@@ -1,0 +1,300 @@
+/**
+ * Anthropic Messages API 提供方（/v1/messages，SSE 流式），零 SDK 依赖（node fetch）。
+ * 适用于 Anthropic 官方及任何 Anthropic 格式的兼容端点。
+ * 映射：system 消息 → system 参数；assistant.toolCalls → tool_use 块；
+ * tool 消息（连续多条合并）→ user 消息的 tool_result 块；
+ * 思考档位 → 扩展思考 budget_tokens（off 不思考）。
+ * 思考回放：带 toolCalls 轮的 thinking 块带签名回放（置于 blocks 首位）；
+ * 对齐规则——模型一致且签名存在才回放（签名逐字，含空签名），模型不一致静默省略
+ * （签名跨模型不可移植，绝不伪造），签名缺失降级省略并回调 onDegrade 告警。
+ * 思考关闭（off/default）的请求不回放 thinking 块。
+ */
+import type {
+  ChatMessage,
+  ChatParams,
+  ChatResult,
+  EffortSetting,
+  LLMProvider,
+  ThinkingBlock,
+  ToolCallRequest,
+  ToolSchema,
+  UsageInfo,
+} from "../../../llm/provider.ts";
+import { isThinkingEffort } from "../../../config.ts";
+
+export interface AnthropicOptions {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  /** 思考档位；"default"=不发送任何思考参数；off=关闭扩展思考；low/high/max 映射 budget */
+  effort?: EffortSetting;
+  /** 输出上限；Anthropic 必填，缺省按思考预算自动抬高 */
+  maxTokens?: number;
+}
+
+const API_VERSION = "2023-06-01";
+// 思考档位 → budget_tokens（Anthropic 要求 budget ≥1024 且 < max_tokens）
+const EFFORT_BUDGET: Partial<Record<string, number>> = { low: 4096, high: 16384, max: 32768 };
+
+interface SseEvent {
+  type?: string;
+  error?: { message?: string } | null;
+  message?: { usage?: { input_tokens?: number } | null } | null;
+  content_block?: { type?: string; id?: string; name?: string } | null;
+  delta?: {
+    type?: string;
+    text?: string;
+    thinking?: string;
+    signature?: string;
+    partial_json?: string;
+    stop_reason?: string | null;
+  } | null;
+  usage?: { output_tokens?: number } | null;
+}
+
+function safeParseJson(s: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(s) as unknown;
+    return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 思考回放参数：model 为当前请求模型（对齐判定），onDegrade 承接签名缺失降级告警。 */
+export interface ReplayOptions {
+  model: string;
+  onDegrade?: (reason: string, source: ThinkingBlock) => void;
+}
+
+/**
+ * 对齐判定（与 agent 的 token 计数判定保持同源规则）：
+ * 模型一致且签名存在 → 回放（签名逐字，含空字符串）；
+ * 模型一致但签名缺失 → 降级省略 + onDegrade；
+ * 模型不一致或缺失 → 静默省略（不伪造签名，跨模型签名不可移植）。
+ */
+export function replayableThinking(th: ThinkingBlock, opts: ReplayOptions): { block: Record<string, unknown> } | { degrade: true } | null {
+  if (th.model === undefined || th.model !== opts.model) return null;
+  if (th.signature === undefined) return { degrade: true };
+  return { block: { type: "thinking", thinking: th.text, signature: th.signature } };
+}
+
+/** 映射 harness 消息：system 由调用方单独处理；tool 消息合并为 user 的 tool_result 块。 */
+export function toAnthropicMessages(
+  messages: ChatMessage[],
+  replay?: ReplayOptions,
+): Array<{ role: "user" | "assistant"; content: unknown }> {
+  const out: Array<{ role: "user" | "assistant"; content: unknown }> = [];
+  for (const m of messages) {
+    if (m.role === "system") continue;
+    if (m.role === "user") {
+      // docs/10 R3：带图 user 消息转多模态 blocks（text + image base64 source）；
+      // 无图保持纯字符串（字节不变）
+      if (m.images && m.images.length > 0) {
+        out.push({
+          role: "user",
+          content: [
+            { type: "text", text: m.content },
+            ...m.images.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mime, data: img.data } })),
+          ],
+        });
+      } else {
+        out.push({ role: "user", content: m.content });
+      }
+      continue;
+    }
+    if (m.role === "assistant") {
+      const blocks: Array<Record<string, unknown>> = [];
+      // 回放范围=带工具调用的轮次（API 校验点）；最终回答轮的思考仅供前端显示，不回传
+      if (replay && m.thinking && m.toolCalls.length > 0) {
+        const r = replayableThinking(m.thinking, replay);
+        if (r && "block" in r) blocks.push(r.block);
+        else if (r) replay.onDegrade?.("思考签名缺失，已从历史省略该思考块（官方端点多轮工具可能报错）", m.thinking);
+      }
+      if (m.content) blocks.push({ type: "text", text: m.content });
+      for (const tc of m.toolCalls) {
+        blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: safeParseJson(tc.arguments) });
+      }
+      out.push({ role: "assistant", content: blocks.length > 0 ? blocks : [{ type: "text", text: "(空回复)" }] });
+      continue;
+    }
+    const block = { type: "tool_result", tool_use_id: m.toolCallId, content: m.content };
+    const last = out[out.length - 1];
+    const lastContent = last && last.role === "user" ? (last.content as Array<Record<string, unknown>>) : null;
+    if (Array.isArray(lastContent) && (lastContent[0] as { type?: string } | undefined)?.type === "tool_result") {
+      lastContent.push(block);
+    } else {
+      out.push({ role: "user", content: [block] });
+    }
+  }
+  return out;
+}
+
+function endpoint(baseUrl: string): string {
+  const b = baseUrl.replace(/\/+$/, "");
+  return /\/v\d+$/.test(b) ? `${b}/messages` : `${b}/v1/messages`;
+}
+
+export class AnthropicProvider implements LLMProvider {
+  readonly name = "anthropic";
+  private apiKey: string;
+  private baseUrl: string;
+  readonly model: string;
+  private effort: EffortSetting;
+  private maxTokens?: number;
+
+  constructor(opts: AnthropicOptions) {
+    this.apiKey = opts.apiKey;
+    this.baseUrl = opts.baseUrl;
+    this.model = opts.model;
+    this.effort = opts.effort ?? "high";
+    this.maxTokens = opts.maxTokens;
+  }
+
+  /**
+   * 逐消息回放判定（§4.6 能力声明）：与 toAnthropicMessages 的实际回放严格同源——
+   * 规则复用 replayableThinking（模型一致 + 签名存在才回放，缺失降级省略），
+   * 外层门槛与 chat() 一致：思考模式（budget 存在）+ 带工具调用的轮次。
+   * agent 据此计数，计数口径与实际请求不再可能漂移。
+   */
+  thinkingPassback(m: ChatMessage, effort: EffortSetting): boolean {
+    if (m.role !== "assistant" || !isThinkingEffort(effort)) return false;
+    if (m.toolCalls.length === 0 || m.thinking === undefined) return false;
+    const r = replayableThinking(m.thinking, { model: this.model });
+    return r !== null && "block" in r;
+  }
+
+  async chat(params: ChatParams): Promise<ChatResult> {
+    // 会话档位优先，其次提供方配置；"default"=不发送思考参数；off=显式关闭；low/high/max 映射 budget
+    const effort = params.effort ?? this.effort;
+    const budget = effort !== "default" ? EFFORT_BUDGET[effort] : undefined;
+    const maxTokens = this.maxTokens ?? (budget ? budget + 8192 : 8192);
+    const body: Record<string, unknown> = {
+      model: this.model,
+      max_tokens: Math.max(maxTokens, budget ? budget + 1024 : 1024),
+      // 思考开启才回放 thinking 块（签名对齐/降级见 replayableThinking）；思考关闭保持纯净历史
+      messages: toAnthropicMessages(params.messages, budget ? { model: this.model, onDegrade: params.onReplayDegrade } : undefined),
+      stream: true,
+    };
+    const system = params.messages
+      .filter((m) => m.role === "system")
+      .map((m) => m.content)
+      .join("\n\n");
+    if (system) body.system = system;
+    if (params.tools && params.tools.length > 0) {
+      body.tools = params.tools.map((t: ToolSchema) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parameters,
+      }));
+    }
+    if (budget) body.thinking = { type: "enabled", budget_tokens: budget };
+
+    const res = await fetch(endpoint(this.baseUrl), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": this.apiKey,
+        "anthropic-version": API_VERSION,
+      },
+      body: JSON.stringify(body),
+      signal: params.signal,
+    });
+    if (!res.ok || !res.body) {
+      let detail = "";
+      try {
+        detail = (await res.text()).slice(0, 300);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`Anthropic API ${res.status}：${detail || res.statusText}`);
+    }
+
+    let content = "";
+    let reasoning = "";
+    let signature = "";
+    let finishReason: string | null = null;
+    let usage: UsageInfo | null = null;
+    const toolAcc = new Map<number, ToolCallRequest>();
+    let toolIdx = -1;
+    let buffer = "";
+    const decoder = new TextDecoder();
+
+    for await (const chunk of res.body) {
+      buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+        let ev: SseEvent;
+        try {
+          ev = JSON.parse(payload) as SseEvent;
+        } catch {
+          continue; // 非 JSON 行（服务器杂音）
+        }
+        switch (ev.type) {
+          case "error":
+            throw new Error(`Anthropic API 错误：${ev.error?.message ?? "未知错误"}`);
+          case "message_start":
+            usage = { promptTokens: ev.message?.usage?.input_tokens ?? 0, completionTokens: 0 };
+            break;
+          case "content_block_start":
+            if (ev.content_block?.type === "tool_use") {
+              toolIdx++;
+              toolAcc.set(toolIdx, {
+                id: ev.content_block.id ?? "",
+                name: ev.content_block.name ?? "",
+                arguments: "",
+              });
+            }
+            break;
+          case "content_block_delta": {
+            const d = ev.delta;
+            if (d?.type === "text_delta" && d.text) {
+              content += d.text;
+              params.onTextDelta?.(d.text);
+            } else if (d?.type === "thinking_delta" && d.thinking) {
+              reasoning += d.thinking;
+              params.onReasoningDelta?.(d.thinking);
+            } else if (d?.type === "signature_delta" && d.signature) {
+              signature += d.signature;
+            } else if (d?.type === "input_json_delta" && d.partial_json) {
+              const cur = toolAcc.get(toolIdx);
+              if (cur) cur.arguments += d.partial_json;
+            }
+            break;
+          }
+          case "message_delta": {
+            const reason = ev.delta?.stop_reason;
+            finishReason =
+              reason === "max_tokens"
+                ? "length"
+                : reason === "tool_use"
+                  ? "tool_calls"
+                  : reason === "end_turn"
+                    ? "stop"
+                    : (reason ?? null);
+            const out = ev.usage?.output_tokens;
+            if (usage && out) usage.completionTokens = out;
+            break;
+          }
+          default:
+            break; // ping 等其他事件忽略
+        }
+      }
+    }
+
+    const toolCalls = [...toolAcc.values()].filter((t) => t.name.length > 0);
+    return {
+      content,
+      reasoning,
+      ...(signature ? { reasoningSignature: signature } : {}),
+      toolCalls,
+      usage,
+      finishReason,
+    };
+  }
+}
