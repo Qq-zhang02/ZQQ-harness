@@ -8,7 +8,7 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **7 个系统�
 - **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（46 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 docs/23）：**阶段 D 结构优化**——D1 subagents.ts 拆五文件、D2 config initConfig 显式装载、D3 首块 renderTree keyed 更新（reconcileKeyed 样板）**均已完成**（388 测试）→ 剩余渐进项：D3 其余整列表重灌点 keyed 化（独立可停）、可选阶段 B 第二批（docs/21 §2.3 后 8 键）。**规划中**：前端「设置」入口编辑 harness.json（全键注释模板已就位于 `~/.ZQQ-harness/harness.json`；后端读写面 = `loadHarnessConfig`/`parseHarnessConfig` 纯函数 + `initConfig()` 可重复调用重绑〔热应用的技术前提已在〕）。每项独立验收、独立 commit。
+- **当前进行中**（详见 docs/23、docs/24）：**前端「运行阈值」设置入口**（harness.json 可视化编辑 + 热应用，接力入口 = [docs/24 交接文档](docs/24_交接文档-前端设置入口与harness热应用.md)——地基已全部就位：JSONC 支持、全键注释模板、`initConfig()` 热重绑）；另余阶段 D 渐进项：D3 其余整列表重灌点 keyed 化（独立可停）、可选阶段 B 第二批（docs/21 §2.3 后 8 键）。每项独立验收、独立 commit。
 
 ## 快速开始
 
@@ -391,6 +391,7 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `21_开发文档-架构可维护性审计与参数化改进.md`——2026-11-14 全项目架构审计：分层评估、硬编码参数全清单（P0 矛盾修复 / P1 配置化候选 16 键 / P2 常量收敛 / P3 保持现状）、前端渐进改造路线、subagents.ts 拆分方案、分阶段实施路线图与不变量清单——**改参数/改架构前先读**（头部有阶段 A 实施记录：P0 修复 7/8 项已落地）
 - `22_交接文档-阶段A维护实施与后续接力.md`——阶段 A 实施交接：git 基线与 commit 结构、本次全部改动清单与验证证据、踩坑记录（npm test 显式清单等）、剩余工作与接力入口（IMAGE_RULES → 阶段 B/C/D）
 - `23_交接文档-阶段D结构优化接力.md`——第三棒交接：A/B/C 三段成果摘要（384 测试基线）、阶段 D 三项（subagents.ts 拆五块 / config 惰性化 / 前端渲染统一）的入口与约束、可选阶段 B 第二批 8 键、踩坑记录（双哨兵/模板字面量插值/taskkill 等）与不变量清单
+- `24_交接文档-前端设置入口与harness热应用.md`——第四棒交接（**待实施**）：Web UI「运行阈值」设置入口——读写面方案（thresholdSchema 单一出处 / web-settings 模块 GET+POST / 严格校验+原子写+initConfig 热生效）、热生效边界三类（立即跟随/新会话生效/需重启）、UI 与哨兵建议、踩坑与验收清单
 
 ## 已知限制
 
