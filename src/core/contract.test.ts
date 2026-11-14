@@ -13,6 +13,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SSE_EVENTS } from "./events.ts";
+import { thresholdSchema } from "../config.ts";
 import { assembleSystemPrompt, BUILTIN_PROMPT_SECTIONS } from "./sections.ts";
 import { Registry } from "./registry.ts";
 import type { SectionContext } from "./types.ts";
@@ -405,6 +406,33 @@ test("哨兵（阶段 D1 已启用）：子代理家族五文件各 ≤400 行�
     const lines = readFileSync(join(HERE, "..", "web", f), "utf8").split("\n").length;
     assert.ok(lines <= 400, `${f} 应 ≤400 行（D1 拆分不变量；超出=职责又堆回单文件），当前 ${lines}`);
   }
+});
+
+// ---------- 哨兵（docs/24：前端「运行阈值」设置入口 + harness 热应用） ----------
+
+test("哨兵（docs/24 已启用）：前端零硬编码阈值——键名/文案/默认值只经 schema 下发；写路由热应用必经 initConfig", () => {
+  const schema = thresholdSchema();
+  assert.equal(schema.entries.length, 25, "schema 应为 25 个活跃阈值键（新增键需同步登记规则表）");
+  // ① 设置模态区域（HTML 块 + JS 段）不写死任何阈值键名——说明/范围/默认值/分组的唯一来源
+  //    = GET /api/settings/harness 的 schema。全文件检查不可行：defaultContextLength 等键名是
+  //    meta 契约的合法消费（metaOf().defaultContextLength），与设置表单硬编码无关。
+  const htmlStart = html.indexOf('id="setModal"');
+  const htmlEnd = html.indexOf("子代理过程查看模态", htmlStart);
+  const jsStart = html.indexOf("// ---------- 运行阈值设置（docs/24");
+  const jsEnd = html.indexOf("// ---------- 工作区选择弹窗", jsStart);
+  assert.ok(htmlStart >= 0 && htmlEnd > htmlStart && jsStart >= 0 && jsEnd > jsStart,
+    "找不到设置模态区域锚点（前端重构后请同步更新本测试切片）");
+  const settingsRegion = html.slice(htmlStart, htmlEnd) + html.slice(jsStart, jsEnd);
+  for (const e of schema.entries) {
+    assert.ok(!settingsRegion.includes(e.key), `设置模态不得硬编码阈值键名 "${e.key}"（应经 schema 下发）`);
+  }
+  assert.ok(settingsRegion.includes("setSchema.entries"), "设置表单应遍历 schema 渲染（不从本地清单生成）");
+  assert.ok(settingsRegion.includes("/api/settings/harness"), "前端应经 /api/settings/harness 读 schema/提交保存");
+  // ② 写路由 = 校验 + 原子写 + initConfig 热应用（唯一重绑出口，沿 P8 锁法）
+  const settingsSrc = readFileSync(join(HERE, "..", "modules", "web-settings", "index.ts"), "utf8");
+  assert.ok(settingsSrc.includes("validateThresholdsStrict("), "写入口必须走严格校验（fail-closed，与读的 lenient 语义分开）");
+  assert.ok(settingsSrc.includes("writeTextAtomic("), "落盘必须是原子写（校验-原子替换，防半文件）");
+  assert.ok(settingsSrc.includes("initConfig("), "写成功后必须 initConfig() 热应用（live binding 唯一出口）");
 });
 
 // ---------- d) import 图哨兵 ----------

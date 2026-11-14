@@ -21,6 +21,8 @@ import {
   SUBAGENT_MAX_TOTAL,
   SUBAGENT_MAX_TOOL_ROUNDS,
   SUBAGENT_RESULT_MAX_CHARS,
+  thresholdSchema,
+  validateThresholdsStrict,
 } from "./config.ts";
 import type { EffortSetting } from "./llm/provider.ts";
 
@@ -406,4 +408,87 @@ test("parseHarnessConfig/resolveThresholds：阶段 B 8 键覆盖生效、非法
   const effBad = resolveThresholds(bad.config.thresholds);
   assert.equal(effBad.escalationMax, 8);
   assert.equal(effBad.precompactKeep, 3);
+});
+
+// ---- docs/24：thresholdSchema（前端设置页单一出处）与严格写校验 ----
+
+test("thresholdSchema：25 活跃键全覆盖（无废弃键）、六组不重不漏、def 与 resolveThresholds({}) 同源、清扫两键标 restart", () => {
+  const s = thresholdSchema();
+  assert.equal(s.entries.length, 25, "活跃键 = 25（spillThreshold 废弃不入表）");
+  assert.ok(s.entries.every((e) => e.key !== "spillThreshold"), "废弃键不下发");
+  assert.deepEqual(s.groups.map((g) => g.key), ["general", "compaction", "pwsh", "subagent", "mcp", "sweep"]);
+  const d = resolveThresholds({});
+  const seen = new Set<string>();
+  for (const e of s.entries) {
+    assert.ok(e.desc && e.hint, `${e.key} 应带说明与范围文案（前端零硬编码的依赖面）`);
+    assert.equal(e.def, d[e.key], `${e.key} 缺省值应与 resolveThresholds({}) 同源`);
+    assert.ok(s.groups.some((g) => g.key === e.group), `${e.key} 分组 ${e.group} 应在 groups 里`);
+    assert.ok(!seen.has(e.key), `${e.key} 不重复`);
+    seen.add(e.key);
+  }
+  // 活跃键 = EffectiveThresholds 全键 - 废弃键（防止加新阈值键忘了进 schema）
+  for (const k of Object.keys(d) as Array<keyof typeof d>) {
+    if (k === "spillThreshold") continue;
+    assert.ok(seen.has(k), `活跃阈值 ${k} 应出现在 schema`);
+  }
+  const restartKeys = s.entries.filter((e) => e.restart).map((e) => e.key).sort();
+  assert.deepEqual(restartKeys, ["sandboxTmpMaxAgeHours", "spillMaxAgeHours"], "仅清扫两键需重启（bootstrap 一次性）");
+});
+
+test("validateThresholdsStrict：合法子集通过；未知/废弃/类型/范围非法逐键指名、整体拒绝；pwsh 交叉拒绝", () => {
+  const ok = validateThresholdsStrict({ compactionPressure: 0.5, maxToolRounds: 20 });
+  assert.equal(ok.ok, true);
+  if (ok.ok) {
+    assert.deepEqual(ok.thresholds, { compactionPressure: 0.5, maxToolRounds: 20 });
+  }
+  // 非法混合：一个键坏 → 整体拒绝，合法键也不产出（fail-closed，与读的 lenient 相反）
+  const bad = validateThresholdsStrict({
+    compactionPressure: 0.5,
+    subagentMaxConcurrent: 0, // 越界（≥1）
+    maxToolRounds: "x",       // 类型错
+    nopeKey: 3,               // 未知键
+    spillThreshold: 100,      // 废弃键（严格写拒绝，读侧才容忍）
+  });
+  assert.equal(bad.ok, false);
+  if (!bad.ok) {
+    const keys = bad.errors.map((e) => e.key);
+    assert.deepEqual(keys.sort(), ["maxToolRounds", "nopeKey", "spillThreshold", "subagentMaxConcurrent"]);
+    assert.ok(bad.errors.every((e) => e.message.length > 0), "每条错误都要有可展示文案");
+  }
+  // pwsh 交叉：max < timeout 拒绝并指名（lenient 读侧会静默抬升，写侧要即时反馈）
+  const cross = validateThresholdsStrict({ pwshTimeoutMs: 120_000, pwshMaxTimeoutMs: 60_000 });
+  assert.equal(cross.ok, false);
+  if (!cross.ok) {
+    assert.equal(cross.errors[0].key, "pwshMaxTimeoutMs");
+    assert.ok(cross.errors[0].message.includes("pwshTimeoutMs"));
+  }
+  // 交叉的另一侧：只改 timeout 超过默认 max（300000）同样拒绝（表单展示生效值，用户会看到）
+  const cross2 = validateThresholdsStrict({ pwshTimeoutMs: 400_000 });
+  assert.equal(cross2.ok, false, "缺省 max 300000 低于 400000，应提示同步调大");
+  // 顶层数据形态错
+  for (const raw of [null, [], "x", 3]) assert.equal(validateThresholdsStrict(raw).ok, false);
+});
+
+test("THRESHOLD_RULES 与 lenient 读语义一致：rangePass 等价旧谓词（抽样边界值双向验证）", () => {
+  // 边界抽样：每类规则取代表键，验证 rangePass 与 parseHarnessConfig 的采纳/忽略一致
+  const samples: Array<[string, unknown, boolean]> = [
+    ["compactionPressure", 0, false],   // (0,1]：0 开边界外
+    ["compactionPressure", 1, true],    // 闭上界
+    ["compactionPressure", 1.0001, false],
+    ["maxToolRounds", 1, true],         // ≥1 整数
+    ["maxToolRounds", 1.5, false],      // 非整数
+    ["pwshTimeoutMs", 999.5, false],    // ≥1000，非整数合法但 999.5 越界
+    ["pwshTimeoutMs", 1500.5, true],    // 非整数毫秒在 ≥1000 时合法（旧谓词不设 integer）
+    ["subagentFollowupContextPct", 100, true],
+    ["subagentFollowupContextPct", 101, false],
+    ["toolResultMaxChars", 0, false],   // >0
+    ["compactionManualKeepTokens", 0, true], // ≥0
+    ["spillThreshold", 0, true],        // 废弃键仍按规则解析（lenient 容忍）
+  ];
+  for (const [key, val, shouldPass] of samples) {
+    const { config, warnings } = parseHarnessConfig({ thresholds: { [key]: val } });
+    const adopted = config.thresholds[key as keyof typeof config.thresholds] !== undefined;
+    assert.equal(adopted, shouldPass, `${key}=${String(val)} 采纳应为 ${shouldPass}`);
+    if (!shouldPass) assert.ok(warnings.some((w) => w.includes(key)), `${key} 非法应告警`);
+  }
 });

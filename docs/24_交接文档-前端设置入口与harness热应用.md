@@ -4,6 +4,20 @@
 
 ---
 
+## ⭐ 实施记录（2026-11-15，§2-§4 全部落地——前端入口 + 读写路由 + 热应用）
+
+`npm run typecheck` 通过；`npm test` **395 项全绿 0 skip**（388 基线 + 3 config + 3 web-settings + 1 哨兵）；smoke:sa2 全过、sa4 10/10；活服验证（隔离 USERPROFILE + 独立端口）与浏览器 GUI 冒烟全过（见下）。以下为与 §3 方案骨架的差异与落地细节（**以代码为准**）：
+
+- **读路径单一出处（§3.1）**：`parseHarnessConfig` 内部局部 rules 表上提为模块级导出 **`THRESHOLD_RULES`**——每键 `{ hint, desc?, group?, range, restart?, deprecated? }`；**range 是声明式数值范围**（`{integer?, min?, max?, exclusiveMin?, exclusiveMax?}`），lenient 读校验谓词由 `rangePass()` 从它派生（不再手写 `test` 函数——校验语义与 UI 约束零漂移可能）。新增导出 `THRESHOLD_GROUPS`（六组展示序 + 中文标题）与 **`thresholdSchema()`**（返回 `{ groups, entries }`，25 活跃键；`def` 从 `resolveThresholds({})` 取，废弃键 spillThreshold 标 `deprecated` 不入表）。GET 响应在方案骨架上多带 `effective`（= `resolveThresholds(HARNESS_CONFIG.thresholds)`，表单初值）与 `desc`/`exclusiveMin` 等字段（UI 直渲需要）。
+- **写路径 fail-closed（§3.2）**：严格校验落在 config.ts 的 **`validateThresholdsStrict()`**（与 rules 表同文件同出处；web-settings 只是薄包装）：非对象整体拒绝、未知键/废弃键/类型错/范围错**逐键指名 + 整体拒绝不落盘**。**pwsh 交叉校验取严格口径**：对「提交项 + 缺省回填」的组合判定 `max < timeout` 直接 400（lenient 读侧的静默抬升保留给手写文件——同一规则两种包装，读宽容写严格）。POST 路径因路由注册表按 path 唯一键而定为 **`POST /api/settings/harness/save`**（沿 `/api/providers` GET + `/save` POST 先例）；`disabledModules` 原样透传（只读展示）。落盘 `writeTextAtomic`（core/file-tools 既有原子写）+ 纯 JSON + 尾换行；成功后 `initConfig(cfg)` 热应用。
+- **新模块 `modules/web-settings/`**（`web.settings`，modules.ts +1 行；server.ts 零改动仍 249 行）：路径取 **`ctx.paths.userDir` + `USER_DIR_LAYOUT.harnessFile`**（与 `config.harnessFilePath()` 同一文件——bootstrap 传真实用户目录；**测试传临时目录，不触真机文件**，这是比 inject/homedir-override 干净的隔离缝）。无需 sessionHost（全局文件不经会话）。
+- **前端（§3.4）**：顶栏 ⚙ 徽标按钮 → `#setModal` 模态（provider 面板同款骨架）；表单**完全 schema 驱动**（六组吸顶分节、每键 desc/key/默认值/hint/数值输入/单键 ↺、组级「组内恢复默认」、全局「恢复默认值」）；restart 键黄色「重启后生效」徽标；头部说明带「写回纯 JSON 注释会丢」「构造期参数新会话生效」两条诚实声明。新代码沿 D3 纪律：el 不带第三参、动态内容全 textContent、id 运行时拼 `set-` + key。提交先过客户端轻校验（整数/含边界 min/max，含边界映射到 input 属性；**开边界交给服务端**）→ 400 返回 `errors[]` 逐键标红。
+- **GUI 冒烟发现并修复两处**：①保存确认行被 `refreshSnapshot()` 的整列重渲染抹掉（renderHistory 先 `chat.innerHTML=""`）——改为**先刷新后确认**（`.then(sysLine)`）；②「有未保存修改关闭」最初用 native `confirm()`——会阻塞嵌入式 webview 渲染进程（自动化直接卡死实测复现），且全库无此先例——改为**两步按钮**（「关闭」→「确认关闭」，CFG.CONFIRM_SET_MS 3s 自动复位，沿「删除→确认删除」惯例）。
+- **哨兵（§5）**：contract.test.ts 新增 docs/24 哨兵——①设置模态区域（HTML 块 + JS 段切片）不得出现任何阈值键名 + 必须经 `setSchema.entries` 渲染 + 经 `/api/settings/harness` 通信（**全文件键名检查不可行**：`defaultContextLength` 等是 meta 契约的合法消费，与表单硬编码无关；默认值数字字面量同理不做断言——0/3/8 等小数字无法与 CSS 区分，键名已锁住硬编码路径）；②web-settings 源码必须含 `validateThresholdsStrict(` / `writeTextAtomic(` / `initConfig(`（fail-closed + 原子写 + 热应用唯一出口，沿 P8 锁法）。
+- **活服验证（隔离 USERPROFILE，全程零真机数据触碰）**：GET 25 键/六组 schema → POST `compactionPressure=0.5` → **`/api/meta` 立即 0.5**（热生效证据）→ 落盘纯 JSON（`JSON.parse` 直读通过、无 `.tmp` 残留）→ **杀进程重启后 meta 仍 0.5**（持久性）→ 越界 POST（`subagentMaxConcurrent:0`）→ 400 指名该键、**文件逐字节未动、meta 未变** → pwsh 交叉（只提交 timeout=400000）→ 400 提示同步调大 max。**GUI 冒烟（浏览器自动化，7 项全过）**：模态打开六组渲染/初值=持久化值（截图取证）、单键 ↺ 恢复、客户端越界标红+错误文案（截图取证）、服务端开边界 400 标红且模态不关、合法保存后模态关+确认行+meta 热更新、两步关闭确认（拒绝保持/确认关闭）、组内恢复默认；关闭未保存的脏值（maxToolRounds=22）**未泄漏进文件**。
+
+---
+
 ## 1. 当前状态（接手前确认）
 
 ```bash

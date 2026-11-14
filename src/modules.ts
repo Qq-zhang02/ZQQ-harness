@@ -22,6 +22,7 @@ import { toolWriteFile } from "./modules/tools/write-file/index.ts";
 import { webApproval } from "./modules/web-approval/index.ts";
 import { webProviders } from "./modules/web-providers/index.ts";
 import { webSessions } from "./modules/web-sessions/index.ts";
+import { webSettings } from "./modules/web-settings/index.ts";
 import { webWorkspaces } from "./modules/web-workspaces/index.ts";
 
 export const BUILTIN_MODULES: HarnessModule[] = [
@@ -42,5 +43,6 @@ export const BUILTIN_MODULES: HarnessModule[] = [
   webApproval,
   webProviders,
   webSessions,
+  webSettings,
   webWorkspaces,
 ];

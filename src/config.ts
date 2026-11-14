@@ -103,6 +103,242 @@ export interface HarnessConfig {
   thresholds: ThresholdOverrides;
 }
 
+// ---- 阈值规则表（docs/24 上提为模块级导出）：每键合法范围的唯一出处 ----
+// lenient 读（parseHarnessConfig 逐项忽略+告警）与 fail-closed 写（validateThresholdsStrict
+// 整体 400 拒绝）共用同一份定义，仅包装语义不同；thresholdSchema() 把它（+缺省值/分组/
+// 重启标注）下发给前端设置页——前端零硬编码（键清单不许出现第二份）。
+
+/** 阈值分组（展示顺序 + 中文标题；group 键与 THRESHOLD_RULES 对应）。 */
+export const THRESHOLD_GROUPS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "general", label: "通用" },
+  { key: "compaction", label: "上下文压缩" },
+  { key: "pwsh", label: "run_pwsh（PowerShell 工具）" },
+  { key: "subagent", label: "子代理" },
+  { key: "mcp", label: "MCP" },
+  { key: "sweep", label: "启动清扫" },
+];
+
+/** 声明式数值范围（校验谓词与 UI 输入约束共用；含边界值用 min/max，开边界用 exclusive*）。 */
+export interface ThresholdRange {
+  integer?: boolean;
+  min?: number;
+  max?: number;
+  exclusiveMin?: number;
+  exclusiveMax?: number;
+}
+
+export interface ThresholdRule {
+  /** 范围说明（lenient 告警与 400 文案共用，如 "(0,1] 的小数"） */
+  hint: string;
+  /** 一行用途说明（schema 下发给前端表单 label；废弃键不给也不下发） */
+  desc?: string;
+  /** 所属分组键（THRESHOLD_GROUPS；废弃键无分组不进 schema） */
+  group?: string;
+  range: ThresholdRange;
+  /** 重启才生效（清扫只在 bootstrap 跑一次；schema 下发供 UI 标注） */
+  restart?: boolean;
+  /** 解析兼容保留（如 spillThreshold）：读取容忍、schema 不下发、严格写拒绝 */
+  deprecated?: boolean;
+}
+
+/** 范围判定（THRESHOLD_RULES 的唯一校验谓词——lenient/严格两种包装都经它）。 */
+function rangePass(range: ThresholdRange, n: number): boolean {
+  if (range.integer && !Number.isInteger(n)) return false;
+  if (range.min !== undefined && n < range.min) return false;
+  if (range.max !== undefined && n > range.max) return false;
+  if (range.exclusiveMin !== undefined && n <= range.exclusiveMin) return false;
+  if (range.exclusiveMax !== undefined && n >= range.exclusiveMax) return false;
+  return true;
+}
+
+/** 全部阈值键的规则表（含废弃键；序 = 模板/文档展示序）。 */
+export const THRESHOLD_RULES: Readonly<Record<keyof EffectiveThresholds, ThresholdRule>> = {
+  defaultContextLength: {
+    hint: ">0 的数字", desc: "上下文长度缺省值（token）——新提供方表单缺省与前端占比显示的兜底", group: "general",
+    range: { exclusiveMin: 0 },
+  },
+  maxToolRounds: {
+    hint: "≥1 的整数", desc: "每轮任务的工具调用轮次上限——达到上限后强制收尾总结", group: "general",
+    range: { integer: true, min: 1 },
+  },
+  toolResultMaxChars: {
+    hint: ">0 的整数字符数", desc: "工具结果修剪预算（字符）——run_pwsh 与全部 mcp__ 工具统一生效，超出截断", group: "general",
+    range: { integer: true, exclusiveMin: 0 },
+  },
+  agentsMdMaxChars: {
+    hint: ">0 的整数字符数", desc: "两级 AGENTS.md 注入截断预算（字符）——超出截断，防撑爆系统提示", group: "general",
+    range: { integer: true, exclusiveMin: 0 },
+  },
+  escalationMax: {
+    hint: "≥1 的整数", desc: "审批升级额度——沙箱拒绝后「带理由转人工」的每会话累计上限", group: "general",
+    range: { integer: true, min: 1 },
+  },
+  compactionPressure: {
+    hint: "(0,1] 的小数", desc: "自动压缩触发线——上下文占用达到该比例先压缩再跑轮", group: "compaction",
+    range: { exclusiveMin: 0, max: 1 },
+  },
+  compactionKeepRatio: {
+    hint: "(0,1] 的小数", desc: "自动压缩保留预算——尾部完整轮次保留约该比例的上下文窗口", group: "compaction",
+    range: { exclusiveMin: 0, max: 1 },
+  },
+  compactionManualKeepTokens: {
+    hint: "≥0 的整数 token", desc: "手动 /compact 保留预算（token；0=全部历史进摘要，压到最小）", group: "compaction",
+    range: { integer: true, min: 0 },
+  },
+  precompactKeep: {
+    hint: "≥1 的整数份数", desc: "压缩前备份保留份数（环形覆写）——写新份前删最老", group: "compaction",
+    range: { integer: true, min: 1 },
+  },
+  pwshTimeoutMs: {
+    hint: "≥1000 的毫秒数", desc: "run_pwsh 缺省超时", group: "pwsh",
+    range: { min: 1_000 },
+  },
+  pwshMaxTimeoutMs: {
+    hint: "≥1000 的毫秒数", desc: "run_pwsh 单次可申请的最大超时（低于缺省超时会在解析层被抬到缺省）", group: "pwsh",
+    range: { min: 1_000 },
+  },
+  pwshCaptureMaxBytes: {
+    hint: ">0 的整数字节数", desc: "run_pwsh 输出采集软上限（字节）——超过即停止采集防撑爆内存；展示截断另由 toolResultMaxChars 负责", group: "pwsh",
+    range: { integer: true, exclusiveMin: 0 },
+  },
+  subagentMaxConcurrent: {
+    hint: "≥1 的整数", desc: "子代理并发上限——同轮并行派发超出部分立即报错回传（不排队）", group: "subagent",
+    range: { integer: true, min: 1 },
+  },
+  subagentMaxTotal: {
+    hint: "≥1 的整数", desc: "每会话子代理累计派出上限——防大型任务成本失控", group: "subagent",
+    range: { integer: true, min: 1 },
+  },
+  subagentMaxToolRounds: {
+    hint: "≥1 的整数", desc: "子代理工具轮次上限——达上限收尾总结，保证总能交报告", group: "subagent",
+    range: { integer: true, min: 1 },
+  },
+  subagentResultMaxChars: {
+    hint: ">0 的整数字符数", desc: "子代理最终报告字符预算——超出修剪；剪掉量大时全文落 spill 供 read_archive 接续", group: "subagent",
+    range: { integer: true, exclusiveMin: 0 },
+  },
+  subagentMaxTasks: {
+    hint: "≥1 的整数", desc: "可复用子代理每实例任务数上限——超出 agent_followup 拒绝", group: "subagent",
+    range: { integer: true, min: 1 },
+  },
+  subagentWarnContextPct: {
+    hint: "(0,100] 的整数百分比", desc: "子代理上下文预警线——任务收尾占用超过该值，报告附「上下文过长」预警（仍可追加任务）", group: "subagent",
+    range: { integer: true, exclusiveMin: 0, max: 100 },
+  },
+  subagentFollowupContextPct: {
+    hint: "(0,100] 的整数百分比", desc: "followup 拒收线——占用达到该值直接拒绝追加（上下文过长易幻觉），指引归档重派", group: "subagent",
+    range: { integer: true, exclusiveMin: 0, max: 100 },
+  },
+  subagentArchiveContextPct: {
+    hint: "(0,100] 的整数百分比", desc: "强制归档线——任务完成时占用超过该值不转待命、直接归档", group: "subagent",
+    range: { integer: true, exclusiveMin: 0, max: 100 },
+  },
+  archiveRenderMaxChars: {
+    hint: ">0 的整数字符数", desc: "read_archive 渲染预算（字符）——存档转可读文本超出截头部，防整档灌满接收方上下文", group: "subagent",
+    range: { integer: true, exclusiveMin: 0 },
+  },
+  mcpHandshakeTimeoutMs: {
+    hint: "≥1000 的毫秒数", desc: "MCP stdio 握手超时——首次运行要下载依赖/模型的服务器可调大", group: "mcp",
+    range: { min: 1_000 },
+  },
+  mcpCallTimeoutMs: {
+    hint: "≥1000 的毫秒数", desc: "MCP 工具调用缺省超时——全部 mcp__ 工具生效", group: "mcp",
+    range: { min: 1_000 },
+  },
+  spillMaxAgeHours: {
+    hint: "≥1 的整数小时", desc: "spill 过程档案清扫年龄（小时）——启动时删除超龄的会话 spill 目录", group: "sweep",
+    range: { integer: true, min: 1 }, restart: true,
+  },
+  sandboxTmpMaxAgeHours: {
+    hint: "≥1 的整数小时", desc: "沙箱 tmp 清扫年龄（小时）——启动时清理超龄临时目录", group: "sweep",
+    range: { integer: true, min: 1 }, restart: true,
+  },
+  // 废弃键（docs/10 R2）：读取容忍（无未知键告警）、schema 不下发、严格写拒绝。
+  spillThreshold: { hint: "≥0 的整数字符数", range: { integer: true, min: 0 }, deprecated: true },
+};
+
+export interface ThresholdSchemaEntry {
+  key: keyof EffectiveThresholds;
+  group: string;
+  hint: string;
+  desc: string;
+  /** 缺省值（resolveThresholds({}) 同源——不与 rules 表另立数值） */
+  def: number;
+  min?: number;
+  max?: number;
+  exclusiveMin?: number;
+  exclusiveMax?: number;
+  integer?: boolean;
+  restart?: boolean;
+}
+
+/** 阈值元数据（前端设置页的单一出处）：活跃键全量 + 分组标题；废弃键不入表。 */
+export function thresholdSchema(): { groups: typeof THRESHOLD_GROUPS; entries: ThresholdSchemaEntry[] } {
+  const defaults = resolveThresholds({});
+  const entries: ThresholdSchemaEntry[] = [];
+  for (const g of THRESHOLD_GROUPS) {
+    for (const [key, rule] of Object.entries(THRESHOLD_RULES) as Array<[keyof EffectiveThresholds, ThresholdRule]>) {
+      if (rule.deprecated || rule.group !== g.key) continue;
+      entries.push({
+        key,
+        group: g.key,
+        hint: rule.hint,
+        desc: rule.desc ?? key,
+        def: defaults[key],
+        ...rule.range,
+        ...(rule.restart ? { restart: true } : {}),
+      });
+    }
+  }
+  return { groups: THRESHOLD_GROUPS, entries };
+}
+
+/** 严格写校验（fail-closed，与 parseHarnessConfig 的 lenient 语义相反）：任一键非法 → 整体拒绝。
+ *  消费方 = 前端设置页的 POST（用户在界面上改，要即时反馈、不落盘脏数据）。
+ *  pwsh 交叉校验取严格口径：max < timeout 直接拒绝（lenient 读侧的静默抬升保留给手写文件）。 */
+export function validateThresholdsStrict(
+  raw: unknown,
+): { ok: true; thresholds: ThresholdOverrides } | { ok: false; errors: Array<{ key: string; message: string }> } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, errors: [{ key: "", message: "thresholds 必须是对象（键 → 数值）" }] };
+  }
+  const errors: Array<{ key: string; message: string }> = [];
+  const out: ThresholdOverrides = {};
+  for (const [key, v] of Object.entries(raw as Record<string, unknown>)) {
+    const rule = (THRESHOLD_RULES as Record<string, ThresholdRule | undefined>)[key];
+    if (!rule) {
+      errors.push({ key, message: `未知阈值键 "${key}"（不在可配置清单中，检查拼写）` });
+      continue;
+    }
+    if (rule.deprecated) {
+      errors.push({ key, message: `"${key}" 已废弃（运行时无消费方），请从表单移除` });
+      continue;
+    }
+    if (typeof v !== "number" || !Number.isFinite(v) || !rangePass(rule.range, v)) {
+      errors.push({ key, message: `"${key}" 的值 ${JSON.stringify(v)} 不合法（应为${rule.hint}）` });
+      continue;
+    }
+    out[key as keyof EffectiveThresholds] = v;
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  // pwsh 交叉校验对「提交项 + 缺省回填」的整体判定（整体替换语义：未提交的键按缺省参与组合）
+  const eff = resolveThresholds(out);
+  const pure = resolveThresholds({});
+  const rawMax = out.pwshMaxTimeoutMs ?? pure.pwshMaxTimeoutMs;
+  if (rawMax < eff.pwshTimeoutMs) {
+    return {
+      ok: false,
+      errors: [
+        {
+          key: "pwshMaxTimeoutMs",
+          message: `"pwshMaxTimeoutMs"（${rawMax}）不得低于 "pwshTimeoutMs"（当前生效 ${eff.pwshTimeoutMs}）——请先调大最大超时或调小缺省超时`,
+        },
+      ],
+    };
+  }
+  return { ok: true, thresholds: out };
+}
+
 /** 解析 harness.json 内容（纯函数，供测试）：非法顶层/字段逐项忽略并给出告警文案。 */
 export function parseHarnessConfig(raw: unknown): { config: HarnessConfig; warnings: string[] } {
   const warnings: string[] = [];
@@ -133,34 +369,6 @@ export function parseHarnessConfig(raw: unknown): { config: HarnessConfig; warni
     if (!v.thresholds || typeof v.thresholds !== "object" || Array.isArray(v.thresholds)) {
       warnings.push("thresholds 必须是对象，已忽略");
     } else {
-      const rules: Record<keyof EffectiveThresholds, { hint: string; test: (n: number) => boolean }> = {
-        compactionPressure: { hint: "(0,1] 的小数", test: (n) => n > 0 && n <= 1 },
-        compactionKeepRatio: { hint: "(0,1] 的小数", test: (n) => n > 0 && n <= 1 },
-        compactionManualKeepTokens: { hint: "≥0 的整数 token", test: (n) => Number.isInteger(n) && n >= 0 },
-        spillThreshold: { hint: "≥0 的整数字符数", test: (n) => Number.isInteger(n) && n >= 0 },
-        defaultContextLength: { hint: ">0 的数字", test: (n) => n > 0 },
-        maxToolRounds: { hint: "≥1 的整数", test: (n) => Number.isInteger(n) && n >= 1 },
-        pwshTimeoutMs: { hint: "≥1000 的毫秒数", test: (n) => n >= 1_000 },
-        pwshMaxTimeoutMs: { hint: "≥1000 的毫秒数", test: (n) => n >= 1_000 },
-        toolResultMaxChars: { hint: ">0 的整数字符数", test: (n) => Number.isInteger(n) && n > 0 },
-        subagentMaxConcurrent: { hint: "≥1 的整数", test: (n) => Number.isInteger(n) && n >= 1 },
-        subagentMaxTotal: { hint: "≥1 的整数", test: (n) => Number.isInteger(n) && n >= 1 },
-        subagentMaxToolRounds: { hint: "≥1 的整数", test: (n) => Number.isInteger(n) && n >= 1 },
-        subagentResultMaxChars: { hint: ">0 的整数字符数", test: (n) => Number.isInteger(n) && n > 0 },
-        subagentMaxTasks: { hint: "≥1 的整数", test: (n) => Number.isInteger(n) && n >= 1 },
-        subagentFollowupContextPct: { hint: "(0,100] 的整数百分比", test: (n) => Number.isInteger(n) && n > 0 && n <= 100 },
-        subagentWarnContextPct: { hint: "(0,100] 的整数百分比", test: (n) => Number.isInteger(n) && n > 0 && n <= 100 },
-        subagentArchiveContextPct: { hint: "(0,100] 的整数百分比", test: (n) => Number.isInteger(n) && n > 0 && n <= 100 },
-        archiveRenderMaxChars: { hint: ">0 的整数字符数", test: (n) => Number.isInteger(n) && n > 0 },
-        escalationMax: { hint: "≥1 的整数", test: (n) => Number.isInteger(n) && n >= 1 },
-        agentsMdMaxChars: { hint: ">0 的整数字符数", test: (n) => Number.isInteger(n) && n > 0 },
-        mcpHandshakeTimeoutMs: { hint: "≥1000 的毫秒数", test: (n) => n >= 1_000 },
-        mcpCallTimeoutMs: { hint: "≥1000 的毫秒数", test: (n) => n >= 1_000 },
-        pwshCaptureMaxBytes: { hint: ">0 的整数字节数", test: (n) => Number.isInteger(n) && n > 0 },
-        precompactKeep: { hint: "≥1 的整数份数", test: (n) => Number.isInteger(n) && n >= 1 },
-        spillMaxAgeHours: { hint: "≥1 的整数小时", test: (n) => Number.isInteger(n) && n >= 1 },
-        sandboxTmpMaxAgeHours: { hint: "≥1 的整数小时", test: (n) => Number.isInteger(n) && n >= 1 },
-      };
       const t = v.thresholds as Record<string, unknown>;
       // 先做旧键→新键归一（docs/21 §2.2-④）：旧拼写键一律告警更名提示，值仅在无新键时采纳
       const normalized: Record<string, unknown> = {};
@@ -174,13 +382,13 @@ export function parseHarnessConfig(raw: unknown): { config: HarnessConfig; warni
         if (!(renamed in t)) normalized[renamed] = t[rawKey];
       }
       for (const key of Object.keys(normalized)) {
-        const rule = (rules as Record<string, (typeof rules)[keyof EffectiveThresholds]>)[key];
+        const rule = (THRESHOLD_RULES as Record<string, ThresholdRule | undefined>)[key];
         if (!rule) {
           warnings.push(`未知阈值 "${key}"，已忽略（检查拼写）`);
           continue;
         }
         const n = normalized[key];
-        if (typeof n !== "number" || !Number.isFinite(n) || !rule.test(n)) {
+        if (typeof n !== "number" || !Number.isFinite(n) || !rangePass(rule.range, n)) {
           warnings.push(`阈值 "${key}" 的值 ${JSON.stringify(n)} 不合法（应为${rule.hint}），已忽略`);
           continue;
         }

@@ -8,7 +8,7 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **7 个系统�
 - **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（46 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 docs/23、docs/24）：**前端「运行阈值」设置入口**（harness.json 可视化编辑 + 热应用，接力入口 = [docs/24 交接文档](docs/24_交接文档-前端设置入口与harness热应用.md)——地基已全部就位：JSONC 支持、全键注释模板、`initConfig()` 热重绑）；另余阶段 D 渐进项：D3 其余整列表重灌点 keyed 化（独立可停）、可选阶段 B 第二批（docs/21 §2.3 后 8 键）。每项独立验收、独立 commit。
+- **当前进行中**（详见 docs/23）：阶段 D 渐进项——D3 其余整列表重灌点 keyed 化（独立可停）、可选阶段 B 第二批（docs/21 §2.3 后 8 键）。每项独立验收、独立 commit。（前端「运行阈值」设置入口已完成，见 [docs/24](docs/24_交接文档-前端设置入口与harness热应用.md) 实施记录。）
 
 ## 快速开始
 
@@ -18,7 +18,7 @@ npm run web               # 打开 http://localhost:8787（自动弹浏览器，
 ```
 
 - 不想自动弹浏览器（脚本/远程环境）：设环境变量 `ZQQ_NO_BROWSER=1` 再启动
-- **用户级调整**：不改源码即可启停模块、覆盖运行阈值——在 `~/.ZQQ-harness/harness.json` 写配置（缺失则全缺省），重启生效；详见[用户级配置](#用户级配置-harnessjson-与外部模块)
+- **用户级调整**：不改源码即可启停模块、覆盖运行阈值——在 Web UI 顶栏 **⚙** 可视化编辑（保存即热应用，见[用户级配置](#用户级配置-harnessjson-与外部模块)），或直接改 `~/.ZQQ-harness/harness.json`（支持注释，重启生效）
 
 **一键启动**：双击项目根目录的 `start-zqq.bat`（纯 ASCII；bat 含中文会被 GBK 解析撕裂）或桌面快捷方式"ZQQ-harness"，自动起服务并打开浏览器；关闭时直接关掉那个控制台窗口。
 
@@ -232,7 +232,7 @@ description: 为本项目生成规范的 git 提交信息
 ```
 
 - **disabledModules（模块启停）**：按模块名从组合清单过滤（内置与外部模块一视同仁）。禁用不存在的名字会在启动日志提醒（防打字错误）；被保留模块 `dependsOn` 被禁模块 → 启动失败并指名（装配器 fail-fast）。禁用 UI 模块（如 `web.workspaces`）对应功能即消失——请知道自己在做什么。
-- **thresholds（阈值覆盖）**：二十六个运行阈值——子代理八个（并发/累计/轮次上限、报告预算、可复用任务数上限、上下文预警线/followup 门槛/强制归档线，docs/10；存档注入渲染预算 `archiveRenderMaxChars` 默认 80k，docs/17）+ **阶段 B 第一批八个**（docs/21 §2.3 / docs/22 §4.2）：`escalationMax` 审批升级额度（默认 8）、`agentsMdMaxChars` AGENTS.md 注入截断（16k）、`mcpHandshakeTimeoutMs`/`mcpCallTimeoutMs` MCP 握手/调用超时（20s/60s——慢 MCP 服务器或首次下载依赖时可放宽）、`pwshCaptureMaxBytes` 输出采集软上限（1MB）、`precompactKeep` 压缩备份保留份数（3，环形覆写）、`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 启动清扫年龄（168h/24h）。键省略即用缺省；非法值（越界/类型错）逐项忽略并告警；未知键告警（检查拼写）。生效值经 `config.ts` 导出常量下发——所有消费方（压缩触发/保留预算、工具轮次、pwsh 超时、修剪预算、默认上下文、子代理配额与上下文治理）零改动即被覆盖，`/api/meta` 同步反映。（`spillThreshold` 已废弃——docs/10 起修剪触发即落盘无门槛；已配置的旧键静默忽略不告警。docs/21 阶段 A 起三个压缩键更名为 `compaction*`（历史拼写错误修正），**旧拼写 `compection*` 三键双读兼容**——读到即映射到新键并告警更名提示，建议改用新键；§2.3 其余 8 个候选键见 docs/21。）
+- **thresholds（阈值覆盖）**：二十六个运行阈值——子代理八个（并发/累计/轮次上限、报告预算、可复用任务数上限、上下文预警线/followup 门槛/强制归档线，docs/10；存档注入渲染预算 `archiveRenderMaxChars` 默认 80k，docs/17）+ **阶段 B 第一批八个**（docs/21 §2.3 / docs/22 §4.2）：`escalationMax` 审批升级额度（默认 8）、`agentsMdMaxChars` AGENTS.md 注入截断（16k）、`mcpHandshakeTimeoutMs`/`mcpCallTimeoutMs` MCP 握手/调用超时（20s/60s——慢 MCP 服务器或首次下载依赖时可放宽）、`pwshCaptureMaxBytes` 输出采集软上限（1MB）、`precompactKeep` 压缩备份保留份数（3，环形覆写）、`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 启动清扫年龄（168h/24h）。键省略即用缺省；非法值（越界/类型错）逐项忽略并告警；未知键告警（检查拼写）。生效值经 `config.ts` 导出常量下发——所有消费方（压缩触发/保留预算、工具轮次、pwsh 超时、修剪预算、默认上下文、子代理配额与上下文治理）零改动即被覆盖，`/api/meta` 同步反映。（`spillThreshold` 已废弃——docs/10 起修剪触发即落盘无门槛；已配置的旧键静默忽略不告警。docs/21 阶段 A 起三个压缩键更名为 `compaction*`（历史拼写错误修正），**旧拼写 `compection*` 三键双读兼容**——读到即映射到新键并告警更名提示，建议改用新键；§2.3 其余 8 个候选键见 docs/21。）**可视化编辑（docs/24）**：Web UI 顶栏 ⚙ 打开「运行阈值」面板——分组/说明/范围/默认值全部由服务端 schema 下发（`thresholdSchema()` 单一出处，前端零硬编码），保存走严格校验（任一键非法整体 400 拒绝指名该键）→ 原子写回纯 JSON（注释会丢，值不变）→ `initConfig()` 热应用（大部分键立即生效、`/api/meta` 随之反映；`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 清扫与 `disabledModules` 装配标「重启后生效」；运行中会话的构造期参数新会话生效）。`disabledModules` 面板内只读展示。
 - **外部模块目录 `~/.ZQQ-harness/modules/*.ts`**：每个文件 `export default` 一个模块对象（`{ name, dependsOn?, setup(ctx) }`），在内置模块之后按文件名序装载。模块体可以**零 import**——`setup(ctx)` 收到的 `ctx` 上就是各扩展点注册表（`ctx.tools` / `ctx.routes` / `ctx.promptSections` / `ctx.skillSources` …），直接 `register` 即可；需要类型提示时用 `import type` 从本项目 `src/core/*` 引入（`import type` 在类型擦除后零运行时开销，不会产生真实依赖）。**宽松装载**：导入失败 / 缺合法 default 导出 / 与已有模块重名 / `dependsOn` 不在已装配清单 → 打印错误并跳过该文件，不影响其余模块与应用启动；`setup` 抛错仍 fail-fast 退出（错误信息带模块名）。`*.test.ts` 不装载；多个外部模块按文件名序可互相依赖（先装载者可为后者的依赖）。
 
 ## 斜杠命令
@@ -245,7 +245,7 @@ description: 为本项目生成规范的 git 提交信息
 
 ```
 src/
-├── modules.ts            BUILTIN_MODULES 组合清单（产品=这张表，17 个模块）
+├── modules.ts            BUILTIN_MODULES 组合清单（产品=这张表，19 个模块）
 ├── core/                 零依赖内核
 │   ├── registry.ts       Registry<T, K>：按键注册/注销，重复注册抛错
 │   ├── context.ts        HarnessContext：7 张注册表 + 路径 + sessionHost 接缝
@@ -391,7 +391,7 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `21_开发文档-架构可维护性审计与参数化改进.md`——2026-11-14 全项目架构审计：分层评估、硬编码参数全清单（P0 矛盾修复 / P1 配置化候选 16 键 / P2 常量收敛 / P3 保持现状）、前端渐进改造路线、subagents.ts 拆分方案、分阶段实施路线图与不变量清单——**改参数/改架构前先读**（头部有阶段 A 实施记录：P0 修复 7/8 项已落地）
 - `22_交接文档-阶段A维护实施与后续接力.md`——阶段 A 实施交接：git 基线与 commit 结构、本次全部改动清单与验证证据、踩坑记录（npm test 显式清单等）、剩余工作与接力入口（IMAGE_RULES → 阶段 B/C/D）
 - `23_交接文档-阶段D结构优化接力.md`——第三棒交接：A/B/C 三段成果摘要（384 测试基线）、阶段 D 三项（subagents.ts 拆五块 / config 惰性化 / 前端渲染统一）的入口与约束、可选阶段 B 第二批 8 键、踩坑记录（双哨兵/模板字面量插值/taskkill 等）与不变量清单
-- `24_交接文档-前端设置入口与harness热应用.md`——第四棒交接（**待实施**）：Web UI「运行阈值」设置入口——读写面方案（thresholdSchema 单一出处 / web-settings 模块 GET+POST / 严格校验+原子写+initConfig 热生效）、热生效边界三类（立即跟随/新会话生效/需重启）、UI 与哨兵建议、踩坑与验收清单
+- `24_交接文档-前端设置入口与harness热应用.md`——第四棒交接（**已实施**，头部含实施记录）：Web UI「运行阈值」设置入口——THRESHOLD_RULES 上提 + thresholdSchema 单一出处、web-settings 模块 GET + /save POST（严格校验+原子写+initConfig 热生效）、热生效边界三类（立即跟随/新会话生效/需重启）、schema 驱动前端（零硬编码哨兵）、GUI 冒烟两处修复（确认行顺序、两步关闭确认）
 
 ## 已知限制
 
