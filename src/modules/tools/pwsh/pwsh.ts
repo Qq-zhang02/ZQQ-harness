@@ -1,12 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { checkCommandAgainstWorkspace, isReadOnlyPwshCommand, pathHintsOutsideScope } from "../../../workspace.ts";
-import { DEFAULTS } from "../../../config.ts";
+import { DEFAULTS, ESCALATION_MAX, PWSH_CAPTURE_MAX_BYTES } from "../../../config.ts";
 import type { Tool, ToolContext } from "../../../tools/registry.ts";
 import { getSandboxRunner } from "../../../sandbox/runner.ts";
 import type { SandboxMode, SandboxPolicy } from "../../../sandbox/types.ts";
 import type { ApprovalDecision } from "../../../approval/types.ts";
-
-const SOFT_CAPTURE_LIMIT = 1_000_000; // 超过后停止采集，防止极端输出撑爆内存（输出修剪由注册表层统一负责）
 
 interface CollectResult {
   code: number | null;
@@ -39,7 +37,7 @@ function collectChild(
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
     const collect = (chunks: Buffer[]) => (d: Buffer) => {
-      if (captured >= SOFT_CAPTURE_LIMIT) {
+      if (captured >= PWSH_CAPTURE_MAX_BYTES) { // 超过后停止采集，防止极端输出撑爆内存（输出修剪由注册表层统一负责；harness.json 可覆盖）
         overLimit = true;
         return;
       }
@@ -122,7 +120,7 @@ function refusalText(decision: ApprovalDecision): string {
 // ---- 升级重试（escalation）：沙箱拒绝后记一次"升级额度"；下一次调用只要带 justification
 // 就转交人工审批（额度无论批准与否都被消费）。不要求逐字节复现被拒命令——模型换一种
 // 写法实现同一意图时同样能走到审批，人工在审批卡上看到完整命令后自行把关。 ----
-const ESCALATION_MAX = 8;
+// 额度上限 = config.ESCALATION_MAX（harness.json escalationMax 可覆盖，缺省 8）。 ----
 
 /** 提供给模型的 pwsh 工具：带命令摘要（description）、守卫提示与审批/沙箱模式裁决。
  *  每会话实例化一份（SystemToolDef.create()）：升级额度是会话内状态，多会话互不影响。

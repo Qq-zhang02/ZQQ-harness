@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionStore } from "./sessions.ts";
+import { SessionStore, sweepStaleSpill } from "./sessions.ts";
 
 function sampleData(id: string) {
   return {
@@ -274,6 +274,55 @@ test("SessionStore：listAllGrouped 按入参顺序分组，孤儿工作区补�
     s.recycleWorkspace("F:\\ghost");
     const after = s.listAllGrouped(["F:\\proj", "F:\\other"]);
     assert.deepEqual(after.map((g) => g.workspace), ["F:\\proj", "F:\\other"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- docs/22 §4.2：precompact 环形覆写 + spill 年龄清扫 ----
+
+test("backupBeforeCompact：环形覆写（docs/22 §4.2）——写第 n+1 份前删最老，恒保留最近 PRECOMPACT_KEEP 份", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-sess-precompact-"));
+  try {
+    const s = new SessionStore(dir);
+    const a = "11111111-2222-3333-4444-555555555593";
+    s.save(sampleData(a));
+    const hist = sampleData(a).messages as never[];
+    const names = () =>
+      readdirSync(join(dir, "sessions")).filter((f) => f.startsWith(`${a}.precompact-`)).sort();
+    for (let i = 0; i < 5; i++) s.backupBeforeCompact(a, hist);
+    // 缺省 keep=3：写 #4 时删 #1、写 #5 时删 #2 → 剩 3/4/5
+    assert.deepEqual(names(), [`${a}.precompact-3.json`, `${a}.precompact-4.json`, `${a}.precompact-5.json`]);
+    // purge（彻底删除）仍连带清理全部备份（既有语义不回归；delete 只清 spill 不清备份）
+    s.purge(a);
+    assert.deepEqual(names(), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sweepStaleSpill（docs/22 §4.2）：超龄会话 spill 目录整删、新鲜目录保留、根目录不存在静默", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-sess-sweep-"));
+  try {
+    const s = new SessionStore(dir);
+    const old1 = "11111111-2222-3333-4444-555555555594";
+    const old2 = "11111111-2222-3333-4444-555555555595";
+    const fresh = "11111111-2222-3333-4444-555555555596";
+    for (const id of [old1, old2, fresh]) {
+      const d = s.spillDir(id)!;
+      mkdirSync(join(d, "20260101-120000"), { recursive: true });
+      writeFileSync(join(d, "20260101-120000", "transcript.json"), "{}", "utf8");
+    }
+    // 回拨两个目录的 mtime 到 10 天前（超过缺省 168h）；fresh 保持当前时间
+    const stale = new Date(Date.now() - 10 * 24 * 3600_000);
+    utimesSync(s.spillDir(old1)!, stale, stale);
+    utimesSync(s.spillDir(old2)!, stale, stale);
+    sweepStaleSpill(s.spillRoot);
+    assert.ok(!existsSync(s.spillDir(old1)!), "超龄目录被整删");
+    assert.ok(!existsSync(s.spillDir(old2)!));
+    assert.ok(existsSync(join(s.spillDir(fresh)!, "20260101-120000", "transcript.json")), "新鲜目录保留");
+    // 根目录不存在 → 静默返回不抛错
+    sweepStaleSpill(join(dir, "no-such-spill"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

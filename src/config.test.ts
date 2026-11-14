@@ -277,3 +277,66 @@ test("parseHarnessConfig/resolveThresholds：subagentWarnContextPct（预警线�
   assert.ok(bad.warnings.some((w) => w.includes("subagentWarnContextPct")));
   assert.equal(resolveThresholds({}).subagentWarnContextPct, 25, "缺省 25");
 });
+
+// ---- 阶段 B 第一批（docs/21 §2.3 前 8 键，docs/22 §4.2）：缺省/覆盖/非法三态 ----
+
+test("resolveThresholds：阶段 B 第一批 8 键缺省值（8/16000/20s/60s/1MB/3/168h/24h）", () => {
+  const d = resolveThresholds({});
+  assert.equal(d.escalationMax, 8);
+  assert.equal(d.agentsMdMaxChars, 16_000);
+  assert.equal(d.mcpHandshakeTimeoutMs, 20_000);
+  assert.equal(d.mcpCallTimeoutMs, 60_000);
+  assert.equal(d.pwshCaptureMaxBytes, 1_000_000);
+  assert.equal(d.precompactKeep, 3);
+  assert.equal(d.spillMaxAgeHours, 168);
+  assert.equal(d.sandboxTmpMaxAgeHours, 24);
+});
+
+test("parseHarnessConfig/resolveThresholds：阶段 B 8 键覆盖生效、非法值逐项忽略并告警", () => {
+  const ok = parseHarnessConfig({
+    thresholds: {
+      escalationMax: 2,
+      agentsMdMaxChars: 32_000,
+      mcpHandshakeTimeoutMs: 60_000,
+      mcpCallTimeoutMs: 180_000,
+      pwshCaptureMaxBytes: 4_000_000,
+      precompactKeep: 5,
+      spillMaxAgeHours: 72,
+      sandboxTmpMaxAgeHours: 48,
+    },
+  });
+  assert.equal(ok.warnings.length, 0, "合法全量无告警");
+  const eff = resolveThresholds(ok.config.thresholds);
+  assert.equal(eff.escalationMax, 2);
+  assert.equal(eff.agentsMdMaxChars, 32_000);
+  assert.equal(eff.mcpHandshakeTimeoutMs, 60_000);
+  assert.equal(eff.mcpCallTimeoutMs, 180_000);
+  assert.equal(eff.pwshCaptureMaxBytes, 4_000_000);
+  assert.equal(eff.precompactKeep, 5);
+  assert.equal(eff.spillMaxAgeHours, 72);
+  assert.equal(eff.sandboxTmpMaxAgeHours, 48);
+
+  const bad = parseHarnessConfig({
+    thresholds: {
+      escalationMax: 0,
+      agentsMdMaxChars: 0,
+      mcpHandshakeTimeoutMs: 999,
+      mcpCallTimeoutMs: 999,
+      pwshCaptureMaxBytes: 0,
+      precompactKeep: 0,
+      spillMaxAgeHours: 0,
+      sandboxTmpMaxAgeHours: 0.5,
+    },
+  });
+  for (const k of [
+    "escalationMax", "agentsMdMaxChars", "mcpHandshakeTimeoutMs", "mcpCallTimeoutMs",
+    "pwshCaptureMaxBytes", "precompactKeep", "spillMaxAgeHours", "sandboxTmpMaxAgeHours",
+  ]) {
+    assert.equal((bad.config.thresholds as Record<string, number | undefined>)[k], undefined, `${k} 非法应忽略`);
+    assert.ok(bad.warnings.some((w) => w.includes(`"${k}"`)), `${k} 应有告警`);
+  }
+  // 非法全忽略 → 全缺省（fail-closed 到原行为）
+  const effBad = resolveThresholds(bad.config.thresholds);
+  assert.equal(effBad.escalationMax, 8);
+  assert.equal(effBad.precompactKeep, 3);
+});

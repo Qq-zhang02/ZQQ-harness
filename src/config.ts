@@ -61,6 +61,23 @@ export interface EffectiveThresholds {
   subagentArchiveContextPct: number;
   /** read_archive 存档渲染字符预算（>0 整数；渲染文本超出截为头部 + 省略标记，docs/17） */
   archiveRenderMaxChars: number;
+  // ---- 阶段 B 第一批（docs/21 §2.3 前 8 键，docs/22 §4.2）----
+  /** 会话级审批升级额度（≥1 整数；沙箱拒绝后的"带 justification 转人工"累计上限） */
+  escalationMax: number;
+  /** 两级 AGENTS.md 注入截断预算（>0 整数字符） */
+  agentsMdMaxChars: number;
+  /** MCP stdio 握手超时（≥1000ms；首次运行要下载依赖的服务器可能超 20s） */
+  mcpHandshakeTimeoutMs: number;
+  /** MCP 工具调用缺省超时（≥1000ms；manager 不传参时全部 mcp__ 工具生效此值） */
+  mcpCallTimeoutMs: number;
+  /** run_pwsh 输出采集软上限（>0 整数字节；超过停止采集防撑爆内存，修剪由注册表层负责） */
+  pwshCaptureMaxBytes: number;
+  /** precompact 压缩备份保留份数（≥1 整数；环形覆写——写第 n+1 份前删最老） */
+  precompactKeep: number;
+  /** spill 目录年龄清扫阈值（≥1 整数小时；启动时清理超过该年龄的会话 spill 目录） */
+  spillMaxAgeHours: number;
+  /** 沙箱 tmp 目录年龄清扫阈值（≥1 整数小时；启动时清理，与 spill 同策略） */
+  sandboxTmpMaxAgeHours: number;
 }
 
 /** harness.json thresholds 的覆盖项：键可省略 = 用缺省。 */
@@ -129,6 +146,14 @@ export function parseHarnessConfig(raw: unknown): { config: HarnessConfig; warni
         subagentWarnContextPct: { hint: "(0,100] 的整数百分比", test: (n) => Number.isInteger(n) && n > 0 && n <= 100 },
         subagentArchiveContextPct: { hint: "(0,100] 的整数百分比", test: (n) => Number.isInteger(n) && n > 0 && n <= 100 },
         archiveRenderMaxChars: { hint: ">0 的整数字符数", test: (n) => Number.isInteger(n) && n > 0 },
+        escalationMax: { hint: "≥1 的整数", test: (n) => Number.isInteger(n) && n >= 1 },
+        agentsMdMaxChars: { hint: ">0 的整数字符数", test: (n) => Number.isInteger(n) && n > 0 },
+        mcpHandshakeTimeoutMs: { hint: "≥1000 的毫秒数", test: (n) => n >= 1_000 },
+        mcpCallTimeoutMs: { hint: "≥1000 的毫秒数", test: (n) => n >= 1_000 },
+        pwshCaptureMaxBytes: { hint: ">0 的整数字节数", test: (n) => Number.isInteger(n) && n > 0 },
+        precompactKeep: { hint: "≥1 的整数份数", test: (n) => Number.isInteger(n) && n >= 1 },
+        spillMaxAgeHours: { hint: "≥1 的整数小时", test: (n) => Number.isInteger(n) && n >= 1 },
+        sandboxTmpMaxAgeHours: { hint: "≥1 的整数小时", test: (n) => Number.isInteger(n) && n >= 1 },
       };
       const t = v.thresholds as Record<string, unknown>;
       // 先做旧键→新键归一（docs/21 §2.2-④）：旧拼写键一律告警更名提示，值仅在无新键时采纳
@@ -181,6 +206,14 @@ export function resolveThresholds(t: ThresholdOverrides): EffectiveThresholds {
     subagentWarnContextPct: t.subagentWarnContextPct ?? 25,
     subagentArchiveContextPct: t.subagentArchiveContextPct ?? 50,
     archiveRenderMaxChars: t.archiveRenderMaxChars ?? 80_000,
+    escalationMax: t.escalationMax ?? 8,
+    agentsMdMaxChars: t.agentsMdMaxChars ?? 16_000,
+    mcpHandshakeTimeoutMs: t.mcpHandshakeTimeoutMs ?? 20_000,
+    mcpCallTimeoutMs: t.mcpCallTimeoutMs ?? 60_000,
+    pwshCaptureMaxBytes: t.pwshCaptureMaxBytes ?? 1_000_000,
+    precompactKeep: t.precompactKeep ?? 3,
+    spillMaxAgeHours: t.spillMaxAgeHours ?? 168,
+    sandboxTmpMaxAgeHours: t.sandboxTmpMaxAgeHours ?? 24,
   };
   if (out.pwshMaxTimeoutMs < out.pwshTimeoutMs) out.pwshMaxTimeoutMs = out.pwshTimeoutMs;
   return out;
@@ -278,17 +311,37 @@ export const SUBAGENT_ARCHIVE_CONTEXT_PCT = EFFECTIVE.subagentArchiveContextPct;
  *  （pruneToolResult 同款），防整份多任务存档一次性灌满接收方上下文。 */
 export const ARCHIVE_RENDER_MAX_CHARS = EFFECTIVE.archiveRenderMaxChars;
 
-// ---- 跨文件共享的运行常量（docs/21 §2.2/§2.4：单一出处，消重复定义；阶段 B 候选阈值键） ----
+// ---- 阶段 B 第一批（docs/21 §2.3 前 8 键，docs/22 §4.2）：全部经 harness.json thresholds 可覆盖 ----
+
+/** 会话级审批升级额度（默认 8）：沙箱拒绝后带 justification 转人工的累计上限（pwsh.ts 消费）。 */
+export const ESCALATION_MAX = EFFECTIVE.escalationMax;
+
+/** 两级 AGENTS.md 注入截断预算（默认 16000 字符；workspace.ts 消费）。 */
+export const AGENTS_MD_MAX_CHARS = EFFECTIVE.agentsMdMaxChars;
+
+/** run_pwsh 输出采集软上限（默认 1MB）：超过停止采集防撑爆内存，输出修剪由注册表层统一负责。 */
+export const PWSH_CAPTURE_MAX_BYTES = EFFECTIVE.pwshCaptureMaxBytes;
+
+/** precompact 压缩备份保留份数（默认 3）：backupBeforeCompact 环形覆写——写第 n+1 份前删最老。 */
+export const PRECOMPACT_KEEP = EFFECTIVE.precompactKeep;
+
+/** spill 目录年龄清扫阈值（默认 168h=7 天）：启动时 sweepStaleSpill 清理超龄会话 spill 目录。 */
+export const SPILL_MAX_AGE_HOURS = EFFECTIVE.spillMaxAgeHours;
+
+/** 沙箱 tmp 目录年龄清扫阈值（默认 24h）：启动时 sweepStaleSandboxTmp 传参生效值。 */
+export const SANDBOX_TMP_MAX_AGE_HOURS = EFFECTIVE.sandboxTmpMaxAgeHours;
+
+// ---- 跨文件共享的运行常量（docs/21 §2.2/§2.4：单一出处，消重复定义；阶段 B 第二批候选键） ----
 
 /** 子代理任务 timeoutMs 的最小值（agent-task schema/校验/提示词三处共用同一出处；
  *  阶段 B 候选阈值键 subagentTimeoutMinMs） */
 export const SUBAGENT_TIMEOUT_MIN_MS = 60_000;
 
-/** MCP stdio 握手超时（transport 与 mcp-manage 提示词共用；阶段 B 候选阈值键 mcpHandshakeTimeoutMs） */
-export const MCP_HANDSHAKE_TIMEOUT_MS = 20_000;
+/** MCP stdio 握手超时（默认 20s；transport 与 mcp-manage 提示词共用——文案插值自动跟随覆盖值）。 */
+export const MCP_HANDSHAKE_TIMEOUT_MS = EFFECTIVE.mcpHandshakeTimeoutMs;
 
-/** MCP 工具调用缺省超时（manager 不传参时全部 mcp__ 工具生效此值；阶段 B 候选阈值键 mcpCallTimeoutMs） */
-export const MCP_CALL_TIMEOUT_MS = 60_000;
+/** MCP 工具调用缺省超时（默认 60s；manager 不传参时全部 mcp__ 工具生效此值）。 */
+export const MCP_CALL_TIMEOUT_MS = EFFECTIVE.mcpCallTimeoutMs;
 
 /** 消息图片规则（docs/10 R3；docs/22 §4.1 四重定义收敛）：≤4 张、单张解码后 ≤5MB、
  *  mime 白名单——后端 parseChatImages 校验与前端校验/按钮 title（经 /api/meta 下发）的

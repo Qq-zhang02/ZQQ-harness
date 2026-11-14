@@ -10,9 +10,9 @@ import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig, HARNESS_CONFIG } from "../config.ts";
+import { loadConfig, HARNESS_CONFIG, SANDBOX_TMP_MAX_AGE_HOURS } from "../config.ts";
 import { ensureProvidersFile } from "../providers/store.ts";
-import { SessionStore } from "./sessions.ts";
+import { SessionStore, sweepStaleSpill } from "./sessions.ts";
 import { loadRecentWorkspaces, workspacesFilePath } from "./workspaces.ts";
 import { ensureUserDir } from "../userdir.ts";
 import { setSandboxRunner } from "../sandbox/runner.ts";
@@ -134,9 +134,10 @@ ctx.subagent = (rt) => subagentServiceFor(shell, rt);
 // 全都不可用（非 Windows / koffi 缺失）时保持 runner.ts 的 fail-closed 缺省，受约束模式一律拒
 const sandboxBackend = ctx.sandboxBackends.all().find((b) => b.available());
 if (sandboxBackend) {
-  sweepStaleSandboxTmp(shell.sandboxTmpRoot);
+  sweepStaleSandboxTmp(shell.sandboxTmpRoot, SANDBOX_TMP_MAX_AGE_HOURS * 3600_000); // 生效值传参（docs/22 §4.2）
   setSandboxRunner(sandboxBackend.create());
 }
+sweepStaleSpill(sessions.spillRoot); // 启动清扫超龄 spill（docs/22 §4.2 spillMaxAgeHours；与沙箱 tmp 同策略）
 
 // ---- SSE ----
 const sseClients = new Set<ServerResponse>();

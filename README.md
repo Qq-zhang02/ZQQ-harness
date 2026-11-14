@@ -8,7 +8,7 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **7 个系统�
 - **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（46 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 docs/22）：阶段 A（P0 修复）**8/8 全部完成**（末项 IMAGE_RULES：图片规则四重定义收敛为 config 单一出处、经 meta 下发）；下一步按 docs/21 §4 接阶段 B（P1 配置化 16 候选键，第一批 8 键见 docs/22 §4.2）。
+- **当前进行中**（详见 docs/22）：阶段 A（P0 修复）8/8 与**阶段 B 第一批（P1 配置化前 8 键：升级额度/AGENTS.md 截断/MCP 超时/pwsh 采集上限/precompact 环形/spill·沙箱清扫）**已完成；下一步按需做阶段 B 第二批（docs/21 §2.3 后 8 键）或阶段 C/D（docs/21 §4）。
 
 ## 快速开始
 
@@ -126,7 +126,7 @@ npm run web               # 打开 http://localhost:8787（自动弹浏览器，
   2. **手动**：`/compact`；
   3. **兜底**：请求撞上"上下文超限"类 400 错误 → 自动压缩并重试该轮一次。
 
-  压缩 = 保留系统提示 + 把早期历史替换为一段工作状态摘要（保留用户目标/决定/路径/进度/未完成事项）+ 保留尾部完整轮次（轮次切点保证 toolCall 与结果不被拆开）。**保留预算按触发方式区分**：自动触发与溢出兜底保留约 30% 上下文窗口的近期工作集；**手动 `/compact` 立即压到最小**（全部消息进摘要，上下文只剩"摘要 + 系统提示/工具等固定开销"），完成后对话底部显示"上下文已压缩"。压缩前的完整历史自动备份为 `sessions/<id>.precompact-<n>.json`（重启后手动可救）；压缩记录进 `compactions`；摘要失败/为空则放弃压缩，会话原样保留（宁可压不了，不可压坏）。摘要调用强制关思考（见提供方管理）。本节的修剪/spill/压缩阈值等运行参数都可经 `harness.json` 覆盖（见[用户级配置](#用户级配置-harnessjson-与外部模块)）
+  压缩 = 保留系统提示 + 把早期历史替换为一段工作状态摘要（保留用户目标/决定/路径/进度/未完成事项）+ 保留尾部完整轮次（轮次切点保证 toolCall 与结果不被拆开）。**保留预算按触发方式区分**：自动触发与溢出兜底保留约 30% 上下文窗口的近期工作集；**手动 `/compact` 立即压到最小**（全部消息进摘要，上下文只剩"摘要 + 系统提示/工具等固定开销"），完成后对话底部显示"上下文已压缩"。压缩前的完整历史自动备份为 `sessions/<id>.precompact-<n>.json`（重启后手动可救，环形保留最近 `precompactKeep` 份，默认 3）；压缩记录进 `compactions`；摘要失败/为空则放弃压缩，会话原样保留（宁可压不了，不可压坏）。摘要调用强制关思考（见提供方管理）。本节的修剪/spill/压缩阈值等运行参数都可经 `harness.json` 覆盖（见[用户级配置](#用户级配置-harnessjson-与外部模块)）
 
 ## 沙箱（安全模型）
 
@@ -137,7 +137,7 @@ npm run web               # 打开 http://localhost:8787（自动弹浏览器，
 - **⚠ 全开放（danger-full-access）**：完全不约束（用户明示），退回守卫+审批；守卫 reasons 仅在逐条确认模式下展示
 - **守卫（启发式分析）**：永远运行，但只作为**审批理由生成器**（提示层）——引用工作区外路径、`..` 逃逸、系统级操作等会作为原因出现在审批卡上，不再直接拦截
 - **拒绝后的合法出路**：模型可带 justification 走一次人工审批升级（见上文审核）；🛡 无人值守模式下一切按不可用拒绝
-- 执行等待为**异步轮询**（0 超时非阻塞探测 + 间隔让出事件循环，docs/19）——长命令（如 Start-Sleep 20s）运行期间服务与全部会话照常响应，⏹ 打断/超时在探测间隔内（≤200ms）生效；超时/中断经 **Job Object**（KILL_ON_JOB_CLOSE）终止整棵进程树——孙进程不残留；`TMP`/`TEMP` 重定向到会话私有临时目录（out/err 采集文件**运行结束即删**，docs/19；启动时清扫 >24h 残留兜底）
+- 执行等待为**异步轮询**（0 超时非阻塞探测 + 间隔让出事件循环，docs/19）——长命令（如 Start-Sleep 20s）运行期间服务与全部会话照常响应，⏹ 打断/超时在探测间隔内（≤200ms）生效；超时/中断经 **Job Object**（KILL_ON_JOB_CLOSE）终止整棵进程树——孙进程不残留；`TMP`/`TEMP` 重定向到会话私有临时目录（out/err 采集文件**运行结束即删**，docs/19；启动时按 `sandboxTmpMaxAgeHours`（默认 24h）清扫残留兜底）
 - **沙箱后端也是注册制**：`src/modules/sandbox/windows-acl/` 声明可用性（非 Windows 或 koffi DLL 加载失败→不可用）；全部后端不可用时受约束模式 **fail-closed 拒绝执行**（绝不静默放行），全开放模式与审批照常工作
 
 > ⚠️ 诚实边界（照实写，不夸大）：受限令牌只约束**写/删**，**不约束读与网络**；**删除的真实边界取决于位置与 DACL 构成（本机实测）**：工作区内可删；**用户配置文件（~ 及其子目录，如桌面）下的文件能被裸删除**——`[IO.File]::Delete`、`cmd del`、以及从工作区外 Move 到工作区内的跨卷源删除都会真的删掉文件；**其余位置**（数据盘如 `F:\`、`C:\Users\Public` 等仅组授权的目录）**裸删除也会被拦**（`Access is denied`），即使文件 ACL 明确授予了当前用户；DACL 含 **Everyone** 写 ACE 的文件同样能被裸删；`Remove-Item`/`Rename-Item` 因额外申请写类访问在区外一律被拦。需要删区外文件时走审批升级（批准后以无约束方式执行）；NTFS **硬链接**可跨路径别名同一文件；`NUL` 设备因设备 DACL 设计仍可写；目录 DACL 授予是**常驻变更**（能力 SID 由工作区路径哈希确定性派生，跨重启复用；需要当前用户对该目录有 DACL 写权限，通常即目录所有者）；**未经安全审计，只防误操作，不得作为对抗恶意代码的边界**——需要强隔离请用虚拟机/容器。
@@ -164,7 +164,7 @@ npm run web               # 打开 http://localhost:8787（自动弹浏览器，
 - **instructions 注入**：服务器在 MCP 握手时提供的使用说明（`initialize.instructions`）会自动拼进系统提示（分服务器标注来源）；用量计入明细的「MCP」分类
 - Windows 下 `npx`/`npm`/`pnpm`/`yarn`/`bun` 及 `.cmd`/`.bat` 自动经 `cmd /c` 启动，command 直接写 `npx` 即可；其他可执行文件写绝对路径（JSON 里用正斜杠）
 - Python 服务器自动注入 `PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`（配置的 env 可覆盖），中文参数不乱码
-- 服务器 **stdout 只允许输出协议 JSON**（日志必须走 stderr，否则握手必败）；握手超时 20 秒——首次运行要下载依赖/模型的服务器会启动失败，manage_mcp 会回报原因，先在终端手动跑一次预热再重试；工具调用超时 60s；单个服务器启动失败不影响其他；进程退出时自动清理子进程
+- 服务器 **stdout 只允许输出协议 JSON**（日志必须走 stderr，否则握手必败）；握手超时 20 秒（`mcpHandshakeTimeoutMs` 可调，慢启动服务器可放宽）——首次运行要下载依赖/模型的服务器会启动失败，manage_mcp 会回报原因，先在终端手动跑一次预热再重试；工具调用超时 60s（`mcpCallTimeoutMs` 可调）；单个服务器启动失败不影响其他；进程退出时自动清理子进程
 - **信任模型**：MCP 工具是你显式配置的可信工具，不走 pwsh 的工作区守卫与沙箱（按需自行审核配置文件）
 - 自定义服务器参考 `scripts/demo-mcp-server.mjs`（stdin/stdout 换行分隔 JSON-RPC 2.0，add/echo 两个工具）
 - 传输类型当前仅支持 `stdio`（缺省值）；传输层已抽象（`McpTransportDef` 注册表），未来可扩展 http/SSE
@@ -192,7 +192,7 @@ description: 为本项目生成规范的 git 提交信息
 
 ## 用户数据与工作区指令
 
-- 用户数据统一存放在 `~/.ZQQ-harness/`（`~` 即用户主目录，Windows 下为 `C:\Users\<用户>`；代码用 `os.homedir()` 动态定位，非硬编码）：`.credentials.yaml`（API key，仅首次迁移期读取）、`providers.json`（提供方配置，含 key）、`harness.json`（用户级覆盖：模块启停 + 运行阈值，见下节）、`modules\`（外部模块目录，见下节）、`sessions\`（对话记录、拖动排序 `order.json`、压缩前备份 `*.precompact-*.json`）、`workspaces.json`（工作区列表与树顺序，不设上限）、`mcp.json`（全局 MCP）、`AGENTS.md`（全局工作区指令）、`skills\`（全局技能）、`spill\`（超长工具输出全文，随会话删除清理）、`tmp\`（沙箱私有临时目录；out/err 采集文件运行结束即删，docs/19；启动时清扫 >24h 残留兜底）；旧版本放在项目根的数据**首次启动自动迁移**（跨盘亦可）
+- 用户数据统一存放在 `~/.ZQQ-harness/`（`~` 即用户主目录，Windows 下为 `C:\Users\<用户>`；代码用 `os.homedir()` 动态定位，非硬编码）：`.credentials.yaml`（API key，仅首次迁移期读取）、`providers.json`（提供方配置，含 key）、`harness.json`（用户级覆盖：模块启停 + 运行阈值，见下节）、`modules\`（外部模块目录，见下节）、`sessions\`（对话记录、拖动排序 `order.json`、压缩前备份 `*.precompact-*.json` 环形保留最近 `precompactKeep` 份，默认 3）、`workspaces.json`（工作区列表与树顺序，不设上限）、`mcp.json`（全局 MCP）、`AGENTS.md`（全局工作区指令）、`skills\`（全局技能）、`spill\`（超长工具输出全文，随会话删除清理；启动时按 `spillMaxAgeHours`（默认 168h）清扫超龄）、`tmp\`（沙箱私有临时目录；out/err 采集文件运行结束即删，docs/19；启动时按 `sandboxTmpMaxAgeHours`（默认 24h）清扫残留兜底）；旧版本放在项目根的数据**首次启动自动迁移**（跨盘亦可）
 - **AGENTS.md（两级注入）**：全局 `~/.ZQQ-harness/AGENTS.md` 对所有工作区生效；工作区根目录的 `AGENTS.md` 仅该工作区生效，与全局冲突时**以工作区为准**。两者都作为附加系统指令注入（每轮对话开始自动重读，改动即时生效；过长各截断至 16k 字符），在系统提示中全局段在前、工作区段在后
 
 ## 用户级配置 harness.json 与外部模块
@@ -218,13 +218,21 @@ description: 为本项目生成规范的 git 提交信息
     "subagentMaxTasks": 12,
     "subagentWarnContextPct": 25,
     "subagentFollowupContextPct": 35,
-    "subagentArchiveContextPct": 50
+    "subagentArchiveContextPct": 50,
+    "escalationMax": 8,
+    "agentsMdMaxChars": 16000,
+    "mcpHandshakeTimeoutMs": 20000,
+    "mcpCallTimeoutMs": 60000,
+    "pwshCaptureMaxBytes": 1000000,
+    "precompactKeep": 3,
+    "spillMaxAgeHours": 168,
+    "sandboxTmpMaxAgeHours": 24
   }
 }
 ```
 
 - **disabledModules（模块启停）**：按模块名从组合清单过滤（内置与外部模块一视同仁）。禁用不存在的名字会在启动日志提醒（防打字错误）；被保留模块 `dependsOn` 被禁模块 → 启动失败并指名（装配器 fail-fast）。禁用 UI 模块（如 `web.workspaces`）对应功能即消失——请知道自己在做什么。
-- **thresholds（阈值覆盖）**：十八个运行阈值（含子代理八个：并发/累计/轮次上限、报告预算、可复用任务数上限、上下文预警线/followup 门槛/强制归档线，docs/10；存档注入渲染预算 `archiveRenderMaxChars` 默认 80k，docs/17），键省略即用缺省；非法值（越界/类型错）逐项忽略并告警；未知键告警（检查拼写）。生效值经 `config.ts` 导出常量下发——所有消费方（压缩触发/保留预算、工具轮次、pwsh 超时、修剪预算、默认上下文、子代理配额与上下文治理）零改动即被覆盖，`/api/meta` 同步反映。（`spillThreshold` 已废弃——docs/10 起修剪触发即落盘无门槛；已配置的旧键静默忽略不告警。docs/21 阶段 A 起三个压缩键更名为 `compaction*`（历史拼写错误修正），**旧拼写 `compection*` 三键双读兼容**——读到即映射到新键并告警更名提示，建议改用新键；另有 16 个候选配置化键见 docs/21 §2.3。）
+- **thresholds（阈值覆盖）**：二十六个运行阈值——子代理八个（并发/累计/轮次上限、报告预算、可复用任务数上限、上下文预警线/followup 门槛/强制归档线，docs/10；存档注入渲染预算 `archiveRenderMaxChars` 默认 80k，docs/17）+ **阶段 B 第一批八个**（docs/21 §2.3 / docs/22 §4.2）：`escalationMax` 审批升级额度（默认 8）、`agentsMdMaxChars` AGENTS.md 注入截断（16k）、`mcpHandshakeTimeoutMs`/`mcpCallTimeoutMs` MCP 握手/调用超时（20s/60s——慢 MCP 服务器或首次下载依赖时可放宽）、`pwshCaptureMaxBytes` 输出采集软上限（1MB）、`precompactKeep` 压缩备份保留份数（3，环形覆写）、`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 启动清扫年龄（168h/24h）。键省略即用缺省；非法值（越界/类型错）逐项忽略并告警；未知键告警（检查拼写）。生效值经 `config.ts` 导出常量下发——所有消费方（压缩触发/保留预算、工具轮次、pwsh 超时、修剪预算、默认上下文、子代理配额与上下文治理）零改动即被覆盖，`/api/meta` 同步反映。（`spillThreshold` 已废弃——docs/10 起修剪触发即落盘无门槛；已配置的旧键静默忽略不告警。docs/21 阶段 A 起三个压缩键更名为 `compaction*`（历史拼写错误修正），**旧拼写 `compection*` 三键双读兼容**——读到即映射到新键并告警更名提示，建议改用新键；§2.3 其余 8 个候选键见 docs/21。）
 - **外部模块目录 `~/.ZQQ-harness/modules/*.ts`**：每个文件 `export default` 一个模块对象（`{ name, dependsOn?, setup(ctx) }`），在内置模块之后按文件名序装载。模块体可以**零 import**——`setup(ctx)` 收到的 `ctx` 上就是各扩展点注册表（`ctx.tools` / `ctx.routes` / `ctx.promptSections` / `ctx.skillSources` …），直接 `register` 即可；需要类型提示时用 `import type` 从本项目 `src/core/*` 引入（`import type` 在类型擦除后零运行时开销，不会产生真实依赖）。**宽松装载**：导入失败 / 缺合法 default 导出 / 与已有模块重名 / `dependsOn` 不在已装配清单 → 打印错误并跳过该文件，不影响其余模块与应用启动；`setup` 抛错仍 fail-fast 退出（错误信息带模块名）。`*.test.ts` 不装载；多个外部模块按文件名序可互相依赖（先装载者可为后者的依赖）。
 
 ## 斜杠命令
@@ -337,7 +345,7 @@ scripts/
 
 ```bash
 npm run typecheck        # tsc 类型检查（noEmit，直接 node 跑 TS）
-npm test                 # node:test 单元测试 377 项（含契约测试/哨兵与沙箱真实执行测试，需 Windows + pwsh；**显式文件清单**——新增测试文件须同步登记 package.json）
+npm test                 # node:test 单元测试 381 项（含契约测试/哨兵与沙箱真实执行测试，需 Windows + pwsh；**显式文件清单**——新增测试文件须同步登记 package.json）
 npm run smoke            # 真实 API 冒烟：连通性 / 工具闭环 / 审批拒绝（消耗少量 token）
 npm run smoke:anthropic  # anthropic 路线冒烟：多轮工具 + 思考存档/回放（消耗少量 token）
 npm run smoke:subagent   # 子代理机制冒烟：真实装配 + 非阻塞派发 + worker 工具循环 + 审批标注（零 token）
@@ -380,7 +388,7 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - MCP 工具不走守卫与沙箱（配置即信任）；当前仅 stdio 传输
 - read-only 沙箱模式下文件三工具的写入是**审批放行**（批准后全权限写入），不是 OS 级拦截——OS 沙箱裁决只作用于 run_pwsh
 - 文件三工具不支持目录、二进制与超过 5MB 的文件（明确报错并指向 run_pwsh）
-- 输出超采集上限（1MB）时超出部分丢弃（头部已注明）
+- 输出超采集上限（默认 1MB，`pwshCaptureMaxBytes` 可调）时超出部分丢弃（头部已注明）
 - 会话运行态常驻内存，不随切换淘汰；同一工作区多会话会各自启动一份 MCP 服务器进程
 - manage_mcp 的重连只作用于当前会话；其他已开会话需新建对话或切换工作区才加载新配置
 - 协调者会话（🎯）没有对工作区的直接工具：不能直用 MCP/技能/文件命令，一切工作经 agent_task 子代理完成（docs/5 D1/D10；并行 = 同轮多个 agent_task 调用，docs/15；**派发非阻塞**——立即返回「已派发」回执，完成/失败/归档报告作为消息自动送达（打断结算不重复送达，docs/18），docs/16；需要细节时派一个「读文件并汇报」的子代理；协调者系统提示带「子代理（worker）系统提示词说明」段——worker 的工具/技能/MCP/AGENTS.md 原文，两级 AGENTS.md 不再单独注入协调者，docs/20）；运行中可打断子代理（stop_subagent + 界面 ⏹，docs/18 打断即终结——没有暂停/恢复，一次性随之归档、可复用转待命；**界面打断/归档会自动送达状态通知**，docs/11/16）；可复用子代理（docs/9）任务完成后保留上下文待命、可被 agent_followup 反复追加任务；服务重启后运行实例不在线，但 agent_followup 会**自动从过程存档唤醒**它（docs/17：同 subId 历史延续；存档缺失/损坏才降级为重派指引，新 worker 可用 read_archive 读存档接续上下文）；已归档的不可唤醒（接续 = 重派 + read_archive）；followup 仅接受空闲态（执行中的目标会收到明确指引文案；被打断的可复用子代理已转 idle、直接 followup 接续，docs/18）；运行中插话的即时回应在合并进历史前刷新/切走再切回会短暂消失（窗口≈一次文本回应时长），合并后随快照重现（docs/8）

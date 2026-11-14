@@ -444,7 +444,8 @@ export class WindowsAclRunner implements SandboxRunner {
   }
 }
 
-/** 启动时清理残留的沙箱临时目录（>24h；服务启动时无任务在跑）。 */
+/** 启动时清理残留的沙箱临时目录（>24h；服务启动时无任务在跑）。server.ts 传 config
+ *  SANDBOX_TMP_MAX_AGE_HOURS 生效值（harness.json sandboxTmpMaxAgeHours 可覆盖）；缺省参仅独立调用用。 */
 export function sweepStaleSandboxTmp(tmpRoot: string, maxAgeMs = 24 * 3600_000): void {
   let names: string[] = [];
   try {
