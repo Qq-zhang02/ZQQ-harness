@@ -155,8 +155,12 @@ export type ReadOutcome =
   | { ok: true; text: string }
   | { ok: false; message: string };
 
+/** 文本文件读取上限（docs/21 §2.2-⑥）：file-tools 与 read-file 工具共用的单一出处
+ *  （此前两处各自写死 5MB，会漂移）；错误文案经 maxBytes 动态拼接。 */
+export const TEXT_FILE_MAX_BYTES = 5 * 1024 * 1024;
+
 /** 读一个文本文件（UTF-8）：不存在/目录/超大/疑似二进制都返回可读错误，不抛异常。 */
-export function readTextFile(abs: string, maxBytes = 5 * 1024 * 1024): ReadOutcome {
+export function readTextFile(abs: string, maxBytes = TEXT_FILE_MAX_BYTES): ReadOutcome {
   let st: ReturnType<typeof statSync>;
   try {
     st = statSync(abs);

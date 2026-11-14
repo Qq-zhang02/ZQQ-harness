@@ -846,16 +846,22 @@ function ensureDrawerRow(subId, name) {
   } else if (name && row.name !== name) row.name = name;
   return row;
 }
-/** docs/10 R1：治理档位从服务端 meta 取（不硬编码；缺省与后端默认一致 25/35）。 */
+/** docs/10 R1（docs/21 §2.2-⑤ 三档全量下发）：治理档位全部从服务端 meta 取（warn/cut/arch），
+ *  不写 25/35 兜底数字——meta 未到（首帧前）返回 null，显示层只出百分比、不出档位标记。 */
 function ctxTiers() {
   const m = state.meta || {};
-  return { warn: m.subagentWarnPct ?? 25, cut: m.subagentFollowupPct ?? 35 };
+  return m.subagentWarnPct != null && m.subagentFollowupPct != null && m.subagentArchivePct != null
+    ? { warn: m.subagentWarnPct, cut: m.subagentFollowupPct, arch: m.subagentArchivePct }
+    : null;
 }
 /** docs/10 R1（修订三档）：上下文占比片段——>预警线（默认 25%）附「较长」（仍可派）、
- *  ≥拒收线（默认 35%）附「不宜再派」（服务端拒收）。纯文本，消费点统一走 esc。 */
+ *  ≥拒收线（默认 35%）附「不宜再派」（服务端拒收）、>归档线（默认 50%）附「超归档线」
+ *  （任务完成即强制归档）。纯文本，消费点统一走 esc。 */
 function ctxPctPart(row) {
   if (row.contextPct == null) return "";
   const t = ctxTiers();
+  if (!t) return " · 上下文 " + row.contextPct + "%";
+  if (row.contextPct > t.arch) return " · 上下文 " + row.contextPct + "% ⚠超归档线";
   if (row.contextPct >= t.cut) return " · 上下文 " + row.contextPct + "% ⚠不宜再派";
   if (row.contextPct > t.warn) return " · 上下文 " + row.contextPct + "% ⚠较长";
   return " · 上下文 " + row.contextPct + "%";

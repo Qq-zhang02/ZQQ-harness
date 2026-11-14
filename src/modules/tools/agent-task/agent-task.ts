@@ -9,6 +9,8 @@ import type { Tool } from "../../../tools/registry.ts";
 import type { SystemToolDeps } from "../../../core/types.ts";
 import type { SubagentRequest, SubagentResult } from "../../../core/types.ts";
 import { normalizeEffort } from "../../../providers/store.ts";
+// docs/21 §2.2-③：timeoutMs 下限单一出处（schema/校验/提示词三处曾各自写死 60000）
+import { SUBAGENT_TIMEOUT_MIN_MS } from "../../../config.ts";
 
 /** 单个任务项的参数 schema（agent_task 平铺；agent_tasks 包一层 tasks 数组）。 */
 export const TASK_ITEM_PROPERTIES: Record<string, unknown> = {
@@ -20,7 +22,7 @@ export const TASK_ITEM_PROPERTIES: Record<string, unknown> = {
   },
   scope: { type: "array", items: { type: "string" }, description: "可选，允许写入的相对路径前缀（缺省整个工作区）" },
   effort: { type: "string", enum: ["off", "low", "high", "max", "default"], description: "可选，思考档位（缺省继承本会话当前档位）" },
-  timeoutMs: { type: "integer", minimum: 60_000, description: "可选，超时毫秒数（最小 60000；缺省不限时）" },
+  timeoutMs: { type: "integer", minimum: SUBAGENT_TIMEOUT_MIN_MS, description: `可选，超时毫秒数（最小 ${SUBAGENT_TIMEOUT_MIN_MS}；缺省不限时）` },
   reusable: {
     type: "boolean",
     description:
@@ -54,7 +56,7 @@ export function parseTaskItem(args: Record<string, unknown>): { error: string } 
   }
   if (args.timeoutMs !== undefined && args.timeoutMs !== null) {
     const n = Number(args.timeoutMs);
-    if (!Number.isFinite(n) || n < 60_000) return { error: "错误：timeoutMs 必须 ≥60000 毫秒。" };
+    if (!Number.isFinite(n) || n < SUBAGENT_TIMEOUT_MIN_MS) return { error: `错误：timeoutMs 必须 ≥${SUBAGENT_TIMEOUT_MIN_MS} 毫秒。` };
     req.timeoutMs = Math.floor(n);
   }
   if (args.reusable !== undefined && args.reusable !== null && args.reusable !== false) {
@@ -229,7 +231,7 @@ export function createAgentFollowupTool(deps: SystemToolDeps): Tool {
         subId: { type: "integer", description: "可复用子代理序号（SSE 事件/报告标注里的 #N）" },
         description: { type: "string", description: "一句话任务摘要（事件与抽屉展示用，建议填）" },
         task: { type: "string", description: "新任务书：目标与期望产出（可引用该子代理的既有上下文——它记得之前的任务）" },
-        timeoutMs: { type: "integer", minimum: 60_000, description: "可选，本任务的超时毫秒数（最小 60000；缺省不限时；scope/effort 沿用首次派发）" },
+        timeoutMs: { type: "integer", minimum: SUBAGENT_TIMEOUT_MIN_MS, description: `可选，本任务的超时毫秒数（最小 ${SUBAGENT_TIMEOUT_MIN_MS}；缺省不限时；scope/effort 沿用首次派发）` },
       },
       required: ["task"],
     },
@@ -245,7 +247,7 @@ export function createAgentFollowupTool(deps: SystemToolDeps): Tool {
       let timeoutMs: number | undefined;
       if (args.timeoutMs !== undefined && args.timeoutMs !== null) {
         const n = Number(args.timeoutMs);
-        if (!Number.isFinite(n) || n < 60_000) return "错误：timeoutMs 必须 ≥60000 毫秒。";
+        if (!Number.isFinite(n) || n < SUBAGENT_TIMEOUT_MIN_MS) return `错误：timeoutMs 必须 ≥${SUBAGENT_TIMEOUT_MIN_MS} 毫秒。`;
         timeoutMs = Math.floor(n);
       }
       const description = args.description === undefined || args.description === null ? undefined : String(args.description).trim() || undefined;

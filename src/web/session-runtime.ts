@@ -7,7 +7,7 @@
  */
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { COMPACTION_PRESSURE, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT, type AppConfig } from "../config.ts";
+import { COMPACTION_PRESSURE, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT, type AppConfig } from "../config.ts";
 import { COMPACTION_PROMPT } from "../compaction.ts";
 import { pruneToolResult } from "../tools/prune.ts";
 import type { ChatMessage, LLMProvider, UsageBreakdown, UsageInfo } from "../llm/provider.ts";
@@ -129,9 +129,12 @@ export const metaSnapshot = (sh: SessionShell) => ({
   sandbox: SANDBOX_OPTIONS,
   sandboxAliases: SANDBOX_ALIASES,
   providerFormats: sh.ctx.providerFormats.all().map((d) => ({ format: d.format, label: d.label })),
-  // docs/10 R1：子代理上下文治理档位（前端 ⚠ 标记的单一出处，不硬编码）
+  // docs/10 R1：子代理上下文治理档位（前端 ⚠ 标记的单一出处，不硬编码）。
+  // docs/21 §2.2-⑤：补发第三档 subagentArchivePct（强制归档线）——三档全部下发，
+  // 前端不再写 25/35 兜底数字（meta 未到时不显示档位标记）。
   subagentWarnPct: SUBAGENT_WARN_CONTEXT_PCT,
   subagentFollowupPct: SUBAGENT_FOLLOWUP_CONTEXT_PCT,
+  subagentArchivePct: SUBAGENT_ARCHIVE_CONTEXT_PCT,
 });
 
 export function currentState(sh: SessionShell, rt: SessionRuntime) {

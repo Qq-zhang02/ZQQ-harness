@@ -95,11 +95,11 @@ test("isThinkingEffort：low/high/max 为思考模式，off/default 不是", () 
 test("parseHarnessConfig：合法全量解析（去重 + trim），无告警", () => {
   const { config, warnings } = parseHarnessConfig({
     disabledModules: ["tools.pwsh", " web-workspaces ", "tools.pwsh"],
-    thresholds: { compectionPressure: 0.5, maxToolRounds: 7, spillThreshold: 5_000 },
+    thresholds: { compactionPressure: 0.5, maxToolRounds: 7, spillThreshold: 5_000 },
   });
   assert.deepEqual(warnings, []);
   assert.deepEqual(config.disabledModules, ["tools.pwsh", "web-workspaces"]);
-  assert.equal(config.thresholds.compectionPressure, 0.5);
+  assert.equal(config.thresholds.compactionPressure, 0.5);
   assert.equal(config.thresholds.maxToolRounds, 7);
   assert.equal(config.thresholds.spillThreshold, 5_000);
 });
@@ -107,13 +107,13 @@ test("parseHarnessConfig：合法全量解析（去重 + trim），无告警", (
 test("parseHarnessConfig：非法值逐项忽略并告警，未知键告警（打字错误防护）", () => {
   const { config, warnings } = parseHarnessConfig({
     disabledModules: ["ok", 42, ""],
-    thresholds: { compectionPressure: 1.5, spillThreshold: "x", maxToolRounds: 7.5, unknownKey: 1 },
+    thresholds: { compactionPressure: 1.5, spillThreshold: "x", maxToolRounds: 7.5, unknownKey: 1 },
     extraTop: true,
   });
   assert.deepEqual(config.disabledModules, ["ok"]);
-  assert.equal(config.thresholds.compectionPressure, undefined);
+  assert.equal(config.thresholds.compactionPressure, undefined);
   assert.equal(config.thresholds.maxToolRounds, undefined);
-  assert.ok(warnings.some((w) => w.includes("compectionPressure")), warnings.join("；"));
+  assert.ok(warnings.some((w) => w.includes("compactionPressure")), warnings.join("；"));
   assert.ok(warnings.some((w) => w.includes("spillThreshold")));
   assert.ok(warnings.some((w) => w.includes("maxToolRounds")));
   assert.ok(warnings.some((w) => w.includes("unknownKey")));
@@ -131,19 +131,46 @@ test("parseHarnessConfig：null/数组/字符串顶层一律全缺省", () => {
 
 test("resolveThresholds：缺省值正确；覆盖生效；pwsh 最大超时不低于缺省超时", () => {
   const d = resolveThresholds({});
-  assert.equal(d.compectionPressure, 0.8);
+  assert.equal(d.compactionPressure, 0.8);
   assert.equal(d.spillThreshold, 20_000);
-  assert.equal(d.compectionKeepRatio, 0.3);
-  assert.equal(d.compectionManualKeepTokens, 0);
+  assert.equal(d.compactionKeepRatio, 0.3);
+  assert.equal(d.compactionManualKeepTokens, 0);
   assert.equal(d.defaultContextLength, 1_000_000);
   assert.equal(d.maxToolRounds, 15);
   assert.equal(d.pwshTimeoutMs, 60_000);
   assert.equal(d.pwshMaxTimeoutMs, 300_000);
   assert.equal(d.toolResultMaxChars, 24_000);
-  const o = resolveThresholds({ pwshTimeoutMs: 120_000, pwshMaxTimeoutMs: 60_000, compectionManualKeepTokens: 500 });
-  assert.equal(o.compectionManualKeepTokens, 500);
+  const o = resolveThresholds({ pwshTimeoutMs: 120_000, pwshMaxTimeoutMs: 60_000, compactionManualKeepTokens: 500 });
+  assert.equal(o.compactionManualKeepTokens, 500);
   assert.equal(o.pwshTimeoutMs, 120_000);
   assert.ok(o.pwshMaxTimeoutMs >= o.pwshTimeoutMs);
+});
+
+// ---- docs/21 §2.2-④：compection*（拼写错误旧键）双读兼容 ----
+
+test("parseHarnessConfig：compection* 旧拼写键映射到 compaction* 并告警更名（docs/21 §2.2-④）", () => {
+  const a = parseHarnessConfig({
+    thresholds: { compectionPressure: 0.5, compectionKeepRatio: 0.4, compectionManualKeepTokens: 100 },
+  });
+  assert.equal(a.config.thresholds.compactionPressure, 0.5);
+  assert.equal(a.config.thresholds.compactionKeepRatio, 0.4);
+  assert.equal(a.config.thresholds.compactionManualKeepTokens, 100);
+  for (const old of ["compectionPressure", "compectionKeepRatio", "compectionManualKeepTokens"]) {
+    assert.ok(a.warnings.some((w) => w.includes(`"${old}"`) && w.includes("已更名")), `旧键 ${old} 应告警更名提示`);
+  }
+});
+
+test("parseHarnessConfig：新旧键同存时新键优先（旧键仅告警不覆盖）", () => {
+  const b = parseHarnessConfig({ thresholds: { compectionPressure: 0.5, compactionPressure: 0.6 } });
+  assert.equal(b.config.thresholds.compactionPressure, 0.6);
+  assert.ok(b.warnings.some((w) => w.includes("已更名")));
+});
+
+test("parseHarnessConfig：旧拼写键的非法值走新键名校验（告警含规范名）", () => {
+  const c = parseHarnessConfig({ thresholds: { compectionPressure: 1.5 } });
+  assert.equal(c.config.thresholds.compactionPressure, undefined);
+  assert.ok(c.warnings.some((w) => w.includes("已更名")));
+  assert.ok(c.warnings.some((w) => w.includes("compactionPressure") && w.includes("不合法")));
 });
 
 // ---- 子代理阈值（docs/5 SA0：键名拼写即 API，测试锁缺省/覆盖/校验规则） ----

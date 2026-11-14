@@ -5,12 +5,18 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+/** 请求体上限（docs/21 §2.2-①）：32MB——覆盖 /api/chat 图片消息的合法上限
+ *  （4 张 × 5MB 解码后 base64 膨胀 ≈ 27.3MB）+ 余量；单张图片的 5MB 闸在
+ *  web-sessions 的 parseChatImages（那才是生效的业务校验）。此前 1MB 会先于
+ *  图片校验拦截，原图 ≳700KB 即被拒，"每张 ≤5MB"实际不可达。 */
+export const HTTP_BODY_MAX_BYTES = 32 * 1024 * 1024;
+
 export async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req) {
     size += c.length;
-    if (size > 1_000_000) throw new Error("请求体过大");
+    if (size > HTTP_BODY_MAX_BYTES) throw new Error("请求体过大");
     chunks.push(c);
   }
   const text = Buffer.concat(chunks).toString("utf8").trim();

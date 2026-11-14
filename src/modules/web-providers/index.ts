@@ -11,6 +11,7 @@ import {
   saveProviderFile,
   type ProviderConfig,
 } from "../../providers/store.ts";
+import { DEFAULT_CONTEXT_LENGTH } from "../../config.ts";
 import type { HarnessModule } from "../../core/module.ts";
 
 export const webProviders: HarnessModule = {
@@ -199,7 +200,8 @@ export const webProviders: HarnessModule = {
             apiKey: String(p.apiKey ?? "").trim(),
             model: String(p.model).trim(),
             effort: normalizeEffort(effortRaw) ?? fmtDef.defaultEffort(),
-            contextLength: Number(p.contextLength) > 0 ? Number(p.contextLength) : 1_000_000,
+            // docs/21 §2.2-②：缺省经 config.ts 单一出处（harness.json 可覆盖），不再重复写死 1M
+            contextLength: Number(p.contextLength) > 0 ? Number(p.contextLength) : DEFAULT_CONTEXT_LENGTH,
             maxTokens: null,
           };
         } else {

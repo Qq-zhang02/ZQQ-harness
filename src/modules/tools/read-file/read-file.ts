@@ -1,8 +1,7 @@
 import type { Tool } from "../../../tools/registry.ts";
 import type { SystemToolDeps } from "../../../core/types.ts";
-import { fileStamp, ledgerKey, readTextFile, resolveTarget, toLf } from "../../../core/file-tools.ts";
+import { fileStamp, ledgerKey, readTextFile, resolveTarget, toLf, TEXT_FILE_MAX_BYTES } from "../../../core/file-tools.ts";
 
-const MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_LIMIT = 2000;
 const MAX_CHARS = 100_000; // 单次返回上限（注册表修剪之前先自己收口，避免必然被剪的无效传输）
 
@@ -17,7 +16,7 @@ export function createReadFileTool(deps: SystemToolDeps): Tool {
     description:
       "读取一个文本文件的内容（UTF-8），输出带行号，可用 offset/limit 分段读取大文件。" +
       "成功读取会记入本会话的已读台账——覆写已有文件（write_file）或精确编辑（edit_file）前必须先读。" +
-      "不支持目录、二进制文件与超过 5MB 的文件（那些用 run_pwsh）。",
+      `不支持目录、二进制文件与超过 ${TEXT_FILE_MAX_BYTES / 1024 / 1024}MB 的文件（那些用 run_pwsh）。`,
     parameters: {
       type: "object",
       properties: {
@@ -34,7 +33,7 @@ export function createReadFileTool(deps: SystemToolDeps): Tool {
       } catch (e) {
         return `错误：${e instanceof Error ? e.message : String(e)}`;
       }
-      const r = readTextFile(abs, MAX_BYTES);
+      const r = readTextFile(abs);
       if (!r.ok) return `错误：${r.message}`;
       const lines = toLf(r.text).split("\n");
       if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop(); // 结尾换行不产生第 N+1 空行

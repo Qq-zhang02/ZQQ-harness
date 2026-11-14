@@ -19,16 +19,17 @@ export interface AppConfig {
 
 /** 阈值生效值：key 与本文件导出的常量一一对应（camelCase）。 */
 export interface EffectiveThresholds {
-  /** 上下文压缩触发阈值（(0,1]） */
-  compectionPressure: number;
+  /** 上下文压缩触发阈值（(0,1]）。docs/21 §2.2-④：键名由 compectionPressure（拼写错误）
+   *  更名为 compactionPressure，解析层双读兼容旧键（旧键告警更名提示）。 */
+  compactionPressure: number;
   /** @deprecated 落盘（spill）阈值——docs/10 R2 起废弃：修剪改为「只保留头部 + 触发即全文
    *  落盘」，不再有门槛。键保留解析仅为兼容已写入 harness.json 的旧配置（不产生未知键
    *  告警），运行时无消费方。 */
   spillThreshold: number;
-  /** 压缩保留预算比例（(0,1]） */
-  compectionKeepRatio: number;
-  /** 手动 /compact 保留预算（≥0 整数 token；0=全部进摘要） */
-  compectionManualKeepTokens: number;
+  /** 压缩保留预算比例（(0,1]）；原名 compectionKeepRatio（拼写更正） */
+  compactionKeepRatio: number;
+  /** 手动 /compact 保留预算（≥0 整数 token；0=全部进摘要）；原名 compectionManualKeepTokens */
+  compactionManualKeepTokens: number;
   /** 上下文长度缺省值（>0，提供方表单缺省与前端占比兜底） */
   defaultContextLength: number;
   /** 工具调用轮次上限（≥1 整数） */
@@ -64,6 +65,14 @@ export interface EffectiveThresholds {
 
 /** harness.json thresholds 的覆盖项：键可省略 = 用缺省。 */
 export type ThresholdOverrides = Partial<Record<keyof EffectiveThresholds, number>>;
+
+/** docs/21 §2.2-④：历史拼写错误键名 → 规范名（解析层双读兼容——旧键读到即映射到新键并
+ *  告警更名提示；新旧同存时新键优先）。删除本表前先确认无用户配置仍写旧键。 */
+const RENAMED_THRESHOLD_KEYS: Readonly<Record<string, keyof EffectiveThresholds>> = {
+  compectionPressure: "compactionPressure",
+  compectionKeepRatio: "compactionKeepRatio",
+  compectionManualKeepTokens: "compactionManualKeepTokens",
+};
 
 export interface HarnessConfig {
   /** 要禁用的模块名（如 "tools.pwsh"，内置与外部一视同仁） */
@@ -102,9 +111,9 @@ export function parseHarnessConfig(raw: unknown): { config: HarnessConfig; warni
       warnings.push("thresholds 必须是对象，已忽略");
     } else {
       const rules: Record<keyof EffectiveThresholds, { hint: string; test: (n: number) => boolean }> = {
-        compectionPressure: { hint: "(0,1] 的小数", test: (n) => n > 0 && n <= 1 },
-        compectionKeepRatio: { hint: "(0,1] 的小数", test: (n) => n > 0 && n <= 1 },
-        compectionManualKeepTokens: { hint: "≥0 的整数 token", test: (n) => Number.isInteger(n) && n >= 0 },
+        compactionPressure: { hint: "(0,1] 的小数", test: (n) => n > 0 && n <= 1 },
+        compactionKeepRatio: { hint: "(0,1] 的小数", test: (n) => n > 0 && n <= 1 },
+        compactionManualKeepTokens: { hint: "≥0 的整数 token", test: (n) => Number.isInteger(n) && n >= 0 },
         spillThreshold: { hint: "≥0 的整数字符数", test: (n) => Number.isInteger(n) && n >= 0 },
         defaultContextLength: { hint: ">0 的数字", test: (n) => n > 0 },
         maxToolRounds: { hint: "≥1 的整数", test: (n) => Number.isInteger(n) && n >= 1 },
@@ -122,13 +131,24 @@ export function parseHarnessConfig(raw: unknown): { config: HarnessConfig; warni
         archiveRenderMaxChars: { hint: ">0 的整数字符数", test: (n) => Number.isInteger(n) && n > 0 },
       };
       const t = v.thresholds as Record<string, unknown>;
-      for (const key of Object.keys(t)) {
+      // 先做旧键→新键归一（docs/21 §2.2-④）：旧拼写键一律告警更名提示，值仅在无新键时采纳
+      const normalized: Record<string, unknown> = {};
+      for (const rawKey of Object.keys(t)) {
+        const renamed = RENAMED_THRESHOLD_KEYS[rawKey];
+        if (!renamed) {
+          normalized[rawKey] = t[rawKey];
+          continue;
+        }
+        warnings.push(`阈值键 "${rawKey}" 已更名 "${renamed}"（拼写修正），兼容读取，建议改用新键`);
+        if (!(renamed in t)) normalized[renamed] = t[rawKey];
+      }
+      for (const key of Object.keys(normalized)) {
         const rule = (rules as Record<string, (typeof rules)[keyof EffectiveThresholds]>)[key];
         if (!rule) {
           warnings.push(`未知阈值 "${key}"，已忽略（检查拼写）`);
           continue;
         }
-        const n = t[key];
+        const n = normalized[key];
         if (typeof n !== "number" || !Number.isFinite(n) || !rule.test(n)) {
           warnings.push(`阈值 "${key}" 的值 ${JSON.stringify(n)} 不合法（应为${rule.hint}），已忽略`);
           continue;
@@ -143,10 +163,10 @@ export function parseHarnessConfig(raw: unknown): { config: HarnessConfig; warni
 /** 缺省值 + 覆盖项 → 生效值（含 pwsh 超时交叉校验：最大超时不得低于缺省超时）。 */
 export function resolveThresholds(t: ThresholdOverrides): EffectiveThresholds {
   const out: EffectiveThresholds = {
-    compectionPressure: t.compectionPressure ?? 0.8,
+    compactionPressure: t.compactionPressure ?? 0.8,
     spillThreshold: t.spillThreshold ?? 20_000,
-    compectionKeepRatio: t.compectionKeepRatio ?? 0.3,
-    compectionManualKeepTokens: t.compectionManualKeepTokens ?? 0,
+    compactionKeepRatio: t.compactionKeepRatio ?? 0.3,
+    compactionManualKeepTokens: t.compactionManualKeepTokens ?? 0,
     defaultContextLength: t.defaultContextLength ?? 1_000_000,
     maxToolRounds: t.maxToolRounds ?? 15,
     pwshTimeoutMs: t.pwshTimeoutMs ?? 60_000,
@@ -208,12 +228,12 @@ export const DEFAULTS = {
 };
 
 /** 上下文压缩触发阈值：contextPressure >= 该值时先压缩再跑轮（UI 同步预警高亮，阈值随 meta 下发）。 */
-export const COMPACTION_PRESSURE = EFFECTIVE.compectionPressure;
+export const COMPACTION_PRESSURE = EFFECTIVE.compactionPressure;
 // spillThreshold 已废弃（docs/10 R2）：修剪改为「只保留头部 + 触发即全文落盘」，无门槛；
 // 键仅为兼容旧 harness.json 保留解析（见 EffectiveThresholds 注释），不再导出常量。
 
 /** 压缩保留预算：尾部完整轮次保留约 30% 上下文窗口的 token（自动触发/溢出兜底用）。 */
-export const COMPACTION_KEEP_RATIO = EFFECTIVE.compectionKeepRatio;
+export const COMPACTION_KEEP_RATIO = EFFECTIVE.compactionKeepRatio;
 
 /**
  * 手动压缩（/api/compact）的保留预算（token）：用户主动 /compact 的预期是"立即显著变小"。
@@ -222,7 +242,7 @@ export const COMPACTION_KEEP_RATIO = EFFECTIVE.compectionKeepRatio;
  * （实测表现即"压缩后上下文没变"）；即便设 4k，短对话仍会只摘要一条消息、上下文不降反升。
  * 自动触发/溢出兜底仍走 KEEP_RATIO（保留工作集），语义分开。
  */
-export const COMPACTION_MANUAL_KEEP_TOKENS = EFFECTIVE.compectionManualKeepTokens;
+export const COMPACTION_MANUAL_KEEP_TOKENS = EFFECTIVE.compactionManualKeepTokens;
 
 /** 上下文长度的缺省值（提供方表单缺省、前端占比显示兜底）：随 /api/meta 下发，前端不再硬编码。 */
 export const DEFAULT_CONTEXT_LENGTH = EFFECTIVE.defaultContextLength;
@@ -257,6 +277,18 @@ export const SUBAGENT_ARCHIVE_CONTEXT_PCT = EFFECTIVE.subagentArchiveContextPct;
 /** read_archive 存档渲染字符预算（docs/17，默认 80k）：JSON→可读文本超出截为头部 + 省略标记
  *  （pruneToolResult 同款），防整份多任务存档一次性灌满接收方上下文。 */
 export const ARCHIVE_RENDER_MAX_CHARS = EFFECTIVE.archiveRenderMaxChars;
+
+// ---- 跨文件共享的运行常量（docs/21 §2.2/§2.4：单一出处，消重复定义；阶段 B 候选阈值键） ----
+
+/** 子代理任务 timeoutMs 的最小值（agent-task schema/校验/提示词三处共用同一出处；
+ *  阶段 B 候选阈值键 subagentTimeoutMinMs） */
+export const SUBAGENT_TIMEOUT_MIN_MS = 60_000;
+
+/** MCP stdio 握手超时（transport 与 mcp-manage 提示词共用；阶段 B 候选阈值键 mcpHandshakeTimeoutMs） */
+export const MCP_HANDSHAKE_TIMEOUT_MS = 20_000;
+
+/** MCP 工具调用缺省超时（manager 不传参时全部 mcp__ 工具生效此值；阶段 B 候选阈值键 mcpCallTimeoutMs） */
+export const MCP_CALL_TIMEOUT_MS = 60_000;
 
 /**
  * 前端设置项唯一出处（模块化架构重构 §4.11/§5）：随 /api/meta 下发，
