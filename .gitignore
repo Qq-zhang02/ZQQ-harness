@@ -5,3 +5,4 @@ sessions/
 workspaces.json
 mcp.json
 providers.json
+.zcode/
