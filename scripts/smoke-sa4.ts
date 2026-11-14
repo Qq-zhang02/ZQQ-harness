@@ -223,6 +223,18 @@ try {
       hasKey && html.includes("function onSubagent") && html.includes("🎯 子代理 ") && serverLines <= 250,
       `handler=${hasKey}；server.ts=${serverLines} 行`,
     );
+    // docs/22 §4.1：图片规则单一出处——前端校验/按钮 title 全走 meta.imageRules（imgRules()），
+    // 不再有 IMG_MIMES/规则字面量散落；HTML 静态 accept/title 保留作无 JS 降级（带注释指向 config.ts）。
+    record(
+      "图片规则单一出处（docs/22 §4.1）：前端校验走 meta.imageRules（imgRules），无 IMG_MIMES/4 张/5MB 校验字面量；静态 accept 降级保留且注释指向 config.ts",
+      !html.includes("IMG_MIMES") &&
+        html.includes("const imgRules = () => metaOf().imageRules") &&
+        html.includes("r.maxCount") && html.includes("r.maxBytes") && html.includes("r.mimes.includes") &&
+        !/(pendingImages\.length >= 4|f\.size > 5 \* 1024 \* 1024)/.test(html) &&
+        html.includes('id="imgFile" accept="image/png,image/jpeg,image/gif,image/webp"') &&
+        /<!-- accept 的 mime 清单 = config\.ts IMAGE_RULES\.mimes/.test(html),
+      "",
+    );
   }
 
   // ---------- 5) P2：worker 直调真 MCP（demo stdio 服务器全链路，docs/6 §2.3 路线 A） ----------

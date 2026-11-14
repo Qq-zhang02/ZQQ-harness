@@ -5,7 +5,7 @@
  */
 import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { COMPACTION_MANUAL_KEEP_TOKENS } from "../../config.ts";
+import { COMPACTION_MANUAL_KEEP_TOKENS, IMAGE_RULES } from "../../config.ts";
 import { normalizeEffort } from "../../providers/store.ts";
 import { normalizeAskMode } from "../../approval/types.ts";
 import { normalizeSandboxMode } from "../../sandbox/types.ts";
@@ -15,22 +15,22 @@ import { takeCoordinatorTurnText } from "../../web/session-lifecycle.ts";
 import type { HarnessModule } from "../../core/module.ts";
 import type { ChatImage } from "../../llm/provider.ts";
 
-/** /api/chat 的 images 校验（docs/10 R3）：≤4 张、mime 白名单、base64、单张解码后 ≤5MB。
+/** /api/chat 的 images 校验（docs/10 R3）：≤4 张、mime 白名单、base64、单张解码后 ≤5MB
+ *  ——规则数字单一出处 = config.IMAGE_RULES（docs/22 §4.1，文案插值渲染不变）。
  *  合法返回 { images }（空数组/缺省 = 无图）；非法返回 { error }。 */
 function parseChatImages(raw: unknown): { images?: ChatImage[]; error?: string } {
   if (raw === undefined || raw === null) return {};
   if (!Array.isArray(raw) || raw.length === 0) return { error: "images 必须是非空数组（无图请省略该字段）" };
-  if (raw.length > 4) return { error: "一次最多携带 4 张图片" };
-  const MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+  if (raw.length > IMAGE_RULES.maxCount) return { error: `一次最多携带 ${IMAGE_RULES.maxCount} 张图片` };
   const out: ChatImage[] = [];
   for (const x of raw) {
     if (!x || typeof x !== "object") return { error: "images 数组元素必须是 { mime, data }" };
     const v = x as Record<string, unknown>;
     const mime = String(v.mime ?? "");
     const data = typeof v.data === "string" ? v.data : "";
-    if (!(MIMES as string[]).includes(mime)) return { error: `不支持的图片格式 ${mime || "(空)"}（支持 PNG/JPEG/GIF/WEBP）` };
+    if (!IMAGE_RULES.mimes.includes(mime)) return { error: `不支持的图片格式 ${mime || "(空)"}（支持 PNG/JPEG/GIF/WEBP）` };
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return { error: "图片 data 必须是 base64 字符串（无 data: 前缀）" };
-    if ((Math.floor(data.length / 4) * 3) > 5 * 1024 * 1024) return { error: "单张图片超过 5MB 上限" };
+    if ((Math.floor(data.length / 4) * 3) > IMAGE_RULES.maxBytes) return { error: `单张图片超过 ${IMAGE_RULES.maxBytes / (1024 * 1024)}MB 上限` };
     out.push({ mime: mime as ChatImage["mime"], data });
   }
   return { images: out };

@@ -8,7 +8,7 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **7 个系统�
 - **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（46 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 docs/22）：阶段 A 剩余 1 项——图片规则（4 张/5MB/mime）前后端四重定义收敛为 `IMAGE_RULES` 经 meta 下发；其后按 docs/21 §4 接阶段 B（P1 配置化 16 候选键）。
+- **当前进行中**（详见 docs/22）：阶段 A（P0 修复）**8/8 全部完成**（末项 IMAGE_RULES：图片规则四重定义收敛为 config 单一出处、经 meta 下发）；下一步按 docs/21 §4 接阶段 B（P1 配置化 16 候选键，第一批 8 键见 docs/22 §4.2）。
 
 ## 快速开始
 
@@ -337,7 +337,7 @@ scripts/
 
 ```bash
 npm run typecheck        # tsc 类型检查（noEmit，直接 node 跑 TS）
-npm test                 # node:test 单元测试 376 项（含契约测试/哨兵与沙箱真实执行测试，需 Windows + pwsh；**显式文件清单**——新增测试文件须同步登记 package.json）
+npm test                 # node:test 单元测试 377 项（含契约测试/哨兵与沙箱真实执行测试，需 Windows + pwsh；**显式文件清单**——新增测试文件须同步登记 package.json）
 npm run smoke            # 真实 API 冒烟：连通性 / 工具闭环 / 审批拒绝（消耗少量 token）
 npm run smoke:anthropic  # anthropic 路线冒烟：多轮工具 + 思考存档/回放（消耗少量 token）
 npm run smoke:subagent   # 子代理机制冒烟：真实装配 + 非阻塞派发 + worker 工具循环 + 审批标注（零 token）

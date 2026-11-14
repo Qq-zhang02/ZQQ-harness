@@ -411,10 +411,12 @@
       <footer>
         <div id="imgBar" class="hidden"></div>
         <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行（/help 查看命令）"></textarea>
+        <!-- 图片按钮 title/校验规则由 meta.imageRules（服务端 config.ts IMAGE_RULES）下发后在 applyState/addImageFiles 插值；此处静态 title/accept 仅无 JS 降级 -->
         <button class="btn hidden" id="imgBtn" title="附加图片（当前提供方支持视觉，最多 4 张、每张 ≤5MB；随消息直接发给模型看）">📎</button>
         <button class="btn hidden" id="stopBtn" title="中断当前轮与全部子代理（已排队的消息保留，中断后续处理）">⏹ 停止</button>
         <button class="btn primary" id="sendBtn">发送</button>
       </footer>
+      <!-- accept 的 mime 清单 = config.ts IMAGE_RULES.mimes 的无 JS 降级副本（JS 就绪后校验以 meta 为准） -->
       <input type="file" id="imgFile" accept="image/png,image/jpeg,image/gif,image/webp" multiple class="hidden">
     </div>
   </div>
@@ -1676,8 +1678,15 @@ function applyState() {
   $("#stopBtn").classList.toggle("hidden", !coordBusy);
   // docs/10 R3：📎 上传按钮只在该会话提供方声明视觉时显示；busy 期隐藏（插话/排队不带图）。
   // 按钮不可见（切会话/切提供方/busy）时清空待发图片——图片只属于发起时的那个会话与那轮。
+  // docs/22 §4.1：按钮 title 由 meta.imageRules 插值（HTML 静态 title 仅无 JS 降级）；
+  // meta 未到（首帧前，正常不可见）时禁用，规则到达即恢复。
   const imgVisible = state.vision === true && !noWs && !state.busy;
+  const imgR = imgRules();
   $("#imgBtn").classList.toggle("hidden", !imgVisible);
+  $("#imgBtn").disabled = imgVisible && !imgR;
+  if (imgVisible && imgR) {
+    $("#imgBtn").title = "附加图片（当前提供方支持视觉，最多 " + imgR.maxCount + " 张、每张 ≤" + (imgR.maxBytes / 1048576) + "MB；随消息直接发给模型看）";
+  }
   if (!imgVisible && pendingImages.length > 0) { pendingImages = []; renderImgBar(); }
   input.placeholder = noWs
     ? "请先在左侧选择工作区"
@@ -2221,13 +2230,17 @@ function renderImgBar() {
   });
 }
 $("#imgBtn").addEventListener("click", () => $("#imgFile").click());
-const IMG_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+/** 消息图片规则（docs/22 §4.1 单一出处）：服务端 config.IMAGE_RULES 随 meta 下发
+ *  （maxCount/maxBytes/mimes）；meta 未到（首帧前）返回 null——校验入口拒绝、上传按钮禁用。 */
+const imgRules = () => metaOf().imageRules || null;
 /** 图片入列公共管线（📎 选文件与 Ctrl+V 粘贴共用）：数量/格式/大小校验 + base64 读取 + 预览。 */
 async function addImageFiles(files) {
   for (const f of files) {
-    if (pendingImages.length >= 4) { sysLine("一次最多携带 4 张图片", "err"); break; }
-    if (!IMG_MIMES.includes(f.type)) { sysLine("不支持的图片格式：" + (f.type || "未知") + "（支持 PNG/JPEG/GIF/WEBP）", "err"); continue; }
-    if (f.size > 5 * 1024 * 1024) { sysLine("图片 " + (f.name || "（剪贴板）") + " 超过 5MB 上限", "err"); continue; }
+    const r = imgRules();
+    if (!r) { sysLine("服务端配置未就绪，请稍候重试", "err"); break; }
+    if (pendingImages.length >= r.maxCount) { sysLine("一次最多携带 " + r.maxCount + " 张图片", "err"); break; }
+    if (!r.mimes.includes(f.type)) { sysLine("不支持的图片格式：" + (f.type || "未知") + "（支持 PNG/JPEG/GIF/WEBP）", "err"); continue; }
+    if (f.size > r.maxBytes) { sysLine("图片 " + (f.name || "（剪贴板）") + " 超过 " + (r.maxBytes / 1048576) + "MB 上限", "err"); continue; }
     const data = await new Promise((res) => {
       const fr = new FileReader();
       fr.onload = () => res(String(fr.result).split(",")[1] || "");
@@ -2248,7 +2261,7 @@ $("#imgFile").addEventListener("change", async () => {
 input.addEventListener("paste", (e) => {
   if (state.vision !== true) return; // 无视觉：不拦粘贴（文本照常），也不收图
   const files = [...(e.clipboardData?.items ?? [])]
-    .filter((it) => it.kind === "file" && IMG_MIMES.includes(it.type))
+    .filter((it) => it.kind === "file" && (imgRules()?.mimes ?? []).includes(it.type))
     .map((it) => it.getAsFile())
     .filter(Boolean);
   if (files.length === 0) return; // 无图片：走默认粘贴行为

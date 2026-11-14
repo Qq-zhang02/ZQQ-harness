@@ -290,6 +290,16 @@ export const MCP_HANDSHAKE_TIMEOUT_MS = 20_000;
 /** MCP 工具调用缺省超时（manager 不传参时全部 mcp__ 工具生效此值；阶段 B 候选阈值键 mcpCallTimeoutMs） */
 export const MCP_CALL_TIMEOUT_MS = 60_000;
 
+/** 消息图片规则（docs/10 R3；docs/22 §4.1 四重定义收敛）：≤4 张、单张解码后 ≤5MB、
+ *  mime 白名单——后端 parseChatImages 校验与前端校验/按钮 title（经 /api/meta 下发）的
+ *  单一出处。mimes 取值须与 ChatImage["mime"] 联合类型一致（web-sessions.test.ts 锁定）。
+ *  view_image 工具的磁盘文件规则（≤8MB）是另一套语义，不在此收敛。 */
+export const IMAGE_RULES = {
+  maxCount: 4,
+  maxBytes: 5 * 1024 * 1024,
+  mimes: ["image/png", "image/jpeg", "image/gif", "image/webp"],
+};
+
 /**
  * 前端设置项唯一出处（模块化架构重构 §4.11/§5）：随 /api/meta 下发，
  * 前端的思考档位/沙箱档位 option、档位文案、/think levels、/sandbox 别名全部由此渲染。

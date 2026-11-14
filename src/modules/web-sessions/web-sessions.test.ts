@@ -10,7 +10,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildContext } from "../../core/context.ts";
-import { loadConfig } from "../../config.ts";
+import { loadConfig, IMAGE_RULES } from "../../config.ts";
+import { metaSnapshot } from "../../web/session-runtime.ts";
 import { SessionStore } from "../../web/sessions.ts";
 import { webSessions } from "./index.ts";
 import type { ServerRequest } from "../../core/http.ts";
@@ -382,13 +383,40 @@ test("/api/chat：images 校验（合法透传 startTurn / 非法 400 / 超 4 �
     // 无图：不产生 images 字段（与旧行为一致）
     await call({ text: "纯文本" });
     assert.equal(started[1]!.images, undefined);
-    // 非法 mime / 非 base64 / 超 4 张
-    assert.equal((await call({ text: "x", images: [{ mime: "image/bmp", data: "QQ==" }] })).status, 400);
+    // 非法 mime / 非 base64 / 超 4 张 / 单张超 5MB——错误文案插值渲染不变（docs/22 §4.1 锁定）
+    const errMsg = (r: { data: unknown }) => (r.data as { error?: string }).error;
+    assert.equal(errMsg(await call({ text: "x", images: [{ mime: "image/bmp", data: "QQ==" }] })), "不支持的图片格式 image/bmp（支持 PNG/JPEG/GIF/WEBP）");
     assert.equal((await call({ text: "x", images: [{ mime: "image/png", data: "not base64!!" }] })).status, 400);
-    assert.equal((await call({ text: "x", images: [goodImg, goodImg, goodImg, goodImg, goodImg] })).status, 400);
+    assert.equal(errMsg(await call({ text: "x", images: [goodImg, goodImg, goodImg, goodImg, goodImg] })), "一次最多携带 4 张图片");
+    // base64 长 6990508 → 解码 5242881 字节，刚超 5MB（5242880）上限
+    assert.equal(errMsg(await call({ text: "x", images: [{ mime: "image/png", data: "A".repeat(6990508) }] })), "单张图片超过 5MB 上限");
     // busy + 图 → 409（运行中不带图）
     (normalRt as { busy: boolean }).busy = true;
     assert.equal((await call({ text: "x", images: [goodImg] })).status, 409);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("meta 下发 imageRules（docs/22 §4.1）：前端图片规则单一出处 = config.IMAGE_RULES（张数/单张字节/mime 白名单）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-websessions-metarules-"));
+  try {
+    const ctx = buildContext(
+      {
+        userDir: dir,
+        globalSkillsDir: join(dir, "skills"),
+        globalMcpFile: join(dir, "mcp.json"),
+        workspacesFile: join(dir, "workspaces.json"),
+        sessionsDir: join(dir, "sessions"),
+      },
+      loadConfig(),
+    );
+    const meta = metaSnapshot({ ctx } as Parameters<typeof metaSnapshot>[0]);
+    assert.deepEqual(meta.imageRules, IMAGE_RULES, "meta.imageRules 与 config.IMAGE_RULES 同源一致");
+    // mime 白名单锁定为 ChatImage["mime"] 联合类型的四值（config.ts 注释引用的锁定点）
+    assert.deepEqual(meta.imageRules.mimes, ["image/png", "image/jpeg", "image/gif", "image/webp"]);
+    assert.equal(meta.imageRules.maxCount, 4);
+    assert.equal(meta.imageRules.maxBytes, 5 * 1024 * 1024);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

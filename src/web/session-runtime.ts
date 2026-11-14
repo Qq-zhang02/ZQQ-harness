@@ -7,7 +7,7 @@
  */
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { COMPACTION_PRESSURE, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT, type AppConfig } from "../config.ts";
+import { COMPACTION_PRESSURE, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, IMAGE_RULES, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT, type AppConfig } from "../config.ts";
 import { COMPACTION_PROMPT } from "../compaction.ts";
 import { pruneToolResult } from "../tools/prune.ts";
 import type { ChatMessage, LLMProvider, UsageBreakdown, UsageInfo } from "../llm/provider.ts";
@@ -135,6 +135,9 @@ export const metaSnapshot = (sh: SessionShell) => ({
   subagentWarnPct: SUBAGENT_WARN_CONTEXT_PCT,
   subagentFollowupPct: SUBAGENT_FOLLOWUP_CONTEXT_PCT,
   subagentArchivePct: SUBAGENT_ARCHIVE_CONTEXT_PCT,
+  // docs/22 §4.1：消息图片规则（张数/单张字节/mime 白名单）单一出处 config.IMAGE_RULES——
+  // 前端校验与按钮 title 由此渲染，不再硬编码（HTML 静态 accept 保留作无 JS 降级）。
+  imageRules: IMAGE_RULES,
 });
 
 export function currentState(sh: SessionShell, rt: SessionRuntime) {
