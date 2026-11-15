@@ -1,5 +1,5 @@
 {
-  "_comment": "前端纯逻辑模块的类型检查（docs/26 F1/§3.2-2）：JSDoc + checkJs 拿 ~80% TS 价值、零构建。单独开文件的原因：主 tsconfig 开 checkJs 会波及 scripts/*.mjs。",
+  "_comment": "前端纯逻辑模块的类型检查（docs/26 F1/§3.2-2；F4 起收窄为显式清单）：JSDoc + checkJs 拿 ~80% TS 价值、零构建。单独开文件的原因：主 tsconfig 开 checkJs 会波及 scripts/*.mjs。F4 大分区拆文件后 app/ 新增七个视图模块（dom/state/drawer/sidebar/chat/modals/main）——它们不进本配置（对 2,400 行 DOM 代码开 checkJs 严检是独立工程，且可测化边界本就以纯逻辑为界），改由 tsconfig.frontend-view.json 做 import 图/语法检查；新增纯逻辑模块须在此登记（沿 package.json 测试清单同款纪律）。",
   "compilerOptions": {
     "target": "ES2023",
     "module": "ESNext",
@@ -13,5 +13,15 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["src/web/public/app/**/*.js"]
+  "include": [
+    "src/web/public/app/replay.js",
+    "src/web/public/app/replay.test.js",
+    "src/web/public/app/turns.js",
+    "src/web/public/app/turns.test.js",
+    "src/web/public/app/autoreport.js",
+    "src/web/public/app/autoreport.test.js",
+    "src/web/public/app/store.js",
+    "src/web/public/app/store.test.js"
+  ]
 }
+

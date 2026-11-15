@@ -1,7 +1,7 @@
 /**
  * 契约测试与防回归网（模块化架构重构 §7 P0）。
  * 四类跨模块/跨端契约，全部只读源码与快照，无行为改动：
- *  a) SSE 事件名三端一致：core/events.ts ↔ web/server.ts ↔ index.html（正则双向提取比对）；
+ *  a) SSE 事件名三端一致：core/events.ts ↔ web/server.ts ↔ app/main.js（F4 起 SSE 表在入口模块；正则双向提取比对）；
  *  b) 系统提示 golden 快照：固定输入逐字节锁定（P2 section 化时更新快照 = 显式决定）；
  *  c) 扩展成本哨兵：以特征串锁定"改动收敛进模块"的完成状态，各阶段完成时逐个
  *     把 test.skip 改回 test 启用（启用前保持 skip，因为特征串当前仍在源码中）；
@@ -23,11 +23,20 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = join(HERE, "..", "web", "server.ts");
 const AGENT_TS = join(HERE, "..", "agent.ts");
 const INDEX_HTML = join(HERE, "..", "web", "public", "index.html");
+const APP_DIR = join(HERE, "..", "web", "public", "app");
 const MODULES_DIR = resolve(HERE, "..", "modules");
 
 const serverSrc = readFileSync(SERVER_TS, "utf8");
 const agentSrc = readFileSync(AGENT_TS, "utf8");
 const html = readFileSync(INDEX_HTML, "utf8");
+// F4（docs/26 §6）后视图代码全部在 app/ 模块：main.js 持 SSE 表，modals.js 持设置模态；
+// frontSrc = index.html 骨架 + 全部非测试模块拼接——面向"前端整体"的哨兵断言一律用它。
+const mainSrc = readFileSync(join(APP_DIR, "main.js"), "utf8");
+const modalsSrc = readFileSync(join(APP_DIR, "modals.js"), "utf8");
+const frontSrc =
+  html + "\n" +
+  readdirSync(APP_DIR).filter((f) => f.endsWith(".js") && !f.endsWith(".test.js"))
+    .map((f) => readFileSync(join(APP_DIR, f), "utf8")).join("\n");
 
 // ---------- a) SSE 事件名契约 ----------
 
@@ -44,20 +53,21 @@ test("SSE 契约：后端（server 瘦壳 + web + modules）广播/发送的事�
   assert.deepEqual([...used].sort(), Object.values(SSE_EVENTS).slice().sort());
 });
 
-test("SSE 契约：index.html 的 SSE_HANDLERS 表监听的事件名与 core/events.ts 完全一致", () => {
-  // P7 起监听由表驱动注册（for + addEventListener），从表字面量提取方法键
-  const start = html.indexOf("const SSE_HANDLERS = {");
-  const end = html.indexOf("\n};", start);
-  assert.ok(start >= 0 && end > start, "index.html 中找不到 SSE_HANDLERS 表（前端重构后请同步更新本测试）");
-  const keys = [...html.slice(start, end).matchAll(/\n  ([A-Za-z]+)\(/g)].map((m) => m[1]);
+test("SSE 契约：main.js 的 SSE_HANDLERS 表监听的事件名与 core/events.ts 完全一致", () => {
+  // P7 起监听由表驱动注册（for + addEventListener），从表字面量提取方法键；
+  // F4 起 SSE 表从 index.html 内联迁至入口模块 app/main.js（表体逐字未动）
+  const start = mainSrc.indexOf("const SSE_HANDLERS = {");
+  const end = mainSrc.indexOf("\n};", start);
+  assert.ok(start >= 0 && end > start, "app/main.js 中找不到 SSE_HANDLERS 表（前端重构后请同步更新本测试）");
+  const keys = [...mainSrc.slice(start, end).matchAll(/\n  ([A-Za-z]+)\(/g)].map((m) => m[1]);
   assert.deepEqual(keys.sort(), Object.values(SSE_EVENTS).slice().sort());
 });
 
 test("SSE 契约：dispatchBuffered 缓冲重放复用 SSE_HANDLERS（可重放事件 ⊆ SSE_EVENTS 由表键锁定）", () => {
-  const fnStart = html.indexOf("function dispatchBuffered");
-  const fnEnd = html.indexOf("async function refreshSnapshot");
-  assert.ok(fnStart >= 0 && fnEnd > fnStart, "index.html 中找不到 dispatchBuffered 定位锚点（前端重构后请同步更新本测试）");
-  const body = html.slice(fnStart, fnEnd);
+  const fnStart = mainSrc.indexOf("function dispatchBuffered");
+  const fnEnd = mainSrc.indexOf("// ---------- 斜杠命令表", fnStart);
+  assert.ok(fnStart >= 0 && fnEnd > fnStart, "app/main.js 中找不到 dispatchBuffered 定位锚点（前端重构后请同步更新本测试）");
+  const body = mainSrc.slice(fnStart, fnEnd);
   assert.ok(
     body.includes("SSE_HANDLERS[item.ev]") && !/case "/.test(body),
     "dispatchBuffered 应查 SSE_HANDLERS 表分发（§4.11：与实时路径共用处理表，不另写 switch）",
@@ -362,8 +372,8 @@ test("哨兵（阶段 C 已启用）：高风险字面量单一出处（userdir/
   const prefixHit = all.filter((f) => srcOf(f).includes("[子代理任务报告 · 自动送达]"));
   assert.ok(prefixHit.length === 1 && prefixHit[0]!.endsWith(join("core", "events.ts")), "送达前缀唯一出处 = core/events.ts");
   assert.ok(
-    !html.includes("[子代理任务报告 · 自动送达]") && !html.includes("[子代理状态 · 自动送达]"),
-    "前端不得写死送达前缀（splitAutoText 经 meta 判别，docs/21 §2.4 协议解耦）",
+    !frontSrc.includes("[子代理任务报告 · 自动送达]") && !frontSrc.includes("[子代理状态 · 自动送达]"),
+    "前端不得写死送达前缀（splitAutoText 经 meta 判别，docs/21 §2.4 协议解耦；F4 起扫 index.html+app/ 全量）",
   );
   // 3) meta 下发两前缀（前端消费的依赖面）
   const runtimeSrc = readFileSync(join(HERE, "..", "web", "session-runtime.ts"), "utf8");
@@ -376,14 +386,14 @@ test("哨兵（阶段 C 已启用）：高风险字面量单一出处（userdir/
   assert.ok(httpSrc.includes("SSE_PING_MS = 20_000") && serverSrc.includes("SSE_PING_MS"), "SSE 心跳 = SSE_PING_MS 单一出处");
 });
 
-test("哨兵（阶段 C 已启用）：前端 CFG 常量区 + XSS 机制化（docs/21 §3.2-①②）", () => {
-  assert.ok(html.includes("const CFG = {"), "script 头部应有 CFG 常量区");
+test("哨兵（阶段 C 已启用；F4 起扫 index.html+app/ 全量）：前端 CFG 常量区 + XSS 机制化（docs/21 §3.2-①②）", () => {
+  assert.ok(frontSrc.includes("const CFG = {"), "state.js 应有 CFG 常量区（F4 起随共享状态层）");
   for (const stray of ["> 20000", "slice(0, 300)", ", 3000)", ", 2500)", "scrollHeight, 160"]) {
-    assert.ok(!html.includes(stray), `index.html 不应再有散落字面量 "${stray}"（统一走 CFG）`);
+    assert.ok(!frontSrc.includes(stray), `前端不应再有散落字面量 "${stray}"（统一走 CFG）`);
   }
-  assert.ok(html.includes("&quot;") && html.includes("&#39;"), "esc() 应转义引号（属性注入面）");
-  assert.ok(html.includes("function el(tag, cls, trustedHtml)"), "el() 第三参应命名 trustedHtml（命名即文档）");
-  assert.ok(/mimes\.includes\(im\.mime\)/.test(html), "历史图片回放应经 mime 白名单复验");
+  assert.ok(frontSrc.includes("&quot;") && frontSrc.includes("&#39;"), "esc() 应转义引号（属性注入面）");
+  assert.ok(frontSrc.includes("function el(tag, cls, trustedHtml)"), "el() 第三参应命名 trustedHtml（命名即文档）");
+  assert.ok(/mimes\.includes\(im\.mime\)/.test(frontSrc), "历史图片回放应经 mime 白名单复验");
 });
 
 test("哨兵（阶段 C 已启用）：提供方 SDK 隐式超时/重试显式化（docs/21 §2.4 末行）", () => {
@@ -413,16 +423,17 @@ test("哨兵（阶段 D1 已启用）：子代理家族五文件各 ≤400 行�
 test("哨兵（docs/24 已启用）：前端零硬编码阈值——键名/文案/默认值只经 schema 下发；写路由热应用必经 initConfig", () => {
   const schema = thresholdSchema();
   assert.equal(schema.entries.length, 34, "schema 应为 34 个活跃阈值键（新增键需同步登记规则表与计数）");
-  // ① 设置模态区域（HTML 块 + JS 段）不写死任何阈值键名——说明/范围/默认值/分组的唯一来源
-  //    = GET /api/settings/harness 的 schema。全文件检查不可行：defaultContextLength 等键名是
-  //    meta 契约的合法消费（metaOf().defaultContextLength），与设置表单硬编码无关。
+  // ① 设置模态区域（HTML 块留 index.html + JS 段在 app/modals.js——F4 拆分后两处）不写死任何
+  //    阈值键名——说明/范围/默认值/分组的唯一来源 = GET /api/settings/harness 的 schema。
+  //    全文件检查不可行：defaultContextLength 等键名是 meta 契约的合法消费（metaOf().defaultContextLength），
+  //    与设置表单硬编码无关。
   const htmlStart = html.indexOf('id="setModal"');
   const htmlEnd = html.indexOf("子代理过程查看模态", htmlStart);
-  const jsStart = html.indexOf("// ---------- 运行阈值设置（docs/24");
-  const jsEnd = html.indexOf("// ---------- 工作区选择弹窗", jsStart);
+  const jsStart = modalsSrc.indexOf("// ---------- 运行阈值设置（docs/24");
+  const jsEnd = modalsSrc.indexOf("// ---------- 工作区选择弹窗", jsStart);
   assert.ok(htmlStart >= 0 && htmlEnd > htmlStart && jsStart >= 0 && jsEnd > jsStart,
-    "找不到设置模态区域锚点（前端重构后请同步更新本测试切片）");
-  const settingsRegion = html.slice(htmlStart, htmlEnd) + html.slice(jsStart, jsEnd);
+    "找不到设置模态区域锚点（index.html 骨架块 / app/modals.js JS 段；前端重构后请同步更新本测试切片）");
+  const settingsRegion = html.slice(htmlStart, htmlEnd) + modalsSrc.slice(jsStart, jsEnd);
   for (const e of schema.entries) {
     assert.ok(!settingsRegion.includes(e.key), `设置模态不得硬编码阈值键名 "${e.key}"（应经 schema 下发）`);
   }
@@ -437,14 +448,19 @@ test("哨兵（docs/24 已启用）：前端零硬编码阈值——键名/文�
 
 // ---------- 哨兵（docs/26 F1：前端纯逻辑模块化——零依赖/禁 DOM/行数防回涨三边界） ----------
 
-test("哨兵（docs/26 F1 已启用）：app/ 前端模块零依赖（禁 node_modules/远端 import）+ 纯逻辑禁 DOM 引用", () => {
-  const appDir = join(HERE, "..", "web", "public", "app");
-  const files = readdirSync(appDir).filter((f) => f.endsWith(".js"));
-  assert.ok(files.length >= 6, "app/ 应含 F1 三模块与其测试（replay/turns/autoreport × .js/.test.js）+ F2 store");
+test("哨兵（docs/26 F1/F4 已启用）：app/ 前端模块零依赖（禁 node_modules/远端 import）+ 纯逻辑禁 DOM 引用 + F4 视图分层存在", () => {
+  const files = readdirSync(APP_DIR).filter((f) => f.endsWith(".js"));
+  // F4 视图分层（§6 七模块；缺失=拆分被误并/误删）
+  for (const v of ["dom.js", "state.js", "drawer.js", "sidebar.js", "chat.js", "modals.js", "main.js"]) {
+    assert.ok(files.includes(v), `app/ 应含 F4 视图模块 ${v}（docs/26 §6 分层）`);
+  }
+  // 可测性边界只约束纯逻辑模块（docs/26 §9-6）：视图模块（dom/drawer/…）天然操作 DOM，不在其列
+  const PURE = new Set(["replay.js", "turns.js", "autoreport.js", "store.js"]);
   for (const f of files) {
-    const src = readFileSync(join(appDir, f), "utf8");
-    // 可测性边界（docs/26 §9-6）：纯逻辑模块禁 DOM 全局引用（含测试——node:test 环境没有它们）
-    assert.ok(!/\bdocument\b|\bwindow\b/.test(src), `${f} 不得引用 DOM 全局（可测性边界）`);
+    const src = readFileSync(join(APP_DIR, f), "utf8");
+    if (PURE.has(f) || f.endsWith(".test.js")) {
+      assert.ok(!/\bdocument\b|\bwindow\b/.test(src), `${f} 不得引用 DOM 全局（可测性边界——纯逻辑及其测试）`);
+    }
     // 零依赖边界（docs/26 §9-5）：只许相对/同根路径 import；node: 内建仅测试文件可用（node:test）
     const specs = [
       ...[...src.matchAll(/\bfrom\s*["']([^"']+)["']/g)].map((m) => m[1]!),
@@ -461,28 +477,30 @@ test("哨兵（docs/26 F1 已启用）：app/ 前端模块零依赖（禁 node_m
   }
 });
 
-test("哨兵（docs/26 F1 已启用）：index.html 为原生 module 单 script + 内联行数防回涨（≤2530）", () => {
-  const m = html.match(/<script type="module">([\s\S]*?)<\/script>/);
-  assert.ok(m, "index.html 应为 <script type=\"module\">（无构建 ES Modules，docs/26 §2）");
-  assert.ok(!html.includes("<script>\n"), "不应再有经典内联 script 块");
-  const lines = m[1]!.split("\n").length;
+test("哨兵（docs/26 F4 已启用）：index.html 骨架化——单外链 /app/main.js + 总行数 ≤500 + 视图层 import 图覆盖", () => {
   assert.ok(
-    lines <= 2530,
-    `内联 script 应 ≤2530 行（F1 完成时实测 2292 +10% 取整；新功能纯决策进 app/ 模块、DOM 进视图层，继续拆分看 docs/26 F4），当前 ${lines}`,
+    /<script type="module" src="\/app\/main\.js"><\/script>/.test(html),
+    "index.html 应只外链 /app/main.js（F4 大分区拆文件，docs/26 §6）",
   );
-  // 模块接线：F1 三模块 + F2 store 均被页面 import（web-static 精确注册同路径）
-  for (const name of ["replay.js", "turns.js", "autoreport.js", "store.js"]) {
-    assert.ok(m[1]!.includes(`"/app/${name}"`), `页面应 import /app/${name}`);
+  assert.ok(!html.includes("<script>\n") && !/<script type="module">/.test(html), "不应再有内联 script（视图代码全部在 app/ 模块）");
+  const lines = html.split("\n").length;
+  assert.ok(lines <= 500, `index.html 应 ≤500 行（骨架+CSS，docs/26 §6 验收），当前 ${lines}`);
+  // 分层接线（F4 无环图）：四纯模块 + 六视图模块都被相对路径 import 覆盖（store 经 state.js、turns 经 chat.js）
+  for (const need of ["replay.js", "turns.js", "autoreport.js", "store.js", "dom.js", "state.js", "drawer.js", "sidebar.js", "chat.js", "modals.js"]) {
+    assert.ok(frontSrc.includes(`"./${need}"`), `视图层 import 图应覆盖 ./${need}`);
   }
 });
 
-test("哨兵（docs/26 F2 已启用）：index.html 顶层裸 let ≤3（状态收敛入五区 store）", () => {
-  const m = html.match(/<script type="module">([\s\S]*?)<\/script>/);
-  assert.ok(m, "index.html 应有 module script（上一哨兵同款前置）");
-  const lets = m[1]!.split("\n").filter((l) => /^let /.test(l));
+test("哨兵（docs/26 F2 已启用；F4 起扫描对象改 app/ 模块）：视图模块顶层裸 let ≤3（状态收敛入五区 store）", () => {
+  const lets: string[] = [];
+  for (const f of readdirSync(APP_DIR).filter((f) => f.endsWith(".js") && !f.endsWith(".test.js"))) {
+    for (const l of readFileSync(join(APP_DIR, f), "utf8").split("\n")) {
+      if (/^let /.test(l)) lets.push(`${f}: ${l.trim()}`);
+    }
+  }
   assert.ok(
     lets.length <= 3,
-    `顶层裸 let 应 ≤3（docs/26 §4 验收：~22→≤3；新状态入对应区 store，快照常量用 const），当前 ${lets.length}：${lets.join(" | ")}`,
+    `视图模块顶层裸 let 应 ≤3（现役仅 modals 的 wsParent 与 sidebar 的切换回调槽；新状态入对应区 store，快照常量用 const），当前 ${lets.length}：${lets.join(" | ")}`,
   );
 });
 

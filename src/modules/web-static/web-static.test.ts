@@ -68,6 +68,14 @@ test("每个 app 模块精确注册：内容逐字节一致 + text/javascript + 
     const turns = await get(s.ctx, "/app/turns.js");
     assert.equal(turns.status, 200);
     assert.ok((turns.body ?? "").includes("export function groupTurns"));
+    // F4（docs/26 §6）：视图层七模块同目录枚举注册——入口 main.js 必在浏览器加载面
+    const main = await get(s.ctx, "/app/main.js");
+    assert.equal(main.status, 200, "index.html 外链的 /app/main.js 必须可下发（F4 入口）");
+    assert.ok((main.body ?? "").includes("SSE_HANDLERS"));
+    for (const v of ["dom.js", "state.js", "drawer.js", "sidebar.js", "chat.js", "modals.js"]) {
+      const r = await get(s.ctx, `/app/${v}`);
+      assert.equal(r.status, 200, `F4 视图模块 /app/${v} 应同目录枚举注册`);
+    }
   } finally {
     rmSync(s.dir, { recursive: true, force: true });
   }

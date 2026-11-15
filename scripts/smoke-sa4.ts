@@ -8,15 +8,16 @@
  *      createRuntime(fromDisk) 恢复 rt.subagents 并按条数续期 subagentTotal（偏差 15）；
  *      currentState 下发 subagents（/status 与前端刷新恢复的数据源）；
  *   4) 配额续期行为：恢复后再派 1 个 worker，subagentTotal = 恢复值 + 1（而非归零重计）；
- * B) 前端三端同步双保险：index.html 的 SSE_HANDLERS 表含 subagent 键 + 渲染函数存在
- *    （契约测试已锁三端一致，冒烟运行时再读源码确认一次）；server.ts 行数哨兵复核。
+ * B) 前端三端同步双保险：app/main.js 的 SSE_HANDLERS 表含 subagent 键 + 渲染函数存在
+ *    （F4 后前端代码全在 app/ 模块；契约测试已锁三端一致，冒烟运行时再读源码确认一次）；
+ *    server.ts 行数哨兵复核。
  * C) docs/6 真机反馈修复：5) P2 worker 直调真 MCP（demo stdio 服务器全链路 + 协调者
  *    registry 仅两件/系统提示无 MCP 段红线）；6) P3 方案 A worker 全程 transcript 落盘
  *    （文件内容/记录/SSE 事件携带路径）+ 方案 B 实时过程流（tool/toolResult 事件序列）
  *    + 前端查看入口渲染链。
  * 全程临时目录，不触碰真实 ~/.ZQQ-harness。用法：node scripts/smoke-sa4.ts
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildContext } from "../src/core/context.ts";
@@ -37,6 +38,17 @@ function record(name: string, ok: boolean, note = ""): void {
   console.log(`${ok ? "✅" : "❌"} ${name}${note ? " — " + note : ""}`);
 }
 const fail = () => results.filter((r) => !r.ok).length;
+
+/** 前端源码全景（F4/docs/26 §6 后视图代码全部在 app/ 模块）：index.html 骨架 + 全部非测试模块拼接，
+ *  前端源码断言（B 段与 P3 入口段）一律面向整体而非单文件。 */
+function frontSrcAll(): string {
+  const pub = join(import.meta.dirname, "..", "src", "web", "public");
+  const parts = [readFileSync(join(pub, "index.html"), "utf8")];
+  for (const f of readdirSync(join(pub, "app")).filter((f) => f.endsWith(".js") && !f.endsWith(".test.js"))) {
+    parts.push(readFileSync(join(pub, "app", f), "utf8"));
+  }
+  return parts.join("\n");
+}
 
 // ---------- 脚本化提供方：按 worker 的 task 全文路由脚本（无 usage，验证载荷省略字段） ----------
 
@@ -212,26 +224,27 @@ try {
 
   // ---------- B) 前端三端同步双保险 + server.ts 哨兵复核（契约测试之外运行时再读一次源码） ----------
   {
-    const html = readFileSync(join(import.meta.dirname, "..", "src", "web", "public", "index.html"), "utf8");
+    const front = frontSrcAll();
+    const mainJs = readFileSync(join(import.meta.dirname, "..", "src", "web", "public", "app", "main.js"), "utf8");
     const serverLines = readFileSync(join(import.meta.dirname, "..", "src", "web", "server.ts"), "utf8").split("\n").length;
-    const start = html.indexOf("const SSE_HANDLERS = {");
-    const end = html.indexOf("\n};", start);
-    const hasKey = html.slice(start, end).includes("\n  subagent(");
+    const start = mainJs.indexOf("const SSE_HANDLERS = {");
+    const end = mainJs.indexOf("\n};", start);
+    const hasKey = mainJs.slice(start, end).includes("\n  subagent(");
     record(
       "前端三端：SSE_HANDLERS 含 subagent 键 + onSubagent 渲染函数 + /status 子代理行；server.ts 零改动（≤270 行，DT0 调整）",
-      hasKey && html.includes("function onSubagent") && html.includes("🎯 子代理 ") && serverLines <= 270, // docs/25 DT0：250→270（进程生命周期代码合法进壳）
+      hasKey && front.includes("function onSubagent") && front.includes("🎯 子代理 ") && serverLines <= 270, // docs/25 DT0：250→270（进程生命周期代码合法进壳）；F4 起 SSE 表在 main.js、渲染链跨 app/ 模块（front 全景扫）
       `handler=${hasKey}；server.ts=${serverLines} 行`,
     );
     // docs/22 §4.1：图片规则单一出处——前端校验/按钮 title 全走 meta.imageRules（imgRules()），
     // 不再有 IMG_MIMES/规则字面量散落；HTML 静态 accept/title 保留作无 JS 降级（带注释指向 config.ts）。
     record(
       "图片规则单一出处（docs/22 §4.1）：前端校验走 meta.imageRules（imgRules），无 IMG_MIMES/4 张/5MB 校验字面量；静态 accept 降级保留且注释指向 config.ts",
-      !html.includes("IMG_MIMES") &&
-        html.includes("const imgRules = () => metaOf().imageRules") &&
-        html.includes("r.maxCount") && html.includes("r.maxBytes") && html.includes("r.mimes.includes") &&
-        !/(pendingImages\.length >= 4|f\.size > 5 \* 1024 \* 1024)/.test(html) &&
-        html.includes('id="imgFile" accept="image/png,image/jpeg,image/gif,image/webp"') &&
-        /<!-- accept 的 mime 清单 = config\.ts IMAGE_RULES\.mimes/.test(html),
+      !front.includes("IMG_MIMES") &&
+        front.includes("const imgRules = () => metaOf().imageRules") &&
+        front.includes("r.maxCount") && front.includes("r.maxBytes") && front.includes("r.mimes.includes") &&
+        !/(pendingImages\.length >= 4|f\.size > 5 \* 1024 \* 1024)/.test(front) &&
+        front.includes('id="imgFile" accept="image/png,image/jpeg,image/gif,image/webp"') &&
+        /<!-- accept 的 mime 清单 = config\.ts IMAGE_RULES\.mimes/.test(front),
       "",
     );
   }
@@ -311,15 +324,15 @@ try {
 
   // ---------- P3 前端查看入口源码检查（需求三 docs/8 §3 + 第三棒后改锁抽屉渲染面；契约测试锁事件名，这里锁 P3 的 UI 链） ----------
   {
-    const html = readFileSync(join(import.meta.dirname, "..", "src", "web", "public", "index.html"), "utf8");
+    const front = frontSrcAll();
     record(
       "P3 前端入口（需求三抽屉版 + 第三棒实时轮询 + docs/9 可复用/归档）：A=抽屉容器/开关/详情页 + [[过程档案#N]]→linkify 进抽屉；B=onSubagent 改道抽屉缓存（不依赖 curTool）+ makeTimeline；C=运行中详情页轮询服务端实时历史（pollLiveDetail）；D=idle/archived 相位 + 归档按钮（drwArchBtn）",
-      html.includes('id="subDrawer"') && html.includes('id="subDrwBtn"') && html.includes('id="drwBody"') &&
-        html.includes("function linkifyTranscriptTags") && html.includes("[[过程档案#") &&
-        html.includes("function makeTimeline") && html.includes('phase === "tool"') &&
-        html.includes("function ensureDrawerRow") && html.includes("function pollLiveDetail") &&
-        html.includes('phase === "idle"') && html.includes('phase === "archived"') && html.includes("function drwArchBtn") &&
-        !html.includes("if (!curTool) return;") && !html.includes('id="subModal"'),
+      front.includes('id="subDrawer"') && front.includes('id="subDrwBtn"') && front.includes('id="drwBody"') &&
+        front.includes("function linkifyTranscriptTags") && front.includes("[[过程档案#") &&
+        front.includes("function makeTimeline") && front.includes('phase === "tool"') &&
+        front.includes("function ensureDrawerRow") && front.includes("function pollLiveDetail") &&
+        front.includes('phase === "idle"') && front.includes('phase === "archived"') && front.includes("function drwArchBtn") &&
+        !front.includes("if (!curTool) return;") && !front.includes('id="subModal"'),
       "",
     );
   }

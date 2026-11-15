@@ -1,0 +1,25 @@
+{
+  "_comment": "前端视图模块的 import 图与语法检查（docs/26 F4）：checkJs 关闭（不做函数体类型检查——与旧内联 script 同水位，全面严检是后续独立工程），但 import 语句仍被完整解析——导入不存在的相对路径（TS2307）或对方模块未导出的名字（TS2305）都会在此拦下，即 F4 七模块无环分层的机械闸门。纯逻辑四模块在 tsconfig.frontend.json（checkJs 严检），勿重复登记。",
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": [
+    "src/web/public/app/dom.js",
+    "src/web/public/app/state.js",
+    "src/web/public/app/drawer.js",
+    "src/web/public/app/sidebar.js",
+    "src/web/public/app/chat.js",
+    "src/web/public/app/modals.js",
+    "src/web/public/app/main.js"
+  ]
+}
