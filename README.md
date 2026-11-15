@@ -8,7 +8,7 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **8 个系统�
 - **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（51 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）统一路线**——①地基（DT0+F1 纯逻辑抽离：`public/app/*.js` ES 模块，node:test 直测，零构建）②桌面形态（DT1 Electron 薄壳 + DT2 打包）③质量渐进（**F2 store 化**：手写状态仓五区迁仓 + applyState 订阅化；**F3 渲染 keyed 收官**：抽屉列表/回收站/提供方列表三点迁移，历史/时间线豁免——= docs/23 D3 剩余项）④**F4 大分区拆文件已完成**（index.html 2,906→473 行，视图代码七模块无环分层 dom/state/drawer/sidebar/chat/modals/main，不变量正式修订为「无构建：原生 ES Modules」）均已完成；剩 **DT3 增强**（通知/托盘/自启）。前端「运行阈值」设置入口已完成（[docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)）；桌面详案见 [docs/25](docs/25_开发文档-桌面端版本方案.md)。每项独立验收、独立 commit。
+- **当前进行中**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）统一路线——全部收官**。①地基（DT0+F1）②桌面形态（DT1 薄壳 + DT2 打包）③质量渐进（F2 store 化；F3 keyed 收官）④F4 大分区拆文件（index.html 2,906→473 行，视图七模块无环分层）⑤**DT3 桌面增强已完成**（审批通知/开机自启/托盘常驻/休眠恢复，四项独立 commit，详见 [docs/25](docs/25_开发文档-桌面端版本方案.md) 头部实施记录）。前端「运行阈值」设置入口见 [docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)。路线内无遗留开发项；后续新工作另立文档。
 
 ## 快速开始
 
@@ -20,6 +20,7 @@ npm run desktop           # 桌面版（Electron 薄壳，docs/25 DT1）：独�
 
 - **桌面版首次安装**：electron 二进制（~120MB）由 postinstall 下载；本机 allow-scripts 策略会拦截该脚本时，手动补跑：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ node node_modules/electron/install.js`（registry 已是 npmmirror）。壳只管进程与窗口（`desktop/main.mjs`，≤2 文件哨兵锁定）——与浏览器版跑**同一份** server.ts 与前端，双入口零漂移
 - **打包分发**（docs/25 DT2）：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ npx electron-builder --win` → `dist/ZQQ-harness-Setup-<版本>.exe`（nsis 引导式安装，**安装位置可选**——默认按用户装无需管理员，静默装/卸：`Setup.exe /S /D=<不带引号的目录>` 与 `Uninstall ZQQ-harness.exe /S`；卸载**不清** `~/.ZQQ-harness/` 用户数据）与 `dist/ZQQ-harness-<版本>-portable.exe`（免安装单文件）。目标机只需 Windows 10/11 x64 + PowerShell 7（Node/浏览器均不需要，Electron 自带）。`asar: false`（ELECTRON_RUN_AS_NODE 子进程加载 .ts 与 koffi DLL 走真实文件最稳）；未签名（SmartScreen/杀软可能误报，portable 自用为主——已知取舍）；portable 双击运行无控制台（排障用 dev 模式 `npm run desktop` 看 `[svc]` 服务日志）
+- **桌面增强**（docs/25 DT3，已全部落地）：**审批通知**（审批卡到达且窗口失焦时系统通知，点击聚焦）；**开机自启/托盘常驻**（偏好存 `~/.ZQQ-harness/desktop.json`，经 web.desktop 模块 `/api/desktop` 读写——设置模态「🖥 桌面版」区即时生效，壳 fs.watch 活应用；两项默认关，自启仅打包版注册）；**休眠恢复**（唤醒后整页 reload 走 init 快照，默认开）
 
 - 不想自动弹浏览器（脚本/远程环境）：设环境变量 `ZQQ_NO_BROWSER=1` 再启动
 - **服务默认只监听 `127.0.0.1`（本机）**，局域网不可达（docs/25 DT0）；确需局域网访问设 `ZQQ_HOST=0.0.0.0` 再启动（自担风险——服务暴露会话数据与 API key 操作面）。`PORT=0` 为随机端口，启动首行 stdout 打印 `ZQQ-READY <端口>` 握手行（供桌面壳解析，浏览器模式忽略无害）；关停支持 Ctrl+C 与 stdin 关闭（父进程退出联动）
@@ -290,7 +291,7 @@ src/
 │   ├── mcp/stdio/        stdio 传输（JSON-RPC 客户端；cmd /c 包装、PYTHONUTF8 注入）
 │   ├── sandbox/windows-acl/  受限令牌沙箱后端（koffi 懒加载，available() 探测）
 │   ├── skills/fs-source/ 全局+工作区两个技能目录来源
-│   └── web-{approval,providers,sessions,settings,static,workspaces}/  全部 /api/* 路由（30 条）
+│   └── web-{approval,desktop,providers,sessions,settings,static,workspaces}/  全部 /api/* 路由（web.desktop=DT3 桌面偏好 desktop.json 读写）
 │                         + web-static：/app/*.js 前端 ES 模块静态服务（docs/26 F1——
 │                         精确注册 + text/javascript + no-cache；新增模块文件需重启注册）
 ├── agent.ts              Agent 循环（工具 schema 每轮重取；思考存档/回放降级告警；
@@ -422,7 +423,7 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `22_交接文档-阶段A维护实施与后续接力.md`——阶段 A 实施交接：git 基线与 commit 结构、本次全部改动清单与验证证据、踩坑记录（npm test 显式清单等）、剩余工作与接力入口（IMAGE_RULES → 阶段 B/C/D）
 - `23_交接文档-阶段D结构优化接力.md`——第三棒交接：A/B/C 三段成果摘要（384 测试基线）、阶段 D 三项（subagents.ts 拆五块 / config 惰性化 / 前端渲染统一）的入口与约束、可选阶段 B 第二批 8 键、踩坑记录（双哨兵/模板字面量插值/taskkill 等）与不变量清单
 - `24_交接文档-前端设置入口与harness热应用.md`——第四棒交接（**已实施**，头部含实施记录）：Web UI「运行阈值」设置入口——THRESHOLD_RULES 上提 + thresholdSchema 单一出处、web-settings 模块 GET + /save POST（严格校验+原子写+initConfig 热生效）、热生效边界三类（立即跟随/新会话生效/需重启）、schema 驱动前端（零硬编码哨兵）、GUI 冒烟两处修复（确认行顺序、两步关闭确认）
-- `25_开发文档-桌面端版本方案.md`——桌面端版本方案（**DT0–DT2 已实施**，头部含实施记录；DT3 可选增强待做）：2026-11-15 架构复审评级 + 三档路线（L0 现状 bat / L1 Edge 应用模式 / L2 Electron 薄壳推荐）+ 服务端就绪化（DT0：127.0.0.1 绑定/动态端口握手/优雅停机）+ 壳落地与打包分发（DT1–DT3）+ 维护纪律（壳不进业务、双入口回归、Electron 升级核对单）
+- `25_开发文档-桌面端版本方案.md`——桌面端版本方案（**DT0–DT3 已全部实施**，头部含实施记录）：2026-11-15 架构复审评级 + 三档路线（L0 现状 bat / L1 Edge 应用模式 / L2 Electron 薄壳推荐）+ 服务端就绪化（DT0：127.0.0.1 绑定/动态端口握手/优雅停机）+ 壳落地与打包分发（DT1–DT3）+ 维护纪律（壳不进业务、双入口回归、Electron 升级核对单）
 - `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**实施顺序以此为准；F1–F4 已全部实施**，头部含实施记录）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化（app/store.js 手写状态仓 + ~22 顶层变量五区迁仓 + applyState 订阅化）→ F3 渲染 keyed 收官（抽屉列表/回收站/提供方列表三点 + renderHistory/makeTimeline 豁免及其依据）→ F4 大分区拆文件（视图七模块无环分层 + index.html 骨架化 ≤500 行 + 不变量正式修订）+ 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
 - `27_操作手册-桌面端打包与冒烟.md`——**给自己看的速查手册**（照抄命令即可，原理看 25/26）：dist/ 里每个产物是什么/怎么用（Setup/portable/win-unpacked/blockmap）、重建安装包完整命令（PS 与 Git Bash 双写法+双镜像原因）、三层冒烟法（自动测试→开发模式人工看→打包版实测清单）、静默装/卸、常见坑速查表（exit 3/卡下载/哨兵红/新模块 404）
 
