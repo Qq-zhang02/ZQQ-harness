@@ -34,13 +34,13 @@ let tray = null;
 let quitting = false;
 
 if (!app.requestSingleInstanceLock()) {
-  app.quit(); // 已有实例：锁被占用 → 退出（second-instance 在首实例里聚焦窗口）
+  app.quit(); // 已有实例：锁被占用 → 退出（second-instance 在首实例里唤回窗口）
 } else {
   app.on("second-instance", () => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
+    // 真机反馈修复（2026-11-16）：托盘模式下窗口是 hidden 不是 minimized——旧代码只
+    // restore+focus，隐藏窗口 focus 不可见 → 用户「双击没反应」。统一走 showMainWindow
+    // （restore+show+focus），隐藏/最小化/后台一律唤回前台。
+    if (win) showMainWindow();
   });
   app.whenReady().then(start);
 }
@@ -157,10 +157,19 @@ function watchDesktopJson() {
 }
 
 /** DT3-③ 托盘常驻（默认关——会话运行态常驻内存被放大，docs/25 §1.2-⑤）：开启 = 创建托盘 +
- *  关窗改隐藏（close 事件在 openWindow 里查 tray 标记）；关闭 = 销毁托盘 + 唤回隐藏窗（不留不可见孤儿）。 */
+ *  关窗改隐藏（close 事件在 openWindow 里查 tray 标记）；关闭 = 销毁托盘 + 唤回隐藏窗（不留不可见孤儿）。
+ *  真机反馈加固（2026-11-16）：①Tray 创建包 try——失败保持 tray=null，关窗走正常退出（隐藏若无托盘
+ *  = 隐形死亡陷阱）；②首次隐藏 displayBalloon 提示（Win11 默认把新程序托盘图标收进溢出折叠区 ^，
+ *  主托盘区看不见是常态而非故障）；③双击托盘图标也唤回（Windows 惯例）。 */
 function setTray(on) {
   if (on && !tray) {
-    tray = new Tray(nativeImage.createFromDataURL(TRAY_ICON_URL));
+    try {
+      tray = new Tray(nativeImage.createFromDataURL(TRAY_ICON_URL));
+    } catch (e) {
+      tray = null;
+      console.log(`[shell] 托盘创建失败（本次会话关窗=正常退出）：${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
     tray.setToolTip("ZQQ-harness（正在运行）");
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: "显示主窗口", click: () => showMainWindow() },
@@ -168,6 +177,7 @@ function setTray(on) {
       { label: "退出", click: () => stopService() }, // 走优雅停机总闸（stdin-EOF → 落盘 → quit）
     ]));
     tray.on("click", () => showMainWindow()); // 左键单击 = 显示/聚焦
+    tray.on("double-click", () => showMainWindow()); // Windows 双击惯例
     console.log("[shell] 托盘常驻=开（关闭按钮将隐藏到托盘；退出经托盘菜单）");
   } else if (!on && tray) {
     tray.destroy();
@@ -175,6 +185,20 @@ function setTray(on) {
     console.log("[shell] 托盘常驻=关");
     if (win && !win.isVisible()) showMainWindow();
   }
+}
+
+/** 每会话只提示一次的「已进托盘」气泡（displayBalloon = Windows 通知区气泡；Win11 呈现为 toast）。 */
+let trayTipShown = false;
+function trayHideNotice() {
+  if (trayTipShown || !tray) return;
+  trayTipShown = true;
+  try {
+    tray.displayBalloon({
+      title: "ZQQ-harness 仍在运行",
+      content: "窗口已隐藏到托盘。注意：Win11 默认把托盘图标收进溢出区（任务栏 ^ 折叠箭头）；双击程序图标或点托盘图标即可恢复窗口，退出请用托盘图标右键菜单。",
+      iconType: "info",
+    });
+  } catch { /* 气泡失败无碍 */ }
 }
 
 function showMainWindow() {
@@ -205,6 +229,7 @@ function openWindow(url) {
     if (tray && !quitting) {
       e.preventDefault();
       win.hide();
+      trayHideNotice(); // 真机反馈：Win11 托盘图标默认在溢出区——首次隐藏给一次气泡指路
     }
   });
   win.on("closed", () => {
