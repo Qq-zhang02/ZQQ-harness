@@ -326,9 +326,9 @@ test("哨兵（P5 已启用）：server.ts 不再写死技能目录数组与沙�
   assert.ok(!serverSrc.includes("WindowsAclRunner"), "沙箱后端应来自 ctx.sandboxBackends 选型");
 });
 
-test("哨兵（P6 已启用；docs/25 DT0 调整 250→270）：server.ts 瘦壳 ≤270 行", () => {
+test("哨兵（P6 已启用；docs/25 DT0 调整 250→270；2026-11-16 真机回归再调 270→278：默认端口 WinNAT 排除段 EACCES 回退属监听生命周期，留在瘦壳）：server.ts ≤278 行", () => {
   const lines = serverSrc.split("\n").length;
-  assert.ok(lines <= 270, `server.ts 应只剩 bootstrap/静态/SSE/meta/分发/进程生命周期（DT0 优雅停机），当前 ${lines} 行`);
+  assert.ok(lines <= 278, `server.ts 应只剩 bootstrap/静态/SSE/meta/分发/进程生命周期（DT0 优雅停机 + 端口绑定回退），当前 ${lines} 行`);
 });
 
 test("哨兵（P8 已启用；docs/23 D2 改显式装载）：阈值常量经 initConfig() 重绑的生效值，导入期不读 harness.json", () => {
@@ -501,6 +501,146 @@ test("哨兵（docs/26 F2 已启用；F4 起扫描对象改 app/ 模块）：视
   assert.ok(
     lets.length <= 3,
     `视图模块顶层裸 let 应 ≤3（现役仅 modals 的 wsParent 与 sidebar 的切换回调槽；新状态入对应区 store，快照常量用 const），当前 ${lets.length}：${lets.join(" | ")}`,
+  );
+});
+
+// ---------- 哨兵（真机回归 v0.2.0：视图模块自由标识符——F4 拆分后 import 断链的唯一机械闸门） ----------
+
+/**
+ * 视图模块「自由调用标识符」扫描（v0.2.0 真机回归催生）：drawer.js 用了 reconcileKeyed 却没从
+ * dom.js import——checkJs:false 的视图层 typecheck 只查 import 语句可解析，不查函数体内的未定义
+ * 名字；450 个测试不执行视图模块；冒烟 frontSrcAll() 把全部文件拼接后断言，跨模块缺 import 恰好
+ * 被拼接掩盖。三道闸门全漏，装机后 renderDrawerList 每次抛 ReferenceError：抽屉列表永远空、
+ * switchSession 在 resetDrawer 处被炸断（renderHistory 不再执行——切回会话文字消失/卡死）。
+ * 本哨兵静态扫描每个视图模块（非测试）：剥离注释/字符串/模板/正则后，凡「调用形」标识符
+ * （name( 且非 obj.name(、非关键字）必须可解析——本文件定义/参数/方法简写、import 绑定、或
+ * 浏览器全局白名单（白名单按当前代码库实证收集，新全局请显式登记）。
+ */
+const VIEW_GLOBALS = new Set([
+  // JS 内建
+  "String", "Number", "Boolean", "Date", "JSON", "Math", "Map", "Set", "Promise", "Object",
+  "Array", "Error", "RegExp", "Symbol", "encodeURIComponent", "isFinite", "queueMicrotask",
+  // 浏览器 API（app/ 零依赖，无 node 全局）
+  "document", "window", "console", "location", "fetch", "Notification", "EventSource",
+  "FileReader", "localStorage", "URLSearchParams", "performance",
+  "setInterval", "setTimeout", "clearInterval", "clearTimeout",
+]);
+
+/** 扫描排除词：关键字与控制流（正则判别也复用）。 */
+const KEYWORD_OPS = [
+  "if", "for", "while", "switch", "catch", "return", "function", "typeof", "instanceof",
+  "delete", "void", "in", "of", "do", "else", "throw", "case", "yield", "await", "new",
+  "async", "class", "const", "let", "var", "export", "import", "this", "super", "extends",
+];
+
+/** 剥离注释/字符串/模板/正则字面量（标识符扫描的预处理；正则 vs 除法按前一词判别——app/ 现无 return /re/ 形态）。 */
+function stripLiteralsForScan(src: string): string {
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  let lastWord = "";
+  const KW = new Set(KEYWORD_OPS);
+  const regexAllowed = () =>
+    lastWord === "" || KW.has(lastWord) || "(,=:[!&|?{};+-%<>^~".includes(lastWord[lastWord.length - 1] ?? "");
+  while (i < n) {
+    const c = src[i]!;
+    const c2 = src[i + 1];
+    if (c === "/" && c2 === "/") { while (i < n && src[i] !== "\n") i++; continue; }
+    if (c === "/" && c2 === "*") { i += 2; while (i < n && !(src[i] === "*" && src[i + 1] === "/")) i++; i += 2; out += " "; continue; }
+    if (c === '"' || c === "'" || c === "`") {
+      const q = c; i++;
+      while (i < n && src[i] !== q) { if (src[i] === "\\") i++; i++; }
+      i++; out += " "; lastWord = '"'; continue;
+    }
+    if (c === "/" && regexAllowed()) {
+      i++; let inClass = false;
+      while (i < n) {
+        const r = src[i]!;
+        if (r === "\\") { i += 2; continue; }
+        if (r === "[") inClass = true;
+        else if (r === "]") inClass = false;
+        else if (r === "/" && !inClass) break;
+        else if (r === "\n") break; // 跨行=误判成整段正则，宁可放弃该处
+        i++;
+      }
+      i++; while (i < n && /[a-z]/.test(src[i]!)) i++; // flags
+      out += " "; continue;
+    }
+    out += c;
+    if (/\S/.test(c)) {
+      if (/[A-Za-z0-9_$]/.test(c)) lastWord = /[A-Za-z0-9_$]/.test(src[i - 1] ?? "") ? lastWord + c : c;
+      else lastWord = c;
+    }
+    i++;
+  }
+  return out;
+}
+
+/** 收集一个模块内「本地可解析」的名字：顶层定义 + import 绑定 + 函数/箭头参数 + 对象方法简写。 */
+function collectLocalNames(raw: string, code: string): Set<string> {
+  const names = new Set<string>();
+  for (const m of raw.matchAll(/\b(?:function|class)\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]!);
+  for (const m of raw.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]!);
+  for (const m of raw.matchAll(/\bimport\s*\{([^}]*)\}\s*from/g)) {
+    for (const part of m[1]!.split(",")) {
+      const seg = part.split(/\bas\b/);
+      const nm = (seg[seg.length - 1] || "").trim();
+      if (nm) names.add(nm);
+    }
+  }
+  const addParams = (list: string) => {
+    for (const part of list.split(",")) {
+      const pm = part.trim().match(/^([A-Za-z_$][\w$]*)(\s*=)?/);
+      if (pm) names.add(pm[1]!);
+      else for (const t of part.trim().split(/[^A-Za-z0-9_$]+/)) if (t && !KEYWORD_OPS.includes(t)) names.add(t);
+    }
+  };
+  for (const m of code.matchAll(/\bfunction\s*[A-Za-z_$][\w$]*\s*\(([^()]*)\)/g)) addParams(m[1]!);
+  for (const m of code.matchAll(/\(([^(){}]*)\)\s*=>/g)) addParams(m[1]!);
+  for (const m of code.matchAll(/([A-Za-z_$][\w$]*)\s*\(([^()]*)\)\s*\{/g)) { names.add(m[1]!); addParams(m[2]!); }
+  return names;
+}
+
+test("哨兵（真机回归 v0.2.0 已启用）：视图模块调用形自由标识符必须可解析——缺 import 的跨模块引用在静态扫描即拦（drawer.js/reconcileKeyed 同类）", () => {
+  const problems: string[] = [];
+  for (const f of readdirSync(APP_DIR).filter((x) => x.endsWith(".js") && !x.endsWith(".test.js"))) {
+    const raw = readFileSync(join(APP_DIR, f), "utf8");
+    const code = stripLiteralsForScan(raw);
+    const local = collectLocalNames(raw, code);
+    const seen = new Set<string>();
+    for (const m of code.matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) {
+      const name = m[1]!;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const prevChar = code[m.index! - 1] ?? "";
+      if (prevChar === "." || prevChar === "$") continue; // 属性调用（含 obj?.fn）
+      if (KEYWORD_OPS.includes(name) || local.has(name) || VIEW_GLOBALS.has(name)) continue;
+      problems.push(`${f}: ${name}`);
+    }
+  }
+  assert.ok(
+    problems.length === 0,
+    `视图模块存在无法解析的调用标识符（缺 import 或漏登记浏览器全局白名单 VIEW_GLOBALS）：${problems.join(" | ")}——v0.2.0 真机教训：这类断链 checkJs/冒烟全拦不住，运行期按条抛 ReferenceError`,
+  );
+});
+
+// ---------- 哨兵（真机回归 v0.2.0 桌面端：沙箱宿主控制台保障——console-less 宿主 pwsh 全崩 0xC0000142） ----------
+
+test("哨兵（真机回归 2026-11-16 已启用）：沙箱受限执行前必须保障宿主控制台（AllocConsole 兜底 + koffi 空指针判空）", () => {
+  const src = readFileSync(join(HERE, "..", "modules", "sandbox", "windows-acl", "windows-acl.ts"), "utf8");
+  // 桌面端宿主（ELECTRON_RUN_AS_NODE 的 Electron，GUI 子系统）无控制台——受限令牌 pwsh 只有
+  // 「共享宿主控制台」一条活路（新建 conhost 崩 0xC0000142、DETACHED 假成功不执行命令，实验
+  // 矩阵见 docs/1 2026-11-16 实施记录）。ensureHostConsole 必须存在且在 CreateProcessAsUserW 前调用。
+  assert.ok(src.includes("ensureHostConsole"), "windows-acl.ts 应有 ensureHostConsole（console-less 宿主补隐藏控制台）");
+  assert.ok(
+    src.indexOf("this.ensureHostConsole()") < src.indexOf("F().CreateProcessAsUserW("),
+    "ensureHostConsole() 必须在 CreateProcessAsUserW 之前调用（受限子进程创建时宿主须已有控制台）",
+  );
+  // koffi 空指针解码为 JS null 而非 0n——判空若只查 0n，null!==0n 恒真会让补偿被静默跳过
+  // （首版修复正是栽在这里，"改了却没生效"）。锁住双查写法。
+  assert.ok(
+    /GetConsoleWindow\(\)[\s\S]{0,80}!==\s*null/.test(src) || /const \w+ = F\(\)\.GetConsoleWindow\(\)[\s\S]{0,200}!== null/.test(src),
+    "GetConsoleWindow 判空必须同时查 null 与 0n（koffi void* 空指针解码为 null——只查 0n 会静默跳过补偿）",
   );
 });
 

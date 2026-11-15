@@ -210,9 +210,16 @@ const server = createServer(async (req, res) => {
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {
-  if (err.code !== "EADDRINUSE") throw err; // PORT=0 随机端口不会撞，显式端口才会
-  console.error(`端口 ${PORT} 已被占用（可能是上一个还没退干净的服务进程）。\n  排查：netstat -ano | findstr :${PORT}  找到 PID，然后 taskkill /F /PID <PID>\n  或换个端口启动（PowerShell）：$env:PORT=8788; npm run web`);
-  process.exit(1);
+  if (err.code === "EADDRINUSE") { // PORT=0 随机端口不会撞，显式端口才会
+    console.error(`端口 ${PORT} 已被占用（可能是上一个还没退干净的服务进程）。\n  排查：netstat -ano | findstr :${PORT} 找到 PID，然后 taskkill /F /PID <PID>\n  或换个端口启动（PowerShell）：$env:PORT=8788; npm run web`);
+    process.exit(1);
+  }
+  // EACCES：默认端口被 WinNAT 排除段圈住（Hyper-V 动态保留可漂移；netsh int ipv4 show excludedportrange protocol=tcp 可查）——未显式指定 PORT 才回退随机端口（显式 PORT 静默换口会拿到意外地址，照旧抛）
+  if (err.code === "EACCES" && process.env.PORT === undefined) {
+    console.warn(`端口 ${PORT} 被系统保留无法绑定（WinNAT 排除段）——已自动改用随机端口，实际地址见下方输出`);
+    return void server.listen(0, process.env.ZQQ_HOST ?? "127.0.0.1");
+  }
+  throw err;
 });
 
 // ---- 启动：创建初始引导会话（未选择工作区，禁止对话） ----

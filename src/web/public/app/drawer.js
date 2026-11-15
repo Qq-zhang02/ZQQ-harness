@@ -2,7 +2,7 @@
 // 行状态机/列表与详情两视图/上下文占比轮询/运行计时滴答 + 子代理过程时间线渲染器 makeTimeline。
 // 依赖方向：dom/state/autoreport/store 四底层；不 import chat/sidebar/modals/main（区域自治，
 // 对外只暴露 render*/sync/reset/onSubagent/tickClock/refreshSubSum 与 drawer 稳定别名）。
-import { $, el, esc, mdLite, nearBottom, autoscroll, scrollStateOf, rebuildKeepScroll, keepOpenOf, sysLine, post } from "./dom.js";
+import { $, el, esc, mdLite, nearBottom, autoscroll, scrollStateOf, rebuildKeepScroll, keepOpenOf, sysLine, post, reconcileKeyed } from "./dom.js";
 import { fmtTok, fmtDur, firstLine, prettyArgs } from "./autoreport.js";
 import { createStore } from "./store.js";
 import { CFG, TRACE, C, V } from "./state.js";

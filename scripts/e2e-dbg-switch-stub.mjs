@@ -30,20 +30,20 @@ function sseBody(kind, payload) {
     events.push(chunk({ content: payload.slice(0, Math.floor(payload.length / 2)) }));
     events.push(chunk({ content: payload.slice(Math.floor(payload.length / 2)) }));
   } else {
-    events.push(chunk({ tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "agent_tasks", arguments: "" } }] }));
-    events.push(chunk({ tool_calls: [{ index: 0, function: { arguments: payload } }] }));
+    // docs/15：agent_tasks 批量工具已退役——并行派发 = 同一轮多个 agent_task 调用（payload=参数对象数组）
+    events.push(chunk({ tool_calls: payload.map((c, i) => ({ index: i, id: "call-" + (i + 1), type: "function", function: { name: "agent_task", arguments: "" } })) }));
+    payload.forEach((c, i) => events.push(chunk({ tool_calls: [{ index: i, function: { arguments: JSON.stringify(c) } }] })));
   }
   events.push(chunk({}, "stop"));
   events.push(JSON.stringify({ id: "chatcmpl-stub", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 321, completion_tokens: 45 } }));
   return events.map((e) => `data: ${e}\n\n`).join("") + "data: [DONE]\n\n";
 }
 
-const TASKS_ARGS = JSON.stringify({
-  tasks: [
-    { name: "alpha", description: "写 alpha 模块报告", task: "写 alpha 模块：在工作区根创建 alpha.md，内容为一行完成说明，然后交报告。" },
-    { name: "beta", description: "写 beta 模块报告", task: "写 beta 模块：在工作区根创建 beta.md，内容为一行完成说明，然后交报告。" },
-  ],
-});
+// docs/15：agent_tasks 批量工具退役——两个并行 agent_task 调用（sseBody 的 tool 分支按数组逐 call 下发）
+const TASK_ITEMS = [
+  { name: "alpha", description: "写 alpha 模块报告", task: "写 alpha 模块：在工作区根创建 alpha.md，内容为一行完成说明，然后交报告。" },
+  { name: "beta", description: "写 beta 模块报告", task: "写 beta 模块：在工作区根创建 beta.md，内容为一行完成说明，然后交报告。" },
+];
 
 const server = createServer((req, res) => {
   if (req.method !== "POST" || !req.url.endsWith("/chat/completions")) {
@@ -72,7 +72,7 @@ const server = createServer((req, res) => {
       return;
     }
     if (userText.includes("派两个子代理") && !hasTool) {
-      send("tool", TASKS_ARGS);
+      send("tool", TASK_ITEMS);
     } else if (userText.startsWith("写 alpha")) {
       // 延迟应答：复现窗口（切换会话）全在此延迟内
       setTimeout(() => send("text", "结论：完成。产出物：alpha.md（一行说明）。关键决定：无。未决问题：无。"), WORKER_DELAY_MS);

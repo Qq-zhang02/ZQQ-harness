@@ -19,7 +19,9 @@
  * - 只约束写/删，不约束读与网络；
  * - NTFS 硬链接可别名同一文件；NUL 设备因设备 DACL 仍可写；
  * - 受限子进程必须共享宿主控制台：CREATE_NO_WINDOW / CREATE_NEW_CONSOLE 会让
- *   子进程死于 0xC0000142（std 重定向到管道/文件不受影响）；
+ *   子进程死于 0xC0000142（std 重定向到管道/文件不受影响）；DETACHED_PROCESS 下
+ *   能活但 ConsoleHost 静默不执行（exit 0 零输出）；console-less 宿主（桌面端
+ *   ELECTRON_RUN_AS_NODE）由 ensureHostConsole 补隐藏控制台兜底；
  * - Authenticated Users / INTERACTIVE 不进受限列表（会开出 C:\ 公共目录与 WMI 的口子）；
  * - 目录 ACL 编辑是常驻变更（工作区每路径一次，幂等跳过由调用方缓存承担）；
  * - 未经安全审计，只防误操作，不得作为对抗恶意代码的边界。
@@ -67,6 +69,10 @@ function buildNativeTable() {
     CopySid: a32.func("bool CopySid(uint32, void *, void *)"),
     GetLastError: k32.func("uint32 GetLastError()"),
     LocalFree: k32.func("void *LocalFree(void *)"),
+    // 宿主控制台保障（真机回归：console-less 宿主下受限 pwsh 死 0xC0000142/静默不执行）
+    AllocConsole: k32.func("bool AllocConsole()"),
+    GetConsoleWindow: k32.func("void *GetConsoleWindow()"),
+    ShowWindow: koffi.load("user32.dll").func("bool ShowWindow(void *, int32)"),
   };
 }
 function F(): NativeTable {
@@ -269,6 +275,7 @@ export class WindowsAclRunner implements SandboxRunner {
   private logonSid: bigint | null = null;
   private tokenCache = new Map<string, bigint>(); // mode|wsSid|tempSid → 句柄
   private granted = new Map<string, boolean>(); // dir|capSid → 已放行
+  private hostConsoleReady = false; // console-less 宿主已补隐藏控制台（进程生命周期内复用）
   private seq = 0;
 
   available(): boolean {
@@ -311,6 +318,32 @@ export class WindowsAclRunner implements SandboxRunner {
     this.granted.set(key, true);
   }
 
+  /**
+   * 宿主控制台保障（v0.2.0 真机回归，桌面端 pwsh 全崩的根因）：受限令牌下的 pwsh 只有
+   * 「共享宿主控制台」一条活路——新建控制台（CREATE_NO_WINDOW/CREATE_NEW_CONSOLE）在
+   * 受限令牌下 conhost 建不起来（0xC0000142）；完全无控制台（DETACHED_PROCESS）进程能
+   * 活但 ConsoleHost 静默不执行命令（exit 0 且零输出，实测 Start-Sleep 3 秒 350ms 即回）。
+   * 浏览器/dev 模式宿主（node，有控制台）天然满足；桌面端宿主是 ELECTRON_RUN_AS_NODE 的
+   * Electron（GUI 子系统，无控制台）——pwsh 启动时无宿主控制台可继承，落进上述死路。
+   * 补法：宿主无控制台时 AllocConsole 拉一个并立即 SW_HIDE（首帧可能闪一下，仅首次），
+   * 之后整进程生命周期复用（不 FreeConsole——重复 Alloc/Free 会让每条命令闪窗）。server
+   * 自身的 stdio 不受影响：libuv 启动时已绑好句柄，子进程 std 走显式 STARTF_USESTDHANDLES。
+   */
+  private ensureHostConsole(): void {
+    if (this.hostConsoleReady) return;
+    // koffi 把空指针解成 JS null（不是 0n）——判空须两者都查（首版只查 0n，null!==0n
+    // 恒真导致 console-less 宿主被误判「已有控制台」而跳过补偿，真机回归又一课）
+    const existing = F().GetConsoleWindow();
+    if (existing !== null && existing !== 0n) { // 宿主已有控制台（浏览器/dev 模式）：现状保持
+      this.hostConsoleReady = true;
+      return;
+    }
+    if (!F().AllocConsole()) throw new Error(`AllocConsole 失败：code=${F().GetLastError()}`);
+    const hwnd = F().GetConsoleWindow();
+    if (hwnd !== null && hwnd !== 0n) F().ShowWindow(hwnd, 0); // SW_HIDE
+    this.hostConsoleReady = true;
+  }
+
   /** 受限执行：输出重定向到临时目录下的文件。任何 Win32 失败抛错（fail-closed）。 */
   async run(command: string, policy: SandboxPolicy, opts: { timeoutMs: number; signal?: AbortSignal }): Promise<SandboxRunResult> {
     if (policy.mode !== "read-only" && policy.mode !== "workspace-write") {
@@ -345,6 +378,7 @@ export class WindowsAclRunner implements SandboxRunner {
     if (hOut === INVALID_HANDLE || hErr === INVALID_HANDLE) throw new Error("CreateFileW(输出采集) 失败");
 
     let hProcess = 0n, hThread = 0n, hJob = 0n;
+    this.ensureHostConsole(); // 受限 pwsh 只能共享宿主控制台（无控制台宿主补一个隐藏的，见函数注）
     // env 传 NULL（继承父进程），TMP/TEMP 通过改父进程环境变量实现重定向——
     // CreateProcessAsUserW 是同步 FFI 调用，JS 单线程下"改→spawn→还原"窗口内无并发。
     const prevTmp = process.env.TMP;
