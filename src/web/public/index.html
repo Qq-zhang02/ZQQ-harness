@@ -2119,7 +2119,7 @@ function wsHeadNode() {
       if (!r.ok) { sysLine(r.data.error ?? "删除失败", "err"); return; }
       wsExpanded.delete(normWs(head._ws));
       saveExpanded();
-      recycleOpen = true;
+      PS.recycleOpen = true;
       updateRecycleVis();
       sysLine("已删除工作区 " + head._ws + "，" + r.data.moved + " 个对话已移入回收站" + (r.data.cleared ? "（已退出该工作区）" : ""));
     });
@@ -2247,13 +2247,13 @@ function renderRecycle(recycled) {
   }
 }
 
-let recycleOpen = false;
+// （recycleOpen 在 prov/set 区状态仓，见「提供方管理」节 psStore）
 function updateRecycleVis() {
-  $("#recycleList").classList.toggle("hidden", !recycleOpen);
-  $("#recycleChev").textContent = recycleOpen ? "▾" : "▸";
+  $("#recycleList").classList.toggle("hidden", !PS.recycleOpen);
+  $("#recycleChev").textContent = PS.recycleOpen ? "▾" : "▸";
 }
 $("#recycleToggle").addEventListener("click", () => {
-  recycleOpen = !recycleOpen;
+  PS.recycleOpen = !PS.recycleOpen;
   updateRecycleVis();
 });
 
@@ -2489,13 +2489,21 @@ $("#sandboxSelect").addEventListener("change", async (e) => {
 // ---------- 提供方管理 ----------
 const provModal = $("#provModal"), provList = $("#provList"), provForm = $("#provForm"),
       provFooter = $("#provFooter"), provErr = $("#provErr");
-let provData = { active: "", providers: [] };
-let provEditing = null; // null=列表视图；"new"=新增；其他=正在编辑的 id
+// prov/set 区状态仓（docs/26 §4）：提供方管理 + 运行阈值设置 + 回收站展开三个 UI 域的数据面。
+// 读走稳定快照 PS.<field>，写直接赋值；渲染保持显式调用（renderProvList/setRender/updateRecycleVis），无订阅者。
+const psStore = createStore({
+  provData: { active: "", providers: [] },
+  provEditing: null, // null=列表视图；"new"=新增；其他=正在编辑的 id
+  setSchema: null,   // 运行阈值 GET 返回的 { groups, entries }（docs/24）
+  setDirty: false,   // 设置模态有未保存修改（关闭前两步确认用）
+  recycleOpen: false, // 回收站展开态（侧边栏）
+}, { trace: TRACE });
+const PS = psStore.get();
 
 $("#modelBadge").addEventListener("click", async () => {
   const r = await fetch("/api/providers");
   if (!r.ok) { sysLine("读取提供方失败", "err"); return; }
-  provData = await r.json();
+  PS.provData = await r.json();
   renderVisionSel();
   provShowList();
   provModal.classList.remove("hidden");
@@ -2504,8 +2512,8 @@ $("#modelBadge").addEventListener("click", async () => {
  *  设置/清空即时 POST（无需保存按钮）。 */
 function renderVisionSel() {
   const sel = $("#pVisionSel");
-  const cur = provData.visionProvider || "";
-  const visions = provData.providers.filter((p) => p.vision === true);
+  const cur = PS.provData.visionProvider || "";
+  const visions = PS.provData.providers.filter((p) => p.vision === true);
   sel.innerHTML = "";
   const none = document.createElement("option");
   none.value = "";
@@ -2522,14 +2530,14 @@ function renderVisionSel() {
 $("#pVisionSel").addEventListener("change", async (e) => {
   const r = await post("/api/providers/vision-provider", { id: e.target.value || null });
   if (!r.ok) { sysLine(r.data.error ?? "设置失败", "err"); renderVisionSel(); return; }
-  provData.visionProvider = r.data.visionProvider ?? undefined;
+  PS.provData.visionProvider = r.data.visionProvider ?? undefined;
 });
 $("#pClose").addEventListener("click", () => { provModal.classList.add("hidden"); applyState(); });
 $("#pAdd").addEventListener("click", () => provShowForm(null));
 $("#pCancel").addEventListener("click", provShowList);
 
 function provShowList() {
-  provEditing = null;
+  PS.provEditing = null;
   provForm.classList.add("hidden");
   provFooter.classList.remove("hidden");
   provErr.textContent = "";
@@ -2537,20 +2545,20 @@ function provShowList() {
 }
 function renderProvList() {
   provList.innerHTML = "";
-  if (provData.providers.length === 0) {
+  if (PS.provData.providers.length === 0) {
     provList.appendChild(el("div", "sempty", "暂无提供方，点击下方新增"));
     return;
   }
-  for (const p of provData.providers) {
+  for (const p of PS.provData.providers) {
     const isCurrent = p.id === C.state.providerId; // 当前对话正在使用
-    const isDefault = p.id === provData.active;  // 新对话的默认提供方
+    const isDefault = p.id === PS.provData.active;  // 新对话的默认提供方
     const row = el("div", "provrow" + (isCurrent ? " cur" : ""));
     const info = el("div", "pinfo");
     const tags =
       (isCurrent ? '<span class="puse">当前对话</span>' : "") +
       (isDefault ? '<span class="puse">默认</span>' : "") +
       (p.vision === true ? '<span class="puse">👁 视觉</span>' : "") +
-      (provData.visionProvider === p.id ? '<span class="puse">👁 视觉模型</span>' : "") +
+      (PS.provData.visionProvider === p.id ? '<span class="puse">👁 视觉模型</span>' : "") +
       (p.effort && p.effort !== "default" ? '<span class="pmeta">思考:' + esc(p.effort) + "</span> " : '<span class="pmeta">思考:默认</span> ');
     info.innerHTML =
       '<span class="pname">' + esc(p.name) + '</span> ' + tags +
@@ -2562,7 +2570,7 @@ function renderProvList() {
       use.addEventListener("click", async () => {
         const r = await post("/api/providers/activate", { id: p.id });
         if (!r.ok) { sysLine(r.data.error ?? "切换失败", "err"); return; }
-        provData = { active: r.data.active, providers: r.data.providers };
+        PS.provData = { active: r.data.active, providers: r.data.providers };
         applyState();
         renderProvList();
       });
@@ -2573,7 +2581,7 @@ function renderProvList() {
       def.addEventListener("click", async () => {
         const r = await post("/api/providers/set-default", { id: p.id });
         if (!r.ok) { sysLine(r.data.error ?? "设置失败", "err"); return; }
-        provData = { active: r.data.active, providers: r.data.providers };
+        PS.provData = { active: r.data.active, providers: r.data.providers };
         renderProvList();
       });
       btns.appendChild(def);
@@ -2590,7 +2598,7 @@ function renderProvList() {
       }
       const r = await post("/api/providers/delete", { id: p.id });
       if (!r.ok) { sysLine(r.data.error ?? "删除失败", "err"); return; }
-      provData = { active: r.data.active, providers: r.data.providers };
+      PS.provData = { active: r.data.active, providers: r.data.providers };
       applyState();
       renderProvList();
     });
@@ -2600,7 +2608,7 @@ function renderProvList() {
   }
 }
 function provShowForm(p) {
-  provEditing = p ? p.id : "new";
+  PS.provEditing = p ? p.id : "new";
   provFooter.classList.add("hidden");
   provForm.classList.remove("hidden");
   $("#pName").value = p?.name ?? "";
@@ -2620,7 +2628,7 @@ function provShowForm(p) {
 function provCollect() {
   const maxRaw = $("#pMax").value.trim();
   return {
-    id: provEditing === "new" ? "" : provEditing,
+    id: PS.provEditing === "new" ? "" : PS.provEditing,
     name: $("#pName").value.trim(),
     format: $("#pFormat").value,
     baseUrl: $("#pUrl").value.trim(),
@@ -2635,7 +2643,7 @@ function provCollect() {
 $("#pSave").addEventListener("click", async () => {
   const r = await post("/api/providers/save", { provider: provCollect() });
   if (!r.ok) { provErr.textContent = r.data.error ?? "保存失败"; return; }
-  provData = { active: r.data.active, providers: r.data.providers };
+  PS.provData = { active: r.data.active, providers: r.data.providers };
   provShowList();
 });
 $("#pTest").addEventListener("click", async () => {
@@ -2658,8 +2666,7 @@ $("#pTest").addEventListener("click", async () => {
 
 // ---------- 运行阈值设置（docs/24：schema 驱动，前端零硬编码——范围/说明/默认值/分组全部来自 /api/settings/harness） ----------
 const setModal = $("#setModal"), setBody = $("#setBody"), setErr = $("#setErr"), setNote = $("#setNote");
-let setSchema = null; // GET 返回的 { groups, entries }
-let setDirty = false;
+// （setSchema/setDirty 在 prov/set 区状态仓，见「提供方管理」节 psStore）
 
 /** 单键行（make 只建骨架+绑事件；初值随构造写入——沿 D3 make-update 纪律） */
 function setMakeRow(e, val) {
@@ -2686,13 +2693,13 @@ function setMakeRow(e, val) {
   input.step = e.integer ? "1" : "any";
   if (e.min != null) input.min = e.min;         // 仅含边界映射到输入约束；开边界交给服务端严格校验
   if (e.max != null) input.max = e.max;
-  input.addEventListener("input", () => { input.classList.remove("bad"); setDirty = true; });
+  input.addEventListener("input", () => { input.classList.remove("bad"); PS.setDirty = true; });
   input.value = val;
   row.appendChild(input);
   const rst = el("button", "setbtn");
   rst.textContent = "↺";
   rst.title = "恢复默认值（" + e.def + "）";
-  rst.addEventListener("click", () => { input.value = e.def; input.classList.remove("bad"); setDirty = true; input.focus(); });
+  rst.addEventListener("click", () => { input.value = e.def; input.classList.remove("bad"); PS.setDirty = true; input.focus(); });
   row.appendChild(rst);
   return row;
 }
@@ -2709,10 +2716,10 @@ function setRender(d) {
   setNote.textContent = bits.join("；") + "。";
   setBody.innerHTML = ""; // 仅清空（无动态内容注入）
   const byGroup = {};
-  for (const e of setSchema.entries) {
+  for (const e of PS.setSchema.entries) {
     (byGroup[e.group] ??= []).push(e);
   }
-  for (const g of setSchema.groups) {
+  for (const g of PS.setSchema.groups) {
     const list = byGroup[g.key] || [];
     if (!list.length) continue;
     const grp = el("div", "setgrp");
@@ -2728,7 +2735,7 @@ function setRender(d) {
         const inp = document.getElementById("set-" + e.key);
         if (inp) { inp.value = e.def; inp.classList.remove("bad"); }
       }
-      setDirty = true;
+      PS.setDirty = true;
     });
     gh.appendChild(gbtn);
     grp.appendChild(gh);
@@ -2741,17 +2748,17 @@ async function openSettings() {
   const r = await fetch("/api/settings/harness");
   if (!r.ok) { sysLine("读取运行阈值失败", "err"); return; }
   const d = await r.json();
-  setSchema = d.schema;
+  PS.setSchema = d.schema;
   setRender(d);
   setErr.textContent = "";
-  setDirty = false;
+  PS.setDirty = false;
   setModal.classList.remove("hidden");
 }
 
 /** 收集 + 轻校验（整数/含边界 min/max；开边界与服务端严格校验为准——400 会逐键标红） */
 function setCollect() {
   const out = { thresholds: {}, bad: [] };
-  for (const e of setSchema.entries) {
+  for (const e of PS.setSchema.entries) {
     const inp = document.getElementById("set-" + e.key);
     const raw = inp ? String(inp.value).trim() : "";
     const n = Number(raw);
@@ -2774,7 +2781,7 @@ $("#settingsBadge").addEventListener("click", openSettings);
 $("#setClose").addEventListener("click", (e) => {
   // 有未保存修改时两步确认（沿「删除→确认删除」先例；native confirm 会阻塞嵌入 webview，不用）
   const btn = e.target;
-  if (setDirty && btn.textContent !== "确认关闭") {
+  if (PS.setDirty && btn.textContent !== "确认关闭") {
     btn.textContent = "确认关闭";
     setTimeout(() => (btn.textContent = "关闭"), CFG.CONFIRM_SET_MS);
     return;
@@ -2783,11 +2790,11 @@ $("#setClose").addEventListener("click", (e) => {
   setModal.classList.add("hidden");
 });
 $("#setResetAll").addEventListener("click", () => {
-  for (const e of setSchema.entries) {
+  for (const e of PS.setSchema.entries) {
     const inp = document.getElementById("set-" + e.key);
     if (inp) { inp.value = e.def; inp.classList.remove("bad"); }
   }
-  setDirty = true;
+  PS.setDirty = true;
 });
 $("#setSave").addEventListener("click", async () => {
   setErr.textContent = "";
@@ -2806,7 +2813,7 @@ $("#setSave").addEventListener("click", async () => {
     setErr.textContent = r.data.error ?? "保存失败";
     return;
   }
-  setDirty = false;
+  PS.setDirty = false;
   setModal.classList.add("hidden");
   // 先刷新快照（renderHistory 会整列重建，先出确认行会被它抹掉），完成后再出确认
   void refreshSnapshot().then(() =>
