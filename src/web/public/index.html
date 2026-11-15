@@ -2232,44 +2232,54 @@ function renderTree() {
 
 function renderRecycle(recycled) {
   const list = $("#recycleList");
-  const count = (recycled || []).length;
-  $("#recycleCount").textContent = count > 0 ? "(" + count + ")" : "";
-  list.innerHTML = "";
-  if (!count) {
-    list.appendChild(el("div", "sempty", "回收站为空"));
+  const items = recycled || [];
+  $("#recycleCount").textContent = items.length > 0 ? "(" + items.length + ")" : "";
+  // F3 keyed 化（docs/26 §5）：sessions 事件重灌不再拆节点——彻底删除的**两步确认 armed 态
+  // 不被刷新打断**（此前 2.5s 窗口内任何 sessions 广播都会把「确认」打回「✕」）。
+  if (items.length === 0) {
+    reconcileKeyed(list, [{ key: "empty", make: () => el("div", "sempty", "回收站为空") }]);
     return;
   }
-  for (const s of recycled) {
-    const it = el("div", "ritem");
-    const info = el("span", "rt");
-    const wsName = (s.workspace || "").split(/[\/]/).pop();
-    const time = new Date(s.recycledAt || s.updatedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit" });
-    info.innerHTML = '<span class="rtt">' + (s.kind === "coordinator" ? "🎯 " : "") + esc(s.title || "(无标题)") + '</span>' +
-      '<span class="rmeta">' + esc(wsName || s.workspace) + " · " + time + "</span>";
-    it.appendChild(info);
-    const restore = el("button", "rbtn", "恢复");
-    restore.title = "恢复到工作区 " + (s.workspace || "");
-    restore.addEventListener("click", async () => {
-      const r = await post("/api/sessions/restore", { id: s.id });
-      if (!r.ok) { sysLine(r.data.error ?? "恢复失败", "err"); return; }
-      sysLine("已恢复对话「" + (r.data.title || "(无标题)") + "」到工作区 " + r.data.workspace);
-    });
-    it.appendChild(restore);
-    const purge = el("button", "rbtn del", "✕");
-    purge.title = "彻底删除（不可恢复）";
-    purge.addEventListener("click", async () => {
-      if (purge.textContent !== "确认") {
-        purge.textContent = "确认";
-        setTimeout(() => (purge.textContent = "✕"), CFG.CONFIRM_PURGE_MS);
-        return;
-      }
-      const r = await post("/api/sessions/purge", { id: s.id });
-      if (!r.ok) { sysLine(r.data.error ?? "删除失败", "err"); return; }
-      sysLine("已彻底删除对话");
-    });
-    it.appendChild(purge);
-    list.appendChild(it);
-  }
+  reconcileKeyed(list, items.map((s) => ({
+    key: s.id,
+    make: recycleItemNode,
+    update: (n) => updateRecycleItem(n, s),
+  })));
+}
+/** 回收站条目骨架与事件建时一次（F3）：事件经节点 _sid 取最新值，不闭包快照。 */
+function recycleItemNode() {
+  const it = el("div", "ritem");
+  it.appendChild(el("span", "rt"));
+  const restore = el("button", "rbtn restore", "恢复");
+  restore.addEventListener("click", async () => {
+    const r = await post("/api/sessions/restore", { id: it._sid });
+    if (!r.ok) { sysLine(r.data.error ?? "恢复失败", "err"); return; }
+    sysLine("已恢复对话「" + (r.data.title || "(无标题)") + "」到工作区 " + r.data.workspace);
+  });
+  it.appendChild(restore);
+  const purge = el("button", "rbtn del", "✕");
+  purge.title = "彻底删除（不可恢复）";
+  purge.addEventListener("click", async () => {
+    if (purge.textContent !== "确认") {
+      purge.textContent = "确认";
+      setTimeout(() => (purge.textContent = "✕"), CFG.CONFIRM_PURGE_MS);
+      return;
+    }
+    const r = await post("/api/sessions/purge", { id: it._sid });
+    if (!r.ok) { sysLine(r.data.error ?? "删除失败", "err"); return; }
+    sysLine("已彻底删除对话");
+  });
+  it.appendChild(purge);
+  return it;
+}
+/** 回收站条目动态刷新（keyed 复用时每轮调用）：标题/工作区/时间/恢复按钮 title。 */
+function updateRecycleItem(n, s) {
+  n._sid = s.id;
+  const wsName = (s.workspace || "").split(/[\/]/).pop();
+  const time = new Date(s.recycledAt || s.updatedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit" });
+  n.querySelector(".rt").innerHTML = '<span class="rtt">' + (s.kind === "coordinator" ? "🎯 " : "") + esc(s.title || "(无标题)") + '</span>' +
+    '<span class="rmeta">' + esc(wsName || s.workspace) + " · " + time + "</span>";
+  n.querySelector(".rbtn.restore").title = "恢复到工作区 " + (s.workspace || "");
 }
 
 // （recycleOpen 在 prov/set 区状态仓，见「提供方管理」节 psStore）
@@ -2569,68 +2579,81 @@ function provShowList() {
   renderProvList();
 }
 function renderProvList() {
-  provList.innerHTML = "";
   if (PS.provData.providers.length === 0) {
-    provList.appendChild(el("div", "sempty", "暂无提供方，点击下方新增"));
+    reconcileKeyed(provList, [{ key: "empty", make: () => el("div", "sempty", "暂无提供方，点击下方新增") }]);
     return;
   }
-  for (const p of PS.provData.providers) {
-    const isCurrent = p.id === C.state.providerId; // 当前对话正在使用
-    const isDefault = p.id === PS.provData.active;  // 新对话的默认提供方
-    const row = el("div", "provrow" + (isCurrent ? " cur" : ""));
-    const info = el("div", "pinfo");
-    const tags =
-      (isCurrent ? '<span class="puse">当前对话</span>' : "") +
-      (isDefault ? '<span class="puse">默认</span>' : "") +
-      (p.vision === true ? '<span class="puse">👁 视觉</span>' : "") +
-      (PS.provData.visionProvider === p.id ? '<span class="puse">👁 视觉模型</span>' : "") +
-      (p.effort && p.effort !== "default" ? '<span class="pmeta">思考:' + esc(p.effort) + "</span> " : '<span class="pmeta">思考:默认</span> ');
-    info.innerHTML =
-      '<span class="pname">' + esc(p.name) + '</span> ' + tags +
-      '<span class="pmeta">' + esc(p.format) + " · " + esc(p.model) + " · " + esc(p.baseUrl) + "</span>";
-    row.appendChild(info);
-    const btns = el("div", "pbtns");
-    if (!isCurrent) {
-      const use = el("button", "pbtn", "用于当前对话");
-      use.addEventListener("click", async () => {
-        const r = await post("/api/providers/activate", { id: p.id });
-        if (!r.ok) { sysLine(r.data.error ?? "切换失败", "err"); return; }
-        PS.provData = { active: r.data.active, providers: r.data.providers };
-        applyState();
-        renderProvList();
-      });
-      btns.appendChild(use);
+  // F3 keyed 化（docs/26 §5）：模态内操作（激活/设默认/删除）触发的重灌不再拆节点——
+  // 删除两步确认的 armed 态不被打断，「用于当前对话/设为默认」按可见性翻转而非增删按钮。
+  reconcileKeyed(provList, PS.provData.providers.map((p) => ({
+    key: p.id,
+    make: provRowNode,
+    update: (n) => updateProvRow(n, p),
+  })));
+}
+/** 提供方行骨架与事件建时一次（F3）：事件经节点 _pid 取最新值（编辑在点击时从
+ *  PS.provData 现查——不闭包快照，激活后表单数据才是最新）。 */
+function provRowNode() {
+  const row = el("div", "provrow");
+  row.appendChild(el("div", "pinfo"));
+  const btns = el("div", "pbtns");
+  const use = el("button", "pbtn use", "用于当前对话");
+  use.addEventListener("click", async () => {
+    const r = await post("/api/providers/activate", { id: row._pid });
+    if (!r.ok) { sysLine(r.data.error ?? "切换失败", "err"); return; }
+    PS.provData = { active: r.data.active, providers: r.data.providers };
+    applyState();
+    renderProvList();
+  });
+  btns.appendChild(use);
+  const def = el("button", "pbtn def", "设为默认");
+  def.addEventListener("click", async () => {
+    const r = await post("/api/providers/set-default", { id: row._pid });
+    if (!r.ok) { sysLine(r.data.error ?? "设置失败", "err"); return; }
+    PS.provData = { active: r.data.active, providers: r.data.providers };
+    renderProvList();
+  });
+  btns.appendChild(def);
+  const edit = el("button", "pbtn", "编辑");
+  edit.addEventListener("click", () => {
+    const p = PS.provData.providers.find((x) => x.id === row._pid);
+    if (p) provShowForm(p);
+  });
+  btns.appendChild(edit);
+  const del = el("button", "pbtn del", "删除");
+  del.addEventListener("click", async () => {
+    if (del.textContent !== "确认删除") {
+      del.textContent = "确认删除";
+      setTimeout(() => (del.textContent = "删除"), CFG.CONFIRM_PROV_MS);
+      return;
     }
-    if (!isDefault) {
-      const def = el("button", "pbtn", "设为默认");
-      def.addEventListener("click", async () => {
-        const r = await post("/api/providers/set-default", { id: p.id });
-        if (!r.ok) { sysLine(r.data.error ?? "设置失败", "err"); return; }
-        PS.provData = { active: r.data.active, providers: r.data.providers };
-        renderProvList();
-      });
-      btns.appendChild(def);
-    }
-    const edit = el("button", "pbtn", "编辑");
-    edit.addEventListener("click", () => provShowForm(p));
-    btns.appendChild(edit);
-    const del = el("button", "pbtn del", "删除");
-    del.addEventListener("click", async () => {
-      if (del.textContent !== "确认删除") {
-        del.textContent = "确认删除";
-        setTimeout(() => (del.textContent = "删除"), CFG.CONFIRM_PROV_MS);
-        return;
-      }
-      const r = await post("/api/providers/delete", { id: p.id });
-      if (!r.ok) { sysLine(r.data.error ?? "删除失败", "err"); return; }
-      PS.provData = { active: r.data.active, providers: r.data.providers };
-      applyState();
-      renderProvList();
-    });
-    btns.appendChild(del);
-    row.appendChild(btns);
-    provList.appendChild(row);
-  }
+    const r = await post("/api/providers/delete", { id: row._pid });
+    if (!r.ok) { sysLine(r.data.error ?? "删除失败", "err"); return; }
+    PS.provData = { active: r.data.active, providers: r.data.providers };
+    applyState();
+    renderProvList();
+  });
+  btns.appendChild(del);
+  row.appendChild(btns);
+  return row;
+}
+/** 提供方行动态刷新（keyed 复用时每轮调用）：当前/默认标签与 cur 类、思考/格式 meta、按钮可见性。 */
+function updateProvRow(n, p) {
+  n._pid = p.id;
+  const isCurrent = p.id === C.state.providerId; // 当前对话正在使用
+  const isDefault = p.id === PS.provData.active;  // 新对话的默认提供方
+  n.classList.toggle("cur", isCurrent);
+  const tags =
+    (isCurrent ? '<span class="puse">当前对话</span>' : "") +
+    (isDefault ? '<span class="puse">默认</span>' : "") +
+    (p.vision === true ? '<span class="puse">👁 视觉</span>' : "") +
+    (PS.provData.visionProvider === p.id ? '<span class="puse">👁 视觉模型</span>' : "") +
+    (p.effort && p.effort !== "default" ? '<span class="pmeta">思考:' + esc(p.effort) + "</span> " : '<span class="pmeta">思考:默认</span> ');
+  n.querySelector(".pinfo").innerHTML =
+    '<span class="pname">' + esc(p.name) + '</span> ' + tags +
+    '<span class="pmeta">' + esc(p.format) + " · " + esc(p.model) + " · " + esc(p.baseUrl) + "</span>";
+  n.querySelector(".pbtn.use").hidden = isCurrent;
+  n.querySelector(".pbtn.def").hidden = isDefault;
 }
 function provShowForm(p) {
   PS.provEditing = p ? p.id : "new";
