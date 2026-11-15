@@ -435,6 +435,47 @@ test("哨兵（docs/24 已启用）：前端零硬编码阈值——键名/文�
   assert.ok(settingsSrc.includes("initConfig("), "写成功后必须 initConfig() 热应用（live binding 唯一出口）");
 });
 
+// ---------- 哨兵（docs/26 F1：前端纯逻辑模块化——零依赖/禁 DOM/行数防回涨三边界） ----------
+
+test("哨兵（docs/26 F1 已启用）：app/ 前端模块零依赖（禁 node_modules/远端 import）+ 纯逻辑禁 DOM 引用", () => {
+  const appDir = join(HERE, "..", "web", "public", "app");
+  const files = readdirSync(appDir).filter((f) => f.endsWith(".js"));
+  assert.ok(files.length >= 6, "app/ 应含 F1 三模块与其测试（replay/turns/autoreport × .js/.test.js）");
+  for (const f of files) {
+    const src = readFileSync(join(appDir, f), "utf8");
+    // 可测性边界（docs/26 §9-6）：纯逻辑模块禁 DOM 全局引用（含测试——node:test 环境没有它们）
+    assert.ok(!/\bdocument\b|\bwindow\b/.test(src), `${f} 不得引用 DOM 全局（可测性边界）`);
+    // 零依赖边界（docs/26 §9-5）：只许相对/同根路径 import；node: 内建仅测试文件可用（node:test）
+    const specs = [
+      ...[...src.matchAll(/\bfrom\s*["']([^"']+)["']/g)].map((m) => m[1]!),
+      ...[...src.matchAll(/\bimport\s*\(\s*["']([^"']+)["']/g)].map((m) => m[1]!),
+    ];
+    const isTest = f.endsWith(".test.js");
+    for (const spec of specs) {
+      assert.ok(!/^https?:\/\//.test(spec), `${f} 禁止远端模块 import（${spec}）——离线可用性`);
+      assert.ok(
+        spec.startsWith(".") || spec.startsWith("/") || (isTest && spec.startsWith("node:")),
+        `${f} 禁止裸包名 import（${spec}）——app/ 零依赖，node: 内建仅测试可用`,
+      );
+    }
+  }
+});
+
+test("哨兵（docs/26 F1 已启用）：index.html 为原生 module 单 script + 内联行数防回涨（≤2530）", () => {
+  const m = html.match(/<script type="module">([\s\S]*?)<\/script>/);
+  assert.ok(m, "index.html 应为 <script type=\"module\">（无构建 ES Modules，docs/26 §2）");
+  assert.ok(!html.includes("<script>\n"), "不应再有经典内联 script 块");
+  const lines = m[1]!.split("\n").length;
+  assert.ok(
+    lines <= 2530,
+    `内联 script 应 ≤2530 行（F1 完成时实测 2292 +10% 取整；新功能纯决策进 app/ 模块、DOM 进视图层，继续拆分看 docs/26 F4），当前 ${lines}`,
+  );
+  // 模块接线：三个 F1 模块均被页面 import（web-static 精确注册同路径）
+  for (const name of ["replay.js", "turns.js", "autoreport.js"]) {
+    assert.ok(m[1]!.includes(`"/app/${name}"`), `页面应 import /app/${name}`);
+  }
+});
+
 // ---------- d) import 图哨兵 ----------
 
 function listTsFiles(root: string): string[] {

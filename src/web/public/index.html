@@ -526,8 +526,12 @@
 
   <!-- 子代理过程查看模态（docs/6 P3 方案 A）已由需求三抽屉取代（docs/8 §3.2）：入口统一进 #subDrawer -->
 
-<script>
-"use strict";
+<script type="module">
+// 前端 ES 模块（docs/26 F1）：纯决策逻辑抽到 /app/*.js（node:test 可单测），此处只留视图层。
+// 竞态/切换 → replay.js；轮折叠 → turns.js；送达解析与格式化 → autoreport.js（模块零依赖、禁 DOM）。
+import { decideRoute, filterByMl, decideFollow } from "/app/replay.js";
+import { groupTurns, decideFold } from "/app/turns.js";
+import { splitAutoText as splitAutoTextM, autoReportSummary as autoReportSummaryM, firstLine, prettyArgs, fmtTok, fmtDur } from "/app/autoreport.js";
 const $ = (s) => document.querySelector(s);
 const chat = $("#chat"), input = $("#input"), sendBtn = $("#sendBtn");
 
@@ -575,14 +579,15 @@ function cacheOf(id) {
   return c;
 }
 function viewIs(id) { return id === viewId && !cacheOf(id).loading; }
-/** 会话事件路由：视图会话直接渲染；非视图（或正在装载）的进缓冲。state/usage/turnEnd 只更新缓存。 */
+/** 会话事件路由：分支判定在 /app/replay.js decideRoute（可单测），此处只执行动作——
+ *  render=视图会话（或无归属）直接渲染；state/usage/turnEnd=后台会话只更新缓存；buffer=进缓冲。 */
 function route(evName, d, render) {
-  if (!d || !d.sessionId) { render(d); return; }
-  if (viewIs(d.sessionId)) { render(d); return; }
+  const act = decideRoute(evName, d, { viewId, loading: d && d.sessionId ? cacheOf(d.sessionId).loading : false });
+  if (act === "render") { render(d); return; }
   const c = cacheOf(d.sessionId);
-  if (evName === "state") { c.state = d; c.turn = d.turn ?? null; return; }
-  if (evName === "usage") { if (c.state) { c.state.totals = d.totals; if (d.context) c.state.context = d.context; } return; }
-  if (evName === "turnEnd") { c.approval = false; c.turn = null; c.buf.length = 0; return; } // 后台轮结束：服务端历史已完整，清缓冲与锚点
+  if (act === "state") { c.state = d; c.turn = d.turn ?? null; return; }
+  if (act === "usage") { if (c.state) { c.state.totals = d.totals; if (d.context) c.state.context = d.context; } return; }
+  if (act === "turnEnd") { c.approval = false; c.turn = null; c.buf.length = 0; return; } // 后台轮结束：服务端历史已完整，清缓冲与锚点
   if (evName === "approval") c.approval = true;
   c.buf.push({ ev: evName, d });
 }
@@ -660,15 +665,7 @@ function harvestOpenKeys(c) {
 function keepOpenOf(c, st) {
   return (st ?? scrollStateOf(c)).pin ? null : harvestOpenKeys(c);
 }
-function fmtTok(n) { return n >= 10000 ? (n / 1000).toFixed(1) + "k" : String(n); }
-/** 毫秒 → 人类可读时长（<1m 秒；<1h 分秒；≥1h 时分）。 */
-function fmtDur(ms) {
-  const s = Math.max(0, Math.round((ms || 0) / 1000));
-  if (s < 60) return s + "s";
-  const m = Math.floor(s / 60);
-  if (m < 60) return m + "m" + String(s % 60).padStart(2, "0") + "s";
-  return Math.floor(m / 60) + "h" + String(m % 60).padStart(2, "0") + "m";
-}
+// fmtTok/fmtDur/firstLine/prettyArgs：通用格式化已抽到 /app/autoreport.js（docs/26 F1，头部 import）
 /** 子代理行的用时片段：run 本地滴算「本次」；其余态显示累计 elapsedMs。 */
 function elapsedPart(row) {
   if (row.status === "run") {
@@ -686,16 +683,11 @@ function ensureGroup() {
   if (!curGroup) { curGroup = el("div", "msg assistant"); chat.appendChild(curGroup); }
   return curGroup;
 }
-/** docs/21 §2.4 协议解耦：自动送达消息判别/拆解——前缀经 meta 下发（autoReportPrefix/
- *  autoStatusPrefix，单一出处 core/events.ts），不再正则反推文案；meta 未到返回 null
- *  （按普通文本渲染，不写死兜底文案）。 */
-function splitAutoText(t) {
-  const m = metaOf();
-  if (typeof t !== "string" || m.autoReportPrefix == null || m.autoStatusPrefix == null) return null;
-  if (t.startsWith(m.autoReportPrefix)) return { status: false, body: t.slice(m.autoReportPrefix.length).replace(/^\n?/, "") };
-  if (t.startsWith(m.autoStatusPrefix)) return { status: true, body: t.slice(m.autoStatusPrefix.length).replace(/^\n?/, "") };
-  return null;
-}
+/** docs/21 §2.4 协议解耦 + docs/26 F1：判别/拆解逻辑在 /app/autoreport.js（前缀作参数），
+ *  此处注入 meta 下发的前缀（autoReportPrefix/autoStatusPrefix，单一出处 core/events.ts），
+ *  不再正则反推文案；meta 未到返回 null（按普通文本渲染，不写死兜底文案）。 */
+const autoPrefixes = () => ({ reportPrefix: metaOf().autoReportPrefix, statusPrefix: metaOf().autoStatusPrefix });
+const splitAutoText = (t) => splitAutoTextM(t, autoPrefixes());
 function userBubble(text, imgs) {
   finishSegments();
   const m = el("div", "msg user");
@@ -725,18 +717,9 @@ function userBubble(text, imgs) {
   chat.appendChild(m);
   autoscroll(chat);
 }
-/** docs/18 W2：自动送达消息的摘要提取——任务报告取正文首行（[子代理 X 完成/失败] 行本身
- *  就是自带统计的一行摘要）；状态通知（单长行）截到首个句读为止。
- *  前缀拆解走 splitAutoText（meta 下发，docs/21 §2.4）；兜底分支仅在 meta 缺失时按报告处理。 */
-function autoReportSummary(text) {
-  const sp = splitAutoText(text) ?? { status: false, body: String(text ?? "") };
-  const firstLine = sp.body.split("\n", 1)[0].trim();
-  if (sp.status) {
-    const m = firstLine.match(/^(.+?[：:。])/);
-    return m ? m[1] : firstLine.slice(0, 60) + (firstLine.length > 60 ? "…" : "");
-  }
-  return firstLine;
-}
+/** docs/18 W2 + docs/26 F1：摘要提取逻辑在 /app/autoreport.js（任务报告取正文首行、状态通知
+ *  截到首个句读），此处注入 meta 前缀；兜底分支仅在 meta 缺失时按报告处理。 */
+const autoReportSummary = (text) => autoReportSummaryM(text, autoPrefixes());
 /** docs/18 W2：自动送达消息的气泡渲染——🤖 徽标 + 一行摘要（完成=绿/失败=红），全文默认
  *  收起、点击「展开全文」显示（展开后 [[过程档案#N]] 转可点入口）。刷新/切回重渲染同路径。 */
 function renderAutoReportBubble(bubble, text) {
@@ -801,10 +784,6 @@ function endThink() {
     curThink.classList.add("collapsed");
     curThink = null;
   }
-}
-function firstLine(s) { return s.replace(/\s+/g, " ").slice(0, 100); }
-function prettyArgs(raw) {
-  try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
 }
 /** 工具调用：生成可折叠块（头部命令摘要 + 展开的参数），运行中标记 live。
  *  callId 用于把结果精确配对回本块：并行调用、切换会话重放时不会串块或残留"运行中"。 */
@@ -1613,32 +1592,23 @@ function linkifyTranscriptTags(pre, text) {
  *  把每轮的过程内容——思考、工具与 MCP 调用块、中间文字输出——统统折叠成一个
  *  "🔧 执行过程"可展开条目（复用 .think 折叠样式；展开后工具块仍可各自展开），
  *  每轮的最终回答都保持在外面；foldLatest=false（任务运行中的重渲染）跳过最新轮，
- *  保持实时流可见。已折叠组原样复用（追加新元素、刷新计数），不重复嵌套。 */
+ *  保持实时流可见。已折叠组原样复用（追加新元素、刷新计数），不重复嵌套。
+ *  docs/26 F1：轮切分与折叠决策在 /app/turns.js（groupTurns/decideFold，可单测），
+ *  此处只做 DOM 搬运。 */
 function foldTurns(foldLatest = true) {
-  const turns = []; // 每轮 = [user 气泡之后到下一个 user 气泡之前的 chat 子元素]
-  let cur = null;
-  for (const k of [...chat.children]) {
-    if (k.classList.contains("msg") && k.classList.contains("user")) { cur = []; turns.push(cur); }
-    else if (cur) cur.push(k);
-  }
+  const turns = groupTurns([...chat.children], (k) => k.classList.contains("msg") && k.classList.contains("user"));
   turns.forEach((body, ti) => {
-    const isLatest = ti === turns.length - 1;
-    if (isLatest && !foldLatest) return;
-    let keep = null; // 每轮最后一条回答保持在外（新旧轮一致）
-    for (const k of body) {
-      if (k.classList.contains("msg") && k.classList.contains("assistant")) {
-        for (const c of k.children) if (c.classList.contains("answer")) keep = c;
-      }
-    }
+    if (ti === turns.length - 1 && !foldLatest) return;
     const box = body.find((k) => k.classList.contains("ans-fold")) ?? null; // 已有折叠组：复用
-    const toFold = [];
+    const blocks = []; // 轮体扁平块（既有折叠容器的内容不在其列）
     for (const k of body) {
       if (k === box || !k.classList.contains("msg")) continue;
-      for (const c of [...k.children]) {
-        if (c === keep) continue;
-        if (c.classList.contains("think") || c.classList.contains("tblock") || c.classList.contains("answer") || c.classList.contains("toolres")) toFold.push(c);
-      }
+      blocks.push(...k.children);
     }
+    const { fold: toFold } = decideFold(blocks, {
+      isAnswer: (c) => c.classList.contains("answer"), // keep=轮内最后一条回答（保持在外）
+      isFoldable: (c) => c.classList.contains("think") || c.classList.contains("tblock") || c.classList.contains("answer") || c.classList.contains("toolres"),
+    });
     if (toFold.length > 0) {
       const anchor = toFold[0].closest(".msg") ?? toFold[0];
       let box2 = box;
@@ -1888,16 +1858,14 @@ const SSE_HANDLERS = {
   },
   sessions(d) {
     lastSessions = d;
-    // 服务端切换了视图（新建对话/切工作区/清空）时客户端跟随。快速连点时服务端排队广播会携带
-    // 过期 current 晚到，若据此回切会与服务端互相触发（乒乓循环=闪烁）：只跟随"更新的"视图序号，
-    // 且客户端主动切换进行中（switchingTo）时不跟随。
-    if (d.viewSeq > viewSeqSeen) {
-      viewSeqSeen = d.viewSeq;
-      if (d.current && d.current !== viewId) {
-        if (switchingTo) { pendingFollow = { id: d.current, seq: d.viewSeq }; return; } // 切换完成后补跟随（带序号防过期）
-        void switchSession(d.current); return;
-      }
-    }
+    // 服务端切换了视图（新建对话/切工作区/清空）时客户端跟随；乒乓防护决策在 /app/replay.js
+    // decideFollow（可单测）：follow=立即切换；defer=客户端主动切换进行中、切换完成后补跟随
+    // （带序号防过期）；ignore=过期事件或无视图变更——照常刷新列表。只认"更新的"视图序号：
+    // 快速连点时服务端排队广播会携带过期 current 晚到，据此回切会与服务端互相触发（乒乓闪烁）。
+    const f = decideFollow(d, { viewId, viewSeqSeen, switchingTo });
+    if (d.viewSeq > viewSeqSeen) viewSeqSeen = d.viewSeq;
+    if (f.type === "follow") { void switchSession(f.id); return; }
+    if (f.type === "defer") { pendingFollow = { id: f.id, seq: f.seq }; return; }
     renderTree();
     renderRecycle(d.recycled);
   },
@@ -1936,10 +1904,10 @@ async function switchSession(id) {
     // subagent 缓冲事件随后重放，经 onSubagent 幂等增量进抽屉（不依赖 curTool）。
     resetDrawer(state);
     // 快照=服务端完整历史（含本轮已完成部分），保证永不空白；
-    // 缓冲事件按 ml（发出时历史长度）过滤，只重放"尚未落入快照"的在途流，避免重复
+    // 缓冲事件按 ml（发出时历史长度）过滤，只重放"尚未落入快照"的在途流（决策在 /app/replay.js）
     const msgs = r.data.messages || [];
     renderHistory(msgs);
-    const buf = c.buf.splice(0).filter((x) => x.d.ml === undefined || x.d.ml >= msgs.length);
+    const buf = filterByMl(c.buf.splice(0), msgs.length);
     for (const item of buf) dispatchBuffered(item);
     c.turn = null;
     c.needsRefresh = !!state.busy;

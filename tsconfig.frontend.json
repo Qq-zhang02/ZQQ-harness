@@ -1,0 +1,17 @@
+{
+  "_comment": "前端纯逻辑模块的类型检查（docs/26 F1/§3.2-2）：JSDoc + checkJs 拿 ~80% TS 价值、零构建。单独开文件的原因：主 tsconfig 开 checkJs 会波及 scripts/*.mjs。",
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src/web/public/app/**/*.js"]
+}

@@ -6,6 +6,7 @@
  * 浏览器 ← SSE 推流（全部带 sessionId）；浏览器 → POST（消息/批准/设置/工作区）。
  */
 import { createServer, type ServerResponse } from "node:http";
+import { fstatSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -236,8 +237,13 @@ function shutdown(): void {
   process.exit(0);
 }
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, shutdown); // 终端 Ctrl+C / 进程树结束
-process.stdin.resume(); // 流动化后 EOF 才发 end（stdin 不承载任何输入，纯死亡感知）
-process.stdin.on("end", shutdown); // 桌面壳关窗/父 shell 关闭管道 → 本进程即刻自退
+// stdin EOF = 父进程死亡感知（桌面壳 spawn 的 stdio 管道关闭即触发）——**仅当 stdin 是管道**：
+// TTY（交互终端，Ctrl+C 走 SIGINT）与 NUL/文件（`< NUL` 后台/nohup 场景）不装此钩子，
+// 否则后台启动会因管道外的 EOF 即刻退出（实测：stdio pipe=fstat S_IFIFO，NUL=S_IFCHR，TTY=isTTY）。
+if (!process.stdin.isTTY && (fstatSync(0).mode & 0o170000) === 0o10000 /* S_IFIFO */) {
+  process.stdin.resume(); // 流动化后 EOF 才发 end（stdin 不承载任何输入，纯死亡感知）
+  process.stdin.on("end", shutdown); // 桌面壳关窗/父 shell 关闭管道 → 本进程即刻自退
+}
 
 // ---- 监听（DT0-1：默认只听 127.0.0.1，局域网不可达；ZQQ_HOST 显式覆盖回 0.0.0.0 自担风险） ----
 server.listen(PORT, process.env.ZQQ_HOST ?? "127.0.0.1", () => {
