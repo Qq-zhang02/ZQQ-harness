@@ -1247,7 +1247,7 @@ function stopCtxPoll() {
 }
 
 // ---------- 运行计时（1s 本地滴答）：主对话顶栏「本次/累计」+ 子代理行/详情页用时 ----------
-/** 运行行的 meta 文案（与 drawerRowEl 同源——计时滴答就地更新，不整列重渲染）。
+/** 运行行的 meta 文案（与 updateDrawerRow 同源——计时滴答就地更新，不整列重渲染）。
  *  docs/11 W2：带上下文占比片段（docs/10 修订记录口径——run 行也显示「上下文 X%」）。 */
 function runMetaText(row) {
   return (row.summary ? "… " + row.summary : "运行中") + elapsedPart(row) + ctxPctPart(row);
@@ -1295,11 +1295,20 @@ function updateDrwBtn() {
  *  运行行是 ⏹ 打断按钮（打断即终结，无恢复）；可复用行另有「归档」按钮（idle/run 态显示）。 */
 function renderDrawerList() {
   const list = $("#drwList");
-  list.innerHTML = "";
   const tier = (r) => (r.status === "run" ? 0 : r.status === "idle" ? 1 : 2);
   const rows = [...drawer.workers.values()].sort((a, b) => tier(a) - tier(b) || b.subId - a.subId);
-  if (rows.length === 0) { list.appendChild(el("div", "sempty", "本会话还没有子代理")); $("#drwCount").textContent = ""; return; }
-  for (const row of rows) list.appendChild(drawerRowEl(row));
+  if (rows.length === 0) {
+    reconcileKeyed(list, [{ key: "empty", make: () => el("div", "sempty", "本会话还没有子代理") }]);
+    $("#drwCount").textContent = "";
+    return;
+  }
+  // F3 keyed 化（docs/26 §5，样板=sessionItemNode/updateSessionItem）：subagent 事件高频重灌
+  // 不再拆节点重建——排序变化由 reconcileKeyed 移动就位，行内按钮 armed/悬停态自然保留。
+  reconcileKeyed(list, rows.map((row) => ({
+    key: row.subId,
+    make: () => drawerRowNode(row.subId),
+    update: (n) => updateDrawerRow(n, row),
+  })));
   const run = rows.filter((r) => r.status === "run").length;
   const idle = rows.filter((r) => r.status === "idle").length;
   const ok = rows.filter((r) => r.status === "done").length;
@@ -1308,37 +1317,48 @@ function renderDrawerList() {
   $("#drwCount").textContent =
     (run ? "▶" + run + " " : "") + (idle ? "💤" + idle + " " : "") + (ok ? "✓" + ok + " " : "") + (err ? "✗" + err + " " : "") + (arch ? "📦" + arch : "");
 }
-function drawerRowEl(row) {
-  const cls = row.status === "run" ? "run" : row.status === "idle" ? "idle" : row.status === "archived" ? "arch" : row.status === "done" ? "ok" : "err";
-  const it = el("div", "drwrow " + cls);
-  it.dataset.subId = String(row.subId); // 1s 计时滴答按行就地更新 meta（不整列重渲染）
-  const icon = row.status === "run" ? "▶" : row.status === "idle" ? "💤" : row.status === "archived" ? "📦" : row.status === "done" ? "✓" : "✗";
-  it.appendChild(el("span", "st-icon", icon));
+/** 行骨架与事件建时一次（F3）：事件闭包只捕 subId（键= subId 恒定）；⏹/📦 按钮常驻骨架，
+ *  可见性由 update 按状态机翻转（hidden 属性——CSS 未覆写 display，有效）。 */
+function drawerRowNode(subId) {
+  const it = el("div", "drwrow");
+  it.dataset.subId = String(subId); // 1s 计时滴答按行就地更新 meta（不整列重渲染）
+  it.appendChild(el("span", "st-icon"));
   const main = el("div", "st-main");
-  main.appendChild(el("div", "st-name", "<b>" + esc(row.name) + '</b> <span class="st-id">#' + Number(row.subId) + "</span>"));
-  let meta = "";
+  main.appendChild(el("div", "st-name"));
+  main.appendChild(el("div", "st-meta"));
+  it.appendChild(main);
+  it.appendChild(drwCtlBtn(subId));
+  it.appendChild(drwArchBtn(subId));
+  it.title = "点击查看该子代理过程详情";
+  it.addEventListener("click", () => { drawer.detail = subId; renderDrawer(); });
+  return it;
+}
+/** 行状态机视觉刷新（keyed 复用时每轮调用）：类名/图标/名称/meta/⏹📦 可见性。 */
+function updateDrawerRow(n, row) {
+  const cls = row.status === "run" ? "run" : row.status === "idle" ? "idle" : row.status === "archived" ? "arch" : row.status === "done" ? "ok" : "err";
+  n.className = "drwrow " + cls;
+  n.querySelector(".st-icon").textContent = row.status === "run" ? "▶" : row.status === "idle" ? "💤" : row.status === "archived" ? "📦" : row.status === "done" ? "✓" : "✗";
+  n.querySelector(".st-name").innerHTML = "<b>" + esc(row.name) + '</b> <span class="st-id">#' + Number(row.subId) + "</span>";
+  let meta;
   if (row.status === "run") meta = runMetaText(row);
   else if (row.status === "idle") meta = subMetaText(row);
-  else if (row.status === "archived") meta = subMetaText(row) + (row.transcript ? " · 📄" : "");
-  else if (row.status === "done") meta = subMetaText(row) + (row.transcript ? " · 📄" : "");
+  else if (row.status === "archived" || row.status === "done") meta = subMetaText(row) + (row.transcript ? " · 📄" : "");
   else meta = subMetaText(row);
-  main.appendChild(el("div", "st-meta" + (row.status === "error" ? " err" : ""), esc(meta)));
-  it.appendChild(main);
-  if (row.status === "run") it.appendChild(drwCtlBtn(row));
-  if (row.reusable && (row.status === "idle" || row.status === "run")) it.appendChild(drwArchBtn(row));
-  it.title = "点击查看该子代理过程详情";
-  it.addEventListener("click", () => { drawer.detail = row.subId; renderDrawer(); });
-  return it;
+  const metaEl = n.querySelector(".st-meta");
+  metaEl.textContent = meta;
+  metaEl.className = "st-meta" + (row.status === "error" ? " err" : "");
+  n.querySelector(".drwctl.stop").hidden = row.status !== "run";
+  n.querySelector(".drwctl.arch").hidden = !(row.reusable && (row.status === "idle" || row.status === "run"));
 }
 
 /** docs/18：⏹ 打断按钮——POST /api/subagent/control（action:"stop"）。打断即终结：一次性
  *  子代理随之归档、可复用转空闲待命（无恢复机制）；行状态由结算事件（error/idle）翻转。 */
-function drwCtlBtn(row) {
-  const b = el("button", "drwctl", "⏹");
+function drwCtlBtn(subId) {
+  const b = el("button", "drwctl stop", "⏹");
   b.title = "打断该子代理的当前任务（立即中止进行中的请求/工具；一次性随之归档，可复用转空闲待命——没有恢复，继续工作需发新任务）";
   b.addEventListener("click", (ev) => {
     ev.stopPropagation();
-    void post("/api/subagent/control", { sessionId: V.viewId, subId: row.subId, action: "stop" })
+    void post("/api/subagent/control", { sessionId: V.viewId, subId, action: "stop" })
       .then((r) => { if (!r.ok || r.data.ok === false) sysLine(r.data.error ?? r.data.message ?? "操作失败", "err"); });
   });
   return b;
@@ -1346,12 +1366,12 @@ function drwCtlBtn(row) {
 
 /** docs/9 归档按钮（可复用行）：空闲立即归档；执行中=中止当前任务后归档（服务端语义）。
  *  与 ⏹ 同一 /api/subagent/control 路由（action:"archive"）；按钮消失由 archived 事件驱动。 */
-function drwArchBtn(row) {
-  const b = el("button", "drwctl", "📦 归档");
+function drwArchBtn(subId) {
+  const b = el("button", "drwctl arch", "📦 归档");
   b.title = "归档该可复用子代理（空闲立即归档；执行中会先中止当前任务）。归档后仅可查看存档，不可再派任务";
   b.addEventListener("click", (ev) => {
     ev.stopPropagation();
-    void post("/api/subagent/control", { sessionId: V.viewId, subId: row.subId, action: "archive" })
+    void post("/api/subagent/control", { sessionId: V.viewId, subId, action: "archive" })
       .then((r) => { if (!r.ok || r.data.ok === false) sysLine(r.data.error ?? r.data.message ?? "操作失败", "err"); });
   });
   return b;
