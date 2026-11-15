@@ -528,10 +528,13 @@
 
 <script type="module">
 // 前端 ES 模块（docs/26 F1）：纯决策逻辑抽到 /app/*.js（node:test 可单测），此处只留视图层。
-// 竞态/切换 → replay.js；轮折叠 → turns.js；送达解析与格式化 → autoreport.js（模块零依赖、禁 DOM）。
+// 竞态/切换 → replay.js；轮折叠 → turns.js；送达解析与格式化 → autoreport.js；状态仓 → store.js（F2，
+// 模块零依赖、禁 DOM——trace 开关由入口读 ?zqqtrace=1 后传入，排障时每个 store.set 都打调用栈）。
 import { decideRoute, filterByMl, decideFollow } from "/app/replay.js";
 import { groupTurns, decideFold } from "/app/turns.js";
 import { splitAutoText as splitAutoTextM, autoReportSummary as autoReportSummaryM, firstLine, prettyArgs, fmtTok, fmtDur } from "/app/autoreport.js";
+import { createStore } from "/app/store.js";
+const TRACE = new URLSearchParams(location.search).has("zqqtrace"); // 开发期：?zqqtrace=1 可见状态变更轨迹
 const $ = (s) => document.querySelector(s);
 const chat = $("#chat"), input = $("#input"), sendBtn = $("#sendBtn");
 

@@ -440,7 +440,7 @@ test("哨兵（docs/24 已启用）：前端零硬编码阈值——键名/文�
 test("哨兵（docs/26 F1 已启用）：app/ 前端模块零依赖（禁 node_modules/远端 import）+ 纯逻辑禁 DOM 引用", () => {
   const appDir = join(HERE, "..", "web", "public", "app");
   const files = readdirSync(appDir).filter((f) => f.endsWith(".js"));
-  assert.ok(files.length >= 6, "app/ 应含 F1 三模块与其测试（replay/turns/autoreport × .js/.test.js）");
+  assert.ok(files.length >= 6, "app/ 应含 F1 三模块与其测试（replay/turns/autoreport × .js/.test.js）+ F2 store");
   for (const f of files) {
     const src = readFileSync(join(appDir, f), "utf8");
     // 可测性边界（docs/26 §9-6）：纯逻辑模块禁 DOM 全局引用（含测试——node:test 环境没有它们）
@@ -470,8 +470,8 @@ test("哨兵（docs/26 F1 已启用）：index.html 为原生 module 单 script 
     lines <= 2530,
     `内联 script 应 ≤2530 行（F1 完成时实测 2292 +10% 取整；新功能纯决策进 app/ 模块、DOM 进视图层，继续拆分看 docs/26 F4），当前 ${lines}`,
   );
-  // 模块接线：三个 F1 模块均被页面 import（web-static 精确注册同路径）
-  for (const name of ["replay.js", "turns.js", "autoreport.js"]) {
+  // 模块接线：F1 三模块 + F2 store 均被页面 import（web-static 精确注册同路径）
+  for (const name of ["replay.js", "turns.js", "autoreport.js", "store.js"]) {
     assert.ok(m[1]!.includes(`"/app/${name}"`), `页面应 import /app/${name}`);
   }
 });
