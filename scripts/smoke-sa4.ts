@@ -247,6 +247,14 @@ try {
         /<!-- accept 的 mime 清单 = config\.ts IMAGE_RULES\.mimes/.test(front),
       "",
     );
+    // DT3-①（docs/25 §6）：审批通知链——审批卡渲染处触发 + 失焦门控 + 点击聚焦（渲染进程 Notification，零壳代码）
+    record(
+      "DT3-① 审批通知：showApprovalCard 触发 notifyApproval + 失焦门控（hasFocus）+ 点击聚焦（window.focus）+ tag 去重",
+      front.includes("notifyApproval(d);") && front.includes("function notifyApproval") &&
+        front.includes("new Notification(") && front.includes("document.hasFocus()") &&
+        front.includes("window.focus()") && front.includes('tag: "zqq-approval"'),
+      "",
+    );
   }
 
   // ---------- 5) P2：worker 直调真 MCP（demo stdio 服务器全链路，docs/6 §2.3 路线 A） ----------

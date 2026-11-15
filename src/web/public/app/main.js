@@ -48,6 +48,21 @@ function showApprovalCard(d) {
   $("#aReasons").innerHTML = (d.reasons || []).map((r) => "<li>" + esc(r) + "</li>").join("");
   $("#approval").classList.remove("hidden");
   autoscroll(chat);
+  notifyApproval(d);
+}
+/** DT3-① 审批通知（docs/25 §6，默认开）：审批卡到达且**窗口失焦**时弹系统通知，点击聚焦。
+ *  渲染进程 Notification API（Chromium；http://127.0.0.1 是 secure context，零壳代码）；
+ *  首张卡触发权限请求（Chromium 弹询问、Electron 默认授予），拒绝/不支持则静默跳过——
+ *  通知失败绝不影响审批卡本体。tag 去重：连续多张卡只留最新一条。 */
+function notifyApproval(d) {
+  try {
+    if (typeof Notification === "undefined" || document.hasFocus()) return;
+    if (Notification.permission === "default") void Notification.requestPermission();
+    if (Notification.permission !== "granted") return;
+    const body = (d.subagent ? "🤖 子代理 " + d.subagent + " · " : "") + (d.description || String(d.command ?? "").slice(0, 120) || "一个操作等待批准");
+    const n = new Notification("ZQQ-harness 需要审批", { body, tag: "zqq-approval" });
+    n.onclick = () => { window.focus(); n.close(); }; // 聚焦回窗口（spec：window.focus() 级即可）
+  } catch { /* 权限 API 异常等：静默（卡片本体已显示） */ }
 }
 
 const es = new EventSource("/api/events");
