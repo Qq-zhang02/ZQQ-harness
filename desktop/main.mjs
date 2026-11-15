@@ -11,6 +11,7 @@
  * → 子进程退出后 app.quit()；5s 未退硬杀兜底。单实例：二次启动聚焦已有窗口后退出。
  */
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, dialog } from "electron";
 
@@ -18,6 +19,9 @@ const APP_ROOT = join(import.meta.dirname, ".."); // desktop/ 的上级 = 项目
 const READY_PREFIX = "ZQQ-READY ";
 const BOOT_TIMEOUT_MS = 60_000;
 const KILL_GRACE_MS = 5_000;
+// DT3-②（docs/25 §6/§8-1）：桌面壳偏好文件——壳对业务数据目录的**唯一例外**（只读这一个；
+// 由服务端 web.desktop 模块维护〔端点经页面调用，壳不直接访问〕，路径不得 import src/** 故本地拼写）。
+const DESKTOP_JSON = join(app.getPath("home"), ".ZQQ-harness", "desktop.json");
 
 /** @type {import("node:child_process").ChildProcess | null} */
 let child = null;
@@ -67,6 +71,7 @@ async function start() {
     return;
   }
   openWindow(`http://127.0.0.1:${port}`);
+  applyDesktopPrefs(); // DT3-②：服务已就绪（userDir 已建）→ 读 desktop.json 应用自启
 
   child.on("exit", (code) => {
     if (!quitting) {
@@ -104,6 +109,25 @@ function waitForReady(proc) {
     proc.stdout.on("data", onData);
     proc.on("exit", onExit);
   });
+}
+
+/** DT3-②：读 desktop.json 应用开机自启（启动时一次；读侧 lenient——缺失/损坏=全关缺省）。
+ *  仅打包版注册：dev 的 electron.exe 进注册表会污染系统自启项；显式 false 同时清理旧注册。 */
+function applyDesktopPrefs() {
+  let prefs = {};
+  try {
+    prefs = JSON.parse(readFileSync(DESKTOP_JSON, "utf8"));
+  } catch { /* 文件缺失/损坏：保持缺省（web.desktop 读侧同款宽宥） */ }
+  try {
+    if (prefs.autoStart === true) {
+      if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true });
+      else console.log("[shell] 开机自启=开（dev 模式不注册，打包版生效）");
+    } else if (app.isPackaged) {
+      app.setLoginItemSettings({ openAtLogin: false }); // 缺省/关闭：清掉可能存在的旧注册
+    }
+  } catch (e) {
+    console.log(`[shell] 自启设置应用失败：${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 function openWindow(url) {

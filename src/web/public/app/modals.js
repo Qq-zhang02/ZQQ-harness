@@ -279,6 +279,7 @@ async function openSettings() {
   setErr.textContent = "";
   PS.setDirty = false;
   setModal.classList.remove("hidden");
+  void renderDesktopPrefs(); // DT3-②：桌面版偏好区（Electron 才渲染；失败静默——不影响阈值表单）
 }
 
 /** 收集 + 轻校验（整数/含边界 min/max；开边界与服务端严格校验为准——400 会逐键标红） */
@@ -379,3 +380,42 @@ $("#wsOk").addEventListener("click", async () => {
   if (!r.ok) { wsErr.textContent = r.data.error ?? "切换失败"; return; }
   wsModal.classList.add("hidden");
 });
+
+// ---------- DT3-② 桌面版偏好（desktop.json：开机自启；DT3-③ 追加托盘项） ----------
+// 仅 Electron 渲染进程展示该区（浏览器模式端点照常可用但无壳消费——纯显示层差异，非行为分叉）；
+// 即时生效：checkbox change 直接 POST /api/desktop/save（沿视觉模型下拉先例，不进 setDirty 两步确认），
+// 桌面壳侧启动时读 + fs.watch 活应用（desktop/main.mjs）。容器常驻、每次开设置模态时重查重填。
+const setDesktopBox = el("div", "setdesk hidden");
+$("#setNote").after(setDesktopBox);
+async function renderDesktopPrefs() {
+  if (!/Electron/.test(navigator.userAgent)) return; // 浏览器模式不显示（壳不在场）
+  const r = await fetch("/api/desktop");
+  if (!r.ok) return;
+  const d = await r.json();
+  setDesktopBox.innerHTML = "";
+  const head = el("div", "setd-head");
+  head.textContent = "🖥 桌面版（desktop.json，改动即时保存）";
+  setDesktopBox.appendChild(head);
+  setDesktopBox.appendChild(deskRow("开机自启", "随 Windows 登录启动（仅打包版注册；dev 模式只记录不注册）", d.autoStart,
+    (v) => post("/api/desktop/save", { autoStart: v })));
+  setDesktopBox.classList.remove("hidden");
+}
+/** 偏好行：checkbox + 标签 + 说明；change 即存，失败回滚勾选并报错。 */
+function deskRow(label, note, checked, save) {
+  const row = el("label", "setd-row");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = checked === true;
+  cb.addEventListener("change", async () => {
+    const r = await save(cb.checked);
+    if (!r.ok) { sysLine(r.data.error ?? "设置失败", "err"); cb.checked = !cb.checked; }
+  });
+  row.appendChild(cb);
+  const txt = el("span");
+  txt.textContent = label;
+  row.appendChild(txt);
+  const nt = el("span", "setd-note");
+  nt.textContent = note;
+  row.appendChild(nt);
+  return row;
+}

@@ -18,6 +18,7 @@ export const USER_DIR_LAYOUT = {
   mcpFile: "mcp.json",
   harnessFile: "harness.json",
   credentialsFile: ".credentials.yaml",
+  desktopFile: "desktop.json", // 桌面壳偏好（docs/25 DT3：开机自启/托盘；独立于 harness.json——不污染阈值 schema）
 } as const;
 
 /** 确保用户数据目录存在；顺带把旧版本放在项目根的用户数据迁移过来（只迁不覆盖；跨盘时复制后删除）。 */

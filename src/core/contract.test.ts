@@ -506,7 +506,7 @@ test("哨兵（docs/26 F2 已启用；F4 起扫描对象改 app/ 模块）：视
 
 // ---------- 哨兵（docs/25 DT1：桌面壳「不进业务」边界，§8-1 锁法） ----------
 
-test("哨兵（docs/25 DT1 已启用）：desktop/ 壳不进业务——≤2 文件、不 import src/、不碰 /api/ 与用户数据目录", () => {
+test("哨兵（docs/25 DT1 已启用；DT3 放宽 desktop.json 例外）：desktop/ 壳不进业务——≤2 文件、不 import src/、不碰 /api/ 与用户数据目录", () => {
   const desktopDir = join(HERE, "..", "..", "desktop");
   const files = existsSync(desktopDir) ? readdirSync(desktopDir) : [];
   assert.ok(files.length > 0, "desktop/ 应存在（DT1 壳：main.mjs）");
@@ -519,7 +519,11 @@ test("哨兵（docs/25 DT1 已启用）：desktop/ 壳不进业务——≤2 文
       assert.ok(!spec.includes("src/"), `${f} 不得 import src/**（壳不进业务——服务经子进程 spawn，通信只有 READY 行与 stdin 管道）`);
     }
     assert.ok(!src.includes("/api/"), `${f} 不得出现 /api/（壳不做第二个业务层；页面自行访问服务端点）`);
-    assert.ok(!src.includes(".ZQQ-harness"), `${f} 不得读写业务数据目录（用户数据只属服务进程）`);
+    // DT3（docs/25 §6/§8-1）：desktop.json 是 §8-1 声明的唯一例外——壳只读这一个业务文件。
+    // 锁法：".ZQQ-harness" 字面量全文件至多一行，且该行必须同时是 desktop.json 路径常量行。
+    const zqqHits = src.split("\n").filter((l) => l.includes(".ZQQ-harness"));
+    assert.ok(zqqHits.length <= 1 && (zqqHits.length === 0 || zqqHits[0]!.includes("desktop.json")),
+      `${f} 不得读写业务数据目录（唯一例外：desktop.json 路径常量行——壳对其只读；docs/25 §8-1）`);
   }
 });
 

@@ -293,6 +293,12 @@
   .setrow input.bad { border-color: var(--red); }
   .setbtn { border: 1px solid var(--border); background: transparent; color: var(--dim); border-radius: 6px; padding: 3px 7px; cursor: pointer; font-size: 12px; white-space: nowrap; }
   .setbtn:hover { color: var(--accent); border-color: var(--accent); }
+  /* DT3-②：设置模态的桌面版偏好区（仅 Electron 渲染进程显示；checkbox 即时 POST，不进 setDirty） */
+  .setdesk { border: 1px solid var(--border); border-radius: 6px; padding: 2px 12px 6px; margin-bottom: 8px; }
+  .setd-head { color: var(--accent); font-weight: 700; font-size: 13px; padding: 8px 0 4px; border-bottom: 1px solid var(--border); }
+  .setdesk .setd-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; cursor: pointer; }
+  .setdesk .setd-note { color: var(--dim); font-size: 11.5px; }
+  .setdesk input { accent-color: var(--accent); margin: 0; }
 </style>
 </head>
 <body>
