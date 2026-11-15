@@ -15,7 +15,10 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **8 个系统�
 ```bash
 npm install
 npm run web               # 打开 http://localhost:8787（自动弹浏览器，PORT 可改）
+npm run desktop           # 桌面版（Electron 薄壳，docs/25 DT1）：独立窗口 + 动态端口 + 关窗即退
 ```
+
+- **桌面版首次安装**：electron 二进制（~120MB）由 postinstall 下载；本机 allow-scripts 策略会拦截该脚本时，手动补跑：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ node node_modules/electron/install.js`（registry 已是 npmmirror）。壳只管进程与窗口（`desktop/main.mjs`，≤2 文件哨兵锁定）——与浏览器版跑**同一份** server.ts 与前端，双入口零漂移
 
 - 不想自动弹浏览器（脚本/远程环境）：设环境变量 `ZQQ_NO_BROWSER=1` 再启动
 - **服务默认只监听 `127.0.0.1`（本机）**，局域网不可达（docs/25 DT0）；确需局域网访问设 `ZQQ_HOST=0.0.0.0` 再启动（自担风险——服务暴露会话数据与 API key 操作面）。`PORT=0` 为随机端口，启动首行 stdout 打印 `ZQQ-READY <端口>` 握手行（供桌面壳解析，浏览器模式忽略无害）；关停支持 Ctrl+C 与 stdin 关闭（父进程退出联动）
@@ -409,7 +412,7 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `22_交接文档-阶段A维护实施与后续接力.md`——阶段 A 实施交接：git 基线与 commit 结构、本次全部改动清单与验证证据、踩坑记录（npm test 显式清单等）、剩余工作与接力入口（IMAGE_RULES → 阶段 B/C/D）
 - `23_交接文档-阶段D结构优化接力.md`——第三棒交接：A/B/C 三段成果摘要（384 测试基线）、阶段 D 三项（subagents.ts 拆五块 / config 惰性化 / 前端渲染统一）的入口与约束、可选阶段 B 第二批 8 键、踩坑记录（双哨兵/模板字面量插值/taskkill 等）与不变量清单
 - `24_交接文档-前端设置入口与harness热应用.md`——第四棒交接（**已实施**，头部含实施记录）：Web UI「运行阈值」设置入口——THRESHOLD_RULES 上提 + thresholdSchema 单一出处、web-settings 模块 GET + /save POST（严格校验+原子写+initConfig 热生效）、热生效边界三类（立即跟随/新会话生效/需重启）、schema 驱动前端（零硬编码哨兵）、GUI 冒烟两处修复（确认行顺序、两步关闭确认）
-- `25_开发文档-桌面端版本方案.md`——桌面端版本方案（**DT0 已实施**，头部含实施记录；DT1–DT3 待做）：2026-11-15 架构复审评级 + 三档路线（L0 现状 bat / L1 Edge 应用模式 / L2 Electron 薄壳推荐）+ 服务端就绪化（DT0：127.0.0.1 绑定/动态端口握手/优雅停机）+ 壳落地与打包分发（DT1–DT3）+ 维护纪律（壳不进业务、双入口回归、Electron 升级核对单）
+- `25_开发文档-桌面端版本方案.md`——桌面端版本方案（**DT0+DT1 已实施**，头部含实施记录；DT2–DT3 待做）：2026-11-15 架构复审评级 + 三档路线（L0 现状 bat / L1 Edge 应用模式 / L2 Electron 薄壳推荐）+ 服务端就绪化（DT0：127.0.0.1 绑定/动态端口握手/优雅停机）+ 壳落地与打包分发（DT1–DT3）+ 维护纪律（壳不进业务、双入口回归、Electron 升级核对单）
 - `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**实施顺序以此为准；F1 已实施**，头部含实施记录）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化 → F3 渲染 keyed 收官（并入 docs/23 D3 剩余项）→ F4 条件拆文件与不变量修订 + 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
 
 ## 已知限制

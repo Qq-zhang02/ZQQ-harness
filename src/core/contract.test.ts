@@ -476,6 +476,25 @@ test("哨兵（docs/26 F1 已启用）：index.html 为原生 module 单 script 
   }
 });
 
+// ---------- 哨兵（docs/25 DT1：桌面壳「不进业务」边界，§8-1 锁法） ----------
+
+test("哨兵（docs/25 DT1 已启用）：desktop/ 壳不进业务——≤2 文件、不 import src/、不碰 /api/ 与用户数据目录", () => {
+  const desktopDir = join(HERE, "..", "..", "desktop");
+  const files = existsSync(desktopDir) ? readdirSync(desktopDir) : [];
+  assert.ok(files.length > 0, "desktop/ 应存在（DT1 壳：main.mjs）");
+  assert.ok(files.length <= 2, `desktop/ 限 2 个文件（main.mjs + 图标；docs/25 §8-1），当前 ${files.length}：${files.join(",")}`);
+  for (const f of files) {
+    if (!f.endsWith(".mjs") && !f.endsWith(".js")) continue; // 图标等二进制不查源码
+    const src = readFileSync(join(desktopDir, f), "utf8");
+    const specs = [...src.matchAll(/\bfrom\s*["']([^"']+)["']/g)].map((m) => m[1]!);
+    for (const spec of specs) {
+      assert.ok(!spec.includes("src/"), `${f} 不得 import src/**（壳不进业务——服务经子进程 spawn，通信只有 READY 行与 stdin 管道）`);
+    }
+    assert.ok(!src.includes("/api/"), `${f} 不得出现 /api/（壳不做第二个业务层；页面自行访问服务端点）`);
+    assert.ok(!src.includes(".ZQQ-harness"), `${f} 不得读写业务数据目录（用户数据只属服务进程）`);
+  }
+});
+
 // ---------- d) import 图哨兵 ----------
 
 function listTsFiles(root: string): string[] {
