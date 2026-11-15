@@ -16,8 +16,10 @@ export interface AgentUi {
   printReasoningDelta(text: string): void;
   /** 助手回复的流式文本增量 */
   printTextDelta(text: string): void;
-  /** callId=工具调用 id（可选）：UI 用它把结果精确配对到调用块（并行调用/切换重放时不串块） */
-  printToolCall(name: string, argsPreview: string, callId?: string): void;
+  /** callId=工具调用 id（可选）：UI 用它把结果精确配对到调用块（并行调用/切换重放时不串块）。
+   *  args=完整参数 JSON 串（可选，docs/28 P2-2）：前端展开体渲染（write 内容/edit diff）需要
+   *  全量 old_string/new_string/content——argsPreview 只截 160 字符不够。UI 侧自行截断广播。 */
+  printToolCall(name: string, argsPreview: string, callId?: string, args?: string): void;
   /** 工具执行的完整输出（exit code + stdout/stderr），由各 UI 自行决定展示/摘要；
    *  meta.prunedChars = 入模型内容被修剪的字符数；meta.spilled = 超长全文落盘路径（仅入模型引用） */
   printToolResult(output: string, meta?: { prunedChars: number; spilled?: string }, callId?: string): void;
@@ -413,7 +415,7 @@ export class Agent {
           signal: this.runSignal ?? undefined,
         };
         for (const call of r.toolCalls) {
-          ui.printToolCall(call.name, previewArgs(call.arguments), call.id);
+          ui.printToolCall(call.name, previewArgs(call.arguments), call.id, call.arguments);
           const res = INTERIM_CONTROL_TOOLS.has(call.name)
             ? await registry.executeWithMeta(call.name, call.arguments, ctx)
             : { text: `错误：即时应答窗口只能执行 stop_subagent / archive_subagent（${call.name} 不在其中）——其余工具请等当前任务结束后调用。`, full: "", prunedChars: 0 };
@@ -589,7 +591,7 @@ export class Agent {
       try {
         const calls = result.toolCalls;
         if (this.deps.sessionKind === "coordinator" && calls.length > 1) {
-          for (const call of calls) ui.printToolCall(call.name, previewArgs(call.arguments), call.id);
+          for (const call of calls) ui.printToolCall(call.name, previewArgs(call.arguments), call.id, call.arguments);
           const done = await Promise.all(
             calls.map(async (call) => {
               const r = await registry.executeWithMeta(call.name, call.arguments, ctx);
@@ -600,7 +602,7 @@ export class Agent {
           for (const { call, r } of done) this.history.push({ role: "tool", toolCallId: call.id, content: r.text });
         } else {
           for (const call of calls) {
-            ui.printToolCall(call.name, previewArgs(call.arguments), call.id);
+            ui.printToolCall(call.name, previewArgs(call.arguments), call.id, call.arguments);
             const r = await registry.executeWithMeta(call.name, call.arguments, ctx);
             // UI 拿完整输出（spill 只影响入模型内容）；元数据带修剪信息供前端展示
             ui.printToolResult(r.full, { prunedChars: r.prunedChars, ...(r.spilled ? { spilled: r.spilled } : {}) }, call.id);

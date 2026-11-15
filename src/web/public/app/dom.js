@@ -1,7 +1,9 @@
 // dom.js（docs/26 F4/§6 大分区拆文件）：跨分区共享的视图层底层工具——DOM 建造/转义/滚动/
 // keyed 重排原语 + 少量无 DOM 的通用助手（post/normWs/fillOptions）与系统行。
-// 依赖方向：本模块不 import 任何 app/ 模块（分层最底层，被其余六模块消费）。
-// 纯逻辑模块（replay/turns/autoreport/store）禁 DOM 的哨兵不覆盖本文件——视图层天然碰 DOM。
+// 依赖方向：本模块只向下 import 纯逻辑模块（toolinfo → autoreport，docs/28 P2-3），不 import
+// 任何视图/状态模块（chat/drawer 经 renderToolBody 共用工具块渲染，无环）；被其余六模块消费。
+// 纯逻辑模块（replay/turns/autoreport/store/toolinfo）禁 DOM 的哨兵不覆盖本文件——视图层天然碰 DOM。
+import { toolBodyBlocks } from "./toolinfo.js";
 export const $ = (s) => document.querySelector(s);
 // ---------- 基础工具 ----------
 function el(tag, cls, trustedHtml) {
@@ -97,4 +99,32 @@ function reconcileKeyed(parent, entries) {
   for (const [k, n] of old) if (!used.has(k)) n.remove();
 }
 
-export { el, esc, mdLite, nearBottom, autoscroll, scrollStateOf, rebuildKeepScroll, harvestOpenKeys, keepOpenOf, sysLine, fillOptions, normWs, post, reconcileKeyed };
+/** 工具块展开体渲染（docs/28 P2-3/P2-4）：write_file=只显示写入内容、edit_file=红绿 diff
+ *  （old_string 行红-、new_string 行绿+，附 occurrence/replace_all 注记）；其他工具/参数不可
+ *  解析 → 返回 false（调用方按现状渲染 prettyArgs 参数块）。chat.js addTool 与 drawer.js
+ *  makeTimeline 共用；trunc=单块文本显示截断上限（调用方传 CFG.TRUNC_TOOL_FULL）。 */
+function renderToolBody(container, name, argsRaw, trunc) {
+  const blocks = toolBodyBlocks(name, argsRaw);
+  if (!blocks) return false;
+  for (const b of blocks) {
+    if (b.type === "note") {
+      container.appendChild(el("div", "tres-cap", "📌 " + b.text));
+    } else if (b.type === "content") {
+      const cap = el("div", "tres-cap", "写入内容");
+      const pre = el("pre", "tres wbody");
+      pre.textContent = b.text.length > trunc ? b.text.slice(0, trunc) + "\n…（显示已截断）" : b.text;
+      container.appendChild(cap);
+      container.appendChild(pre);
+    } else if (b.type === "diff") {
+      if (b.note) container.appendChild(el("div", "tres-cap", "📌 " + b.note));
+      const box = el("div", "tdiff");
+      const clip = (t) => (t.length > trunc ? t.slice(0, trunc) + "\n…（显示已截断）" : t);
+      for (const line of clip(b.oldText).split("\n")) box.appendChild(el("div", "dl", "-" + line));
+      for (const line of clip(b.newText).split("\n")) box.appendChild(el("div", "al", "+" + line));
+      container.appendChild(box);
+    }
+  }
+  return true;
+}
+
+export { el, esc, mdLite, nearBottom, autoscroll, scrollStateOf, rebuildKeepScroll, harvestOpenKeys, keepOpenOf, sysLine, fillOptions, normWs, post, reconcileKeyed, renderToolBody };

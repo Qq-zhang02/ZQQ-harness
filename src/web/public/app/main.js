@@ -79,7 +79,7 @@ const SSE_HANDLERS = {
   },
   state(d) { route("state", d, (s) => { chatStore.set({ state: s }); cacheOf(V.viewId).turn = s.turn ?? null; syncDrawer(s); }); },
   delta(d) { route("delta", d, () => { if (d.kind === "reasoning") onReasoningDelta(d.text); else onContentDelta(d.text); }); },
-  tool(d) { route("tool", d, () => addTool(d.name, d.preview, d.id)); },
+  tool(d) { route("tool", d, () => addTool(d.name, d.args ?? d.preview, d.id)); }, // docs/28 P2-2：args=完整参数（缺省退 preview）
   toolResult(d) { route("toolResult", d, () => addToolRes(d.output, d.meta, d.id)); },
   usage(d) { route("usage", d, () => { C.state.totals = d.totals; if (d.context) C.state.context = d.context; chatStore.set({ state: C.state }); }); },
   info(d) { route("info", d, () => sysLine(d.message, typeof d.message === "string" && d.message.startsWith("📩") ? "queued" : undefined)); },

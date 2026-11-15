@@ -3,8 +3,9 @@
 // 订阅者）+ token 明细面板 + refreshSnapshot + 图片预览条 renderImgBar（applyState 的清理路径，
 // 故随本模块而非发送管线）。竞态/切换决策在 replay.js、轮折叠决策在 turns.js（F1 纯逻辑层）。
 // 依赖方向：dom/state/autoreport/turns/drawer/sidebar；不 import modals/main（被两者消费）。
-import { $, el, esc, mdLite, nearBottom, autoscroll, fillOptions, post } from "./dom.js";
+import { $, el, esc, mdLite, nearBottom, autoscroll, fillOptions, post, renderToolBody } from "./dom.js";
 import { splitAutoText as splitAutoTextM, autoReportSummary as autoReportSummaryM, fmtTok, firstLine, prettyArgs } from "./autoreport.js";
+import { toolHeadline } from "./toolinfo.js";
 import { groupTurns, decideFold } from "./turns.js";
 import { CFG, C, V, cacheOf, chatStore, metaOf, ctxLimitOf, imgRules } from "./state.js";
 import { drawer, renderDrawer, openDrawer, refreshSubSum, updateDrwBtn, tickClock } from "./drawer.js";
@@ -119,17 +120,26 @@ function endThink() {
     C.curThink = null;
   }
 }
-/** 工具调用：生成可折叠块（头部命令摘要 + 展开的参数），运行中标记 live。
+/** 工具调用：生成可折叠块（头部一行摘要 + 展开体），运行中标记 live。
  *  callId 用于把结果精确配对回本块：并行调用、切换会话重放时不会串块或残留"运行中"。
+ *  docs/28 P2-3/P2-4：头部摘要经 toolHeadline（pwsh=description、读/写/编辑=动词+文件名——
+ *  展开前只看这一行）；展开体经 renderToolBody（write 只显示写入内容、edit 红绿 diff），
+ *  其余工具照旧 prettyArgs 参数块。raw=完整参数 JSON（历史路径 tc.arguments / 实时路径
+ *  d.args，缺省退 d.preview——截断 JSON 解析失败自动走降级展示）。
  *  （toolBlocks 在 chat 区状态仓 chatStore——F4 起定义在 state.js） */
-function addTool(name, preview, callId, pending = true) {
+function addTool(name, raw, callId, pending = true) {
   endThink(); C.curAnswer = null;
   if (callId && C.toolBlocks.has(callId)) return C.toolBlocks.get(callId); // 重复事件（切回重放）：块已存在
   const g = ensureGroup();
   const blk = el("div", "tblock" + (pending ? " live" : ""));
-  blk.innerHTML = '<div class="tblock-h"><b>⚙ ' + esc(name) + '</b><code class="tprev">' + esc(firstLine(preview)) + '</code><span class="tstat"></span><span class="chev">▾</span></div><div class="tblock-b"><pre class="targs"></pre></div>';
+  blk.innerHTML = '<div class="tblock-h"><b>⚙ ' + esc(name) + '</b><code class="tprev">' + esc(toolHeadline(name, raw, raw)) + '</code><span class="tstat"></span><span class="chev">▾</span></div><div class="tblock-b"></div>';
   blk.querySelector(".tblock-h").addEventListener("click", () => blk.classList.toggle("collapsed"));
-  blk.querySelector(".targs").textContent = prettyArgs(preview);
+  const body = blk.querySelector(".tblock-b");
+  if (!renderToolBody(body, name, raw, CFG.TRUNC_TOOL_FULL)) {
+    const pre = el("pre", "targs");
+    pre.textContent = prettyArgs(raw);
+    body.appendChild(pre);
+  }
   // 需求三（docs/8 §3.2）：agent_task(s) 块不再内嵌时间线/过程盒——块内只留一行摘要 +
   // 块头 🤖 快捷入口，实时过程与回看都进右侧抽屉（数据不依赖本块存活，C.curTool 弱点消除）。
   if (name === "agent_task" || name === "agent_tasks") {
@@ -142,7 +152,7 @@ function addTool(name, preview, callId, pending = true) {
     const sum = el("div", "subsum", "🤖 子代理 · 详情在抽屉中查看");
     sum.title = "点击打开子代理抽屉";
     sum.addEventListener("click", () => openDrawer());
-    blk.querySelector(".tblock-b").insertBefore(sum, blk.querySelector(".targs"));
+    body.insertBefore(sum, body.firstChild);
     blk._subsum = sum;
     if (pending) refreshSubSum(sum);
   }

@@ -12,7 +12,7 @@ const TRACE = new URLSearchParams(location.search).has("zqqtrace"); // 开发期
 const CFG = {
   CLOCK_TICK_MS: 1000,     // ⏱ 计时器滴答间隔
   POLL_CTX_MS: 2000,       // 运行中子代理 context 轮询
-  POLL_DETAIL_MS: 1500,    // 抽屉运行中详情页轮询
+  POLL_DETAIL_MS: 4000,    // 抽屉运行中详情页轮询（docs/28 P2-4 起为兜底：实时呈现走 delta/tool 事件增量渲染）
   TRUNC_TOOL_FULL: 20000,  // 工具结果全文显示截断（完整内容已给模型，仅显示层截断）
   TRUNC_PREVIEW: 300,      // 工具结果行内预览截断
   CONFIRM_SESS_MS: 3000,   // 会话删除两步确认自动复位

@@ -22,7 +22,7 @@ import { AUTO_DELIVERY_PREFIXES, SSE_EVENTS } from "../core/events.ts";
 import type { ApprovalDecision } from "../approval/types.ts";
 import type { PromptSection, SystemToolDeps } from "../core/types.ts";
 import type { ActiveSubagent, SessionRuntime } from "../core/host.ts";
-import { cfgOf, compactionDepsOf, reportUsage, type SessionShell } from "./session-runtime.ts";
+import { cfgOf, clipToolArgs, compactionDepsOf, reportUsage, type SessionShell } from "./session-runtime.ts";
 import { archiveSourceOf, requestArchiveWorker } from "./subagent-archive.ts";
 import { contextPctOf, deliverToCoordinator } from "./subagent-report.ts";
 import type { WorkerSession } from "./subagent-records.ts";
@@ -51,6 +51,11 @@ const SUBAGENT_EVENT_TEXT_MAX = 500;
 function clipEventText(s: string): string {
   return s.length <= SUBAGENT_EVENT_TEXT_MAX ? s : s.slice(0, SUBAGENT_EVENT_TEXT_MAX - 16) + "…（已截断）";
 }
+
+/** worker delta 合并刷新间隔（docs/28 P2-1）：思考/文字增量按此窗口合并成批广播——逐 token
+ *  直发在多 worker 并行时事件量过大（方案 B 当年因此完全不发 delta，子代理界面无实时感）；
+ *  120ms 合并把量降 1~2 个数量级，视觉上仍是逐字流。工具事件前强制 flush 保显示顺序。 */
+const SUBAGENT_DELTA_FLUSH_MS = 120;
 
 /**
  * worker 共享 MCP 工具（docs/6 P2 路线 A）：首个 runWorker 懒加载。连接挂在本会话的
@@ -184,16 +189,58 @@ export function createWorkerSession(
 }
 
 /** worker 过程流 UI + 用量聚合器（docs/6 P3 方案 B；docs/17 起首派发与唤醒共用）：
- *  worker 中间过程仍不进前台历史/上下文（D8 两层架构不破），但工具调用/结果实时穿透为
- *  subagent 事件的 tool/toolResult phase（带 subId/name 配对；文本截断；只发 tool 级不发
- *  delta 级——事件量控制）。不带 ml 锚点：route() 缓冲重放不过滤，切回运行中会话时重放
- *  进抽屉（偏差 22 同机制）。docs/9：用量盒随任务走（ws.cur）——printUsage 聚合进
- *  「当前任务」的盒，idle 期间无写入。 */
+ *  worker 中间过程仍不进前台历史/上下文（D8 两层架构不破），但实时穿透为 subagent 事件——
+ *  docs/28 P2-1 起**思考/文字也发**：phase "delta"（kind reasoning/content，120ms 合并批，
+ *  带 ml 锚点=worker agent 历史长度——与主对话 delta 同款语义，切回重放经 filterByMl 去重）；
+ *  工具调用/结果照旧 tool/toolResult phase（带 subId/name 配对；文本截断；P2-2 起附完整参数
+ *  args 供前端展开体渲染 write 内容/edit diff）。docs/9：用量盒随任务走（ws.cur）——printUsage
+ *  聚合进「当前任务」的盒，idle 期间无写入。 */
 export function makeWorkerUi(sh: SessionShell, rt: SessionRuntime, ws: WorkerSession): AgentUi {
+  // delta 缓冲（P2-1）：两 kind 各自累积，定时合并刷出；工具事件前同步 flush 保显示顺序
+  const pend = { reasoning: "", content: "" };
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  const ml = () => ws.agent?.messages.length ?? 0;
+  const flush = (): void => {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (pend.reasoning) {
+      sh.broadcast(SSE_EVENTS.subagent, {
+        sessionId: rt.id,
+        subId: ws.subId,
+        name: ws.name,
+        phase: "delta",
+        kind: "reasoning",
+        text: pend.reasoning,
+        ml: ml(),
+      });
+      pend.reasoning = "";
+    }
+    if (pend.content) {
+      sh.broadcast(SSE_EVENTS.subagent, {
+        sessionId: rt.id,
+        subId: ws.subId,
+        name: ws.name,
+        phase: "delta",
+        kind: "content",
+        text: pend.content,
+        ml: ml(),
+      });
+      pend.content = "";
+    }
+  };
   return {
-    printReasoningDelta: () => {},
-    printTextDelta: () => {},
-    printToolCall: (toolName, preview, callId) => {
+    printReasoningDelta: (t) => {
+      pend.reasoning += t;
+      if (!flushTimer) flushTimer = setTimeout(flush, SUBAGENT_DELTA_FLUSH_MS);
+    },
+    printTextDelta: (t) => {
+      pend.content += t;
+      if (!flushTimer) flushTimer = setTimeout(flush, SUBAGENT_DELTA_FLUSH_MS);
+    },
+    printToolCall: (toolName, preview, callId, args) => {
+      flush(); // 保序：缓冲中的思考/文字先于工具块到达前端
       sh.broadcast(SSE_EVENTS.subagent, {
         sessionId: rt.id,
         subId: ws.subId,
@@ -201,10 +248,12 @@ export function makeWorkerUi(sh: SessionShell, rt: SessionRuntime, ws: WorkerSes
         phase: "tool",
         toolName,
         preview: clipEventText(preview),
+        ...(args ? { args: clipToolArgs(args) } : {}),
         ...(callId ? { id: callId } : {}),
       });
     },
     printToolResult: (output, _meta, callId) => {
+      flush(); // 结果也可能紧随文字增量（最终报告前的收尾文本）
       sh.broadcast(SSE_EVENTS.subagent, {
         sessionId: rt.id,
         subId: ws.subId,

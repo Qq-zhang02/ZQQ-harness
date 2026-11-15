@@ -21,7 +21,9 @@
     "src/web/public/app/autoreport.js",
     "src/web/public/app/autoreport.test.js",
     "src/web/public/app/store.js",
-    "src/web/public/app/store.test.js"
+    "src/web/public/app/store.test.js",
+    "src/web/public/app/toolinfo.js",
+    "src/web/public/app/toolinfo.test.js"
   ]
 }
 

@@ -7,13 +7,12 @@ import { COMPACTION_PRESSURE } from "../config.ts";
 import type { CompactOutcome } from "../compaction.ts";
 import type { ChatImage, ChatMessage } from "../llm/provider.ts";
 import { createWorkspace, readAgentsMd } from "../workspace.ts";
-import { loadMcpConfig } from "../mcp/manager.ts";
 import { rememberWorkspace } from "./workspaces.ts";
 import { AUTO_DELIVERY_PREFIXES, SSE_EVENTS } from "../core/events.ts";
 import type { SessionData } from "./sessions.ts";
 import type { SessionsPayload, SessionRuntime } from "../core/host.ts";
-import { join } from "node:path";
 import {
+  applyMcpInBackground,
   busyIds,
   cfgOf,
   createRuntime,
@@ -79,22 +78,20 @@ function setView(sh: SessionShell, id: string): void {
 }
 
 /** 就地把引导会话绑定到工作区（仅当当前查看会话还是空引导态时使用，避免堆积空白会话）。
- *  协调者会话不装配 MCP（docs/5 D3）：apply 会往 registry 注册 mcp__ 工具，破坏「仅 agent_task」。 */
+ *  协调者会话不装配 MCP（docs/5 D3）：apply 会往 registry 注册 mcp__ 工具，破坏「仅 agent_task」。
+ *  docs/28 P1-3：MCP 连接改后台装配（applyMcpInBackground）——绑定立即返回，说明书在
+ *  连接完成后热更进系统提示（startTurn 开跑前 await mcpReady 收口，工具可见性等价）。 */
 export async function bindWorkspace(sh: SessionShell, rt: SessionRuntime, p: string): Promise<void> {
   rt.workspace = createWorkspace(p);
   if (rt.kind !== "coordinator") {
-    await rt.mcp.apply(
-      await loadMcpConfig([sh.globalMcpFile]),
-      await loadMcpConfig([join(rt.workspace.root, "mcp.json")]),
-      rt.registry,
-    );
+    applyMcpInBackground(sh, rt, rt.workspace.root);
   } else if (!rt.workerMcp) {
     // docs/20 修订：协调者绑工作区后预热 worker MCP（「子代理系统提示词说明」段需要
     // 说明书；createRuntime 对未绑工作区的引导会话不预热，避免把全局-only 连接缓存住、
     // 绑定后工作区级配置丢失）。fire-and-forget，成功后内部 refreshSystemPrompt 补上。
     void workerMcpToolsOf(sh, rt).catch(() => {});
   }
-  // 先重连 MCP 再更新系统提示，instructions 才是当前工作区的
+  // 系统提示立即装配（MCP 未连完时 instructions 为空——连接完成后 applyMcpInBackground 热更）
   rt.agent.setWorkspace(
     rt.workspace,
     readAgentsMd(rt.workspace.root),
@@ -103,6 +100,7 @@ export async function bindWorkspace(sh: SessionShell, rt: SessionRuntime, p: str
     readAgentsMd(sh.userDir),
   );
   sh.recentWorkspaces = rememberWorkspace(sh.workspacesFile, sh.recentWorkspaces, rt.workspace.root);
+  sh.sessions.removeFromOrder([rt.id]); // P1-4：换绑前清掉旧工作区 order 键（该 id 已不属于旧工作区）
   sh.sessions.prependOrder(rt.workspace.root, rt.id);
   // 与 newSessionForView 一致：创建即存档（空占位），当前会话立刻在侧边栏可见
   sh.sessions.save(toSessionData(rt, "", []));
@@ -217,6 +215,7 @@ export function startTurn(sh: SessionShell, rt: SessionRuntime, text: string, im
   sh.broadcast(SSE_EVENTS.state, currentState(sh, rt));
   void (async () => {
     try {
+      await rt.mcpReady; // P1-3（docs/28）：MCP 后台装配收口——首条消息发出时 mcp__ 工具/说明书必已就位（永不 reject）
       // 压缩触发一（pressure 自动）：请求派生前压力 ≥ 阈值 → 先压缩再跑轮
       if (rt.agent.contextPressure(cfgOf(sh, rt).contextLength) >= COMPACTION_PRESSURE) {
         sh.broadcast(SSE_EVENTS.info, {

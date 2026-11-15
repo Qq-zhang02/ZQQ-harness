@@ -202,6 +202,45 @@ test("docs/20 修订：协调者创建即预热 worker MCP——无需先派 wor
   }
 });
 
+test("docs/28 P1-3：普通会话 MCP 后台装配——createRuntime 即返，mcpReady 后工具/说明书热更", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-rt-mcp-async-"));
+  try {
+    // 本地桩：带一个工具（preloadStubTransport 的 listTools 为空，验不了注册侧）
+    const stubWithTool: McpTransportDef = {
+      type: "stub-async",
+      async connect() {
+        return {
+          instructions: "异步装配桩说明。",
+          serverInfo: { name: "stub-async", version: "1" },
+          listTools: () => [
+            { name: "demo_echo", description: "测试工具", inputSchema: { type: "object", properties: {}, required: [] } },
+          ],
+          callTool: async () => "ok",
+          get alive() {
+            return true;
+          },
+          stop: () => {},
+        };
+      },
+    };
+    const sh = makeShell(dir);
+    sh.ctx.mcpTransports.register(stubWithTool);
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { demo: { type: "stub-async", command: "stub" } } }), "utf8");
+    const rt = await createRuntime(sh, { workspaceRoot: dir });
+    // 创建即返：MCP 连接尚未完成（工具未注册、说明书未注入）——这正是 P1-3 要的
+    // 「会话创建不再阻塞在 stdio 握手上」
+    assert.ok(rt.mcpReady, "mcpReady promise 挂上");
+    assert.ok(!rt.registry.list().some((t) => t.name.startsWith("mcp__")), "创建即返时 MCP 工具尚未注册（后台装配中）");
+    await rt.mcpReady;
+    // 装配完成：工具进 registry、说明书热更进系统提示（startTurn 开跑前 await 即此语义）
+    assert.ok(rt.registry.list().some((t) => t.name === "mcp__demo__demo_echo"), "mcpReady 后 mcp__ 工具已注册");
+    assert.ok(String(rt.agent.messages[0]?.content).includes("异步装配桩说明。"), "MCP 说明书热更进系统提示");
+    await rt.mcp.stop();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("createRuntime 恢复：SessionData.kind=coordinator 旧档恢复为协调者；缺省 kind 恢复为 normal", async () => {
   const dir = mkdtempSync(join(tmpdir(), "zqq-rt-restore-"));
   try {

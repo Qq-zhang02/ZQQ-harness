@@ -52,11 +52,15 @@ export const webWorkspaces: HarnessModule = {
           return;
         }
         const cur = host.viewRt();
-        if (cur.workspace) {
+        // P1-4（docs/28）：当前查看会话还没有任何用户消息（引导态或空占位）→ 一律就地换绑
+        // ——反复点工作区不再"新建+清扫"（旧路径每次 createRuntime+存档+全量清扫，切换卡顿
+        // 的放大器）；空占位换绑与新建空会话用户可见行为等价（侧边栏条目跟着工作区走）。
+        const hasUserMsg = cur.agent.messages.some((m) => m.role === "user");
+        if (cur.workspace && hasUserMsg) {
           host.persistSession(cur); // 归档当前查看对话（属于旧工作区）
           await host.newSessionForView(p);
         } else {
-          await host.bindWorkspace(cur, p); // 引导会话就地绑定，避免堆积空白会话
+          await host.bindWorkspace(cur, p); // 引导会话/空占位就地绑定，避免堆积空白会话
         }
         host.broadcast("sessions", host.sessionsPayload());
         host.broadcast("state", host.currentState(host.viewRt()));

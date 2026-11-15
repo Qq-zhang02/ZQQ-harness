@@ -26,6 +26,9 @@ import type { ChatParams, ChatResult, LLMProvider } from "../llm/provider.ts";
 import type { SessionRuntime } from "../core/host.ts";
 import { SessionStore } from "./sessions.ts";
 import { runWorker, subagentServiceFor, applySubagentControl, archiveSourceOf, WORKER_ROLE_SECTION } from "./subagents.ts";
+import { makeWorkerUi } from "./subagent-worker.ts";
+import { TOOL_EVENT_ARGS_MAX_CHARS } from "../config.ts";
+import type { WorkerSession } from "./subagent-records.ts";
 import { isAutoReport, takeCoordinatorTurnText } from "./session-lifecycle.ts";
 import type { SessionShell } from "./session-runtime.ts";
 
@@ -1688,4 +1691,56 @@ test("docs/16 takeCoordinatorTurnText：队头用户消息不合并；队头报�
   // 空收件箱防御
   assert.equal(takeCoordinatorTurnText(inboxRt([])), "");
   assert.equal(takeCoordinatorTurnText({} as unknown as SessionRuntime), "");
+});
+
+test("makeWorkerUi（docs/28 P2-1/P2-2）：delta 节流批 + ml 锚点 + 工具事件带完整参数与强制 flush", async () => {
+  const broadcasts: { event: string; data: Record<string, unknown> }[] = [];
+  const sh = { broadcast: (event: string, data: unknown) => broadcasts.push({ event, data: data as Record<string, unknown> }) } as unknown as SessionShell;
+  const rt = { id: "sess-1" } as SessionRuntime;
+  const ws = {
+    subId: 3,
+    name: "alpha",
+    agent: { messages: [{ role: "user", content: "任务书" }] },
+    cur: null,
+  } as unknown as WorkerSession;
+  const ui = makeWorkerUi(sh, rt, ws);
+  // 未到 flush 窗口：增量只进缓冲不广播
+  ui.printReasoningDelta("思");
+  ui.printReasoningDelta("考");
+  ui.printTextDelta("文");
+  ui.printTextDelta("字");
+  assert.equal(broadcasts.length, 0, "120ms 窗口内不广播（事件量控制）");
+  // 工具调用强制 flush：先 delta（reasoning+content 两条）再 tool，顺序保证
+  ui.printToolCall("edit_file", '{"path":"a.ts"}', "call-1", '{"path":"a.ts","old_string":"x","new_string":"y"}');
+  assert.deepEqual(
+    broadcasts.map((b) => b.data.phase),
+    ["delta", "delta", "tool"],
+    "强制 flush 顺序：思考 → 文字 → 工具",
+  );
+  const d1 = broadcasts[0]!.data as { kind: string; text: string; ml: number };
+  const d2 = broadcasts[1]!.data as { kind: string; text: string; ml: number };
+  const t1 = broadcasts[2]!.data as { args?: string };
+  assert.equal(d1.kind, "reasoning");
+  assert.equal(d1.text, "思考", "同窗口增量合并成一条");
+  assert.equal(d1.ml, 1, "ml 锚点=worker 历史长度（切回重放 filterByMl 消费）");
+  assert.equal(d2.kind, "content");
+  assert.equal(d2.text, "文字");
+  assert.equal(t1.args, '{"path":"a.ts","old_string":"x","new_string":"y"}', "完整参数随 tool 事件（P2-2）");
+  // 缓冲已清：后续增量等定时器自行 flush
+  ui.printReasoningDelta("后");
+  assert.equal(broadcasts.length, 3, "flush 后缓冲清空");
+  await sleep(150);
+  assert.equal(broadcasts.length, 4, "定时器到点刷出");
+  const d3 = broadcasts[3]!.data as { phase: string; kind: string; text: string };
+  assert.equal(d3.phase, "delta");
+  assert.equal(d3.kind, "reasoning");
+  assert.equal(d3.text, "后");
+  // 超长 args 截断（TOOL_EVENT_ARGS_MAX_CHARS）
+  ui.printToolCall("write_file", "{}", "call-2", JSON.stringify({ content: "x".repeat(TOOL_EVENT_ARGS_MAX_CHARS + 500) }));
+  const t2 = broadcasts[broadcasts.length - 1]!.data as { args?: string };
+  assert.ok((t2.args ?? "").length < TOOL_EVENT_ARGS_MAX_CHARS + 500 && (t2.args ?? "").includes("截断"), "超长参数截断 + 标记");
+  // 无 args 的调用（旧签名/桩）不携带字段
+  ui.printToolCall("zz_echo", "{}", "call-3");
+  const t3 = broadcasts[broadcasts.length - 1]!.data as { args?: string };
+  assert.equal(t3.args, undefined, "未传 args 不带字段");
 });

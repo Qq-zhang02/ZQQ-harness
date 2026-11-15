@@ -454,8 +454,8 @@ test("哨兵（docs/26 F1/F4 已启用）：app/ 前端模块零依赖（禁 nod
   for (const v of ["dom.js", "state.js", "drawer.js", "sidebar.js", "chat.js", "modals.js", "main.js"]) {
     assert.ok(files.includes(v), `app/ 应含 F4 视图模块 ${v}（docs/26 §6 分层）`);
   }
-  // 可测性边界只约束纯逻辑模块（docs/26 §9-6）：视图模块（dom/drawer/…）天然操作 DOM，不在其列
-  const PURE = new Set(["replay.js", "turns.js", "autoreport.js", "store.js"]);
+  // 可测性边界只约束纯逻辑模块（docs/26 §9-6；docs/28 P2-3 增 toolinfo）：视图模块（dom/drawer/…）天然操作 DOM，不在其列
+  const PURE = new Set(["replay.js", "turns.js", "autoreport.js", "store.js", "toolinfo.js"]);
   for (const f of files) {
     const src = readFileSync(join(APP_DIR, f), "utf8");
     if (PURE.has(f) || f.endsWith(".test.js")) {
@@ -485,8 +485,8 @@ test("哨兵（docs/26 F4 已启用）：index.html 骨架化——单外链 /ap
   assert.ok(!html.includes("<script>\n") && !/<script type="module">/.test(html), "不应再有内联 script（视图代码全部在 app/ 模块）");
   const lines = html.split("\n").length;
   assert.ok(lines <= 500, `index.html 应 ≤500 行（骨架+CSS，docs/26 §6 验收），当前 ${lines}`);
-  // 分层接线（F4 无环图）：四纯模块 + 六视图模块都被相对路径 import 覆盖（store 经 state.js、turns 经 chat.js）
-  for (const need of ["replay.js", "turns.js", "autoreport.js", "store.js", "dom.js", "state.js", "drawer.js", "sidebar.js", "chat.js", "modals.js"]) {
+  // 分层接线（F4 无环图；docs/28 增 toolinfo）：五纯模块 + 六视图模块都被相对路径 import 覆盖（store 经 state.js、turns 经 chat.js）
+  for (const need of ["replay.js", "turns.js", "autoreport.js", "store.js", "toolinfo.js", "dom.js", "state.js", "drawer.js", "sidebar.js", "chat.js", "modals.js"]) {
     assert.ok(frontSrc.includes(`"./${need}"`), `视图层 import 图应覆盖 ./${need}`);
   }
 });

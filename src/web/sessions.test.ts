@@ -349,3 +349,41 @@ test("SessionStore 构造自愈 order.json：死 id 与空键清理，存活键�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("SessionStore 元数据缓存（docs/28 P1-1）：全部写路径增量维护，list() 不再依赖重扫盘", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-sess-cache-"));
+  const A = "aaaaaaaa-1111-2222-3333-444444444444";
+  const B = "bbbbbbbb-1111-2222-3333-444444444444";
+  try {
+    const s = new SessionStore(dir);
+    // 首次 list() 建缓存（空）；此后全部写路径只动缓存不重扫盘
+    assert.equal(s.list().length, 0);
+    s.save(sampleData(A));
+    assert.equal(s.list().length, 1, "save 后立即可见");
+    s.save({ ...sampleData(B), title: "第二个" });
+    assert.deepEqual(
+      s.list().map((x) => x.title),
+      ["第二个", "测试对话"],
+      "save 更新缓存（按 updatedAt 排序输出）",
+    );
+    // save 覆写（标题变化）→ 缓存跟随
+    s.save({ ...sampleData(A), title: "改过标题" });
+    assert.ok(s.list().some((x) => x.title === "改过标题"));
+    // 回收/恢复/彻底删除路径
+    assert.equal(s.recycleWorkspace("F:\\proj"), 2);
+    assert.equal(s.listRecycled().length, 2, "recycleWorkspace 翻标记进缓存");
+    assert.equal(s.listWorkspace("F:\\proj").length, 0, "回收站不进工作区列表");
+    s.restore(A);
+    assert.equal(s.listWorkspace("F:\\proj").length, 1, "restore 清标记进缓存");
+    assert.equal(s.listRecycled().length, 1);
+    s.purge(B);
+    assert.equal(s.listRecycled().length, 0, "purge 移出缓存");
+    s.delete(A);
+    assert.equal(s.list().length, 0, "delete 移出缓存");
+    // 重启（新实例）从盘重建缓存——最终状态与内存一致
+    const s2 = new SessionStore(dir);
+    assert.equal(s2.list().length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

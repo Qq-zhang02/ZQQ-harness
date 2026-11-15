@@ -159,6 +159,12 @@
   .sublink { color: var(--accent); cursor: pointer; text-decoration: underline; white-space: nowrap; margin-left: 6px; }
   .sublink:hover { filter: brightness(1.25); }
   .tres { max-height: 260px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; margin: 0; }
+  /* docs/28 P2-3：write_file 展开体只显示写入内容（.wbody 复用 .tres 滚动/换行）；edit_file 展开体红绿 diff */
+  pre.wbody { margin: 0 0 6px; }
+  .tdiff { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 0; margin: 4px 0 8px; font-size: 12.5px; overflow-x: auto; }
+  .tdiff .dl, .tdiff .al { white-space: pre-wrap; word-break: break-all; padding: 0 10px; font-family: Consolas, "Cascadia Mono", monospace; line-height: 1.5; }
+  .tdiff .dl { background: rgba(239, 68, 68, .13); color: #f0a8a8; }
+  .tdiff .al { background: rgba(52, 211, 153, .12); color: #9adfb8; }
 
   /* ── 子代理抽屉（需求三 docs/8 §3.2 方案 A）：#main 双栏的右栏，列表/详情两视图 ── */
   #chatRow { flex: 1; display: flex; min-height: 0; }

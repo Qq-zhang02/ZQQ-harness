@@ -2,8 +2,9 @@
 // 行状态机/列表与详情两视图/上下文占比轮询/运行计时滴答 + 子代理过程时间线渲染器 makeTimeline。
 // 依赖方向：dom/state/autoreport/store 四底层；不 import chat/sidebar/modals/main（区域自治，
 // 对外只暴露 render*/sync/reset/onSubagent/tickClock/refreshSubSum 与 drawer 稳定别名）。
-import { $, el, esc, mdLite, nearBottom, autoscroll, scrollStateOf, rebuildKeepScroll, keepOpenOf, sysLine, post, reconcileKeyed } from "./dom.js";
+import { $, el, esc, mdLite, nearBottom, autoscroll, scrollStateOf, rebuildKeepScroll, keepOpenOf, sysLine, post, reconcileKeyed, renderToolBody } from "./dom.js";
 import { fmtTok, fmtDur, firstLine, prettyArgs } from "./autoreport.js";
+import { toolHeadline } from "./toolinfo.js";
 import { createStore } from "./store.js";
 import { CFG, TRACE, C, V } from "./state.js";
 
@@ -40,6 +41,10 @@ const drawerStore = createStore({
   },
   ctxTimer: null, // 运行中子代理 context 轮询句柄（非 null=轮询中）
   ctxBusy: false, // 上一轮 context 拉取在途标记（防重入）
+  // docs/28 P2-4：运行详情页实时增量的游标（F2 纪律入仓，不落顶层裸 let）——liveTl=当前
+  // 时间线句柄（轮询重建后刷新引用），liveSeg=进行中段落（think live 块/answer 块）
+  liveTl: null,
+  liveSeg: { think: null, answer: null },
 }, { trace: TRACE });
 const D = drawerStore.get();
 const drawer = D.drawer;
@@ -201,16 +206,87 @@ function syncDrawer(st) {
   renderDrawer();
 }
 
+// ---------- 运行详情页的实时增量渲染（docs/28 P2-1/P2-4）：事件流为主，轮询降频兜底 ----------
+// worker delta（思考/文字，服务端 120ms 合并批）与 tool/toolResult 事件在详情页正看该
+// subId 且行处于 run 态时直接增量渲染（打字机）；pollLiveDetail 的全量重建覆盖增量元素
+// （内容一致，无重复——raw 比对不变则不重建，增量元素留存）。句柄在 drawerStore
+// （D.liveTl/D.liveSeg，建仓处有字段说明）：liveTl=当前时间线句柄（轮询重建后刷新引用），
+// liveSeg=进行中段落游标（think live 块/answer 块，语义同主对话 chat.js：首个正文或工具
+// 到达即折叠思考——完成即收起，docs/13）。
+function liveEndThink() {
+  const t = D.liveSeg.think;
+  if (!t) return;
+  t.classList.remove("live");
+  const tt = t.querySelector(".tt");
+  if (tt) tt.textContent = "💭 思考 · " + fmtTok(t._raw.length) + " 字";
+  t.classList.add("collapsed");
+  D.liveSeg.think = null;
+}
+
+/** 详情页增量消费判定：正看该 sub、行运行中、时间线句柄在（首个轮询快照已就位）。 */
+function liveActive(subId) {
+  return drawer.detail === subId && D.liveTl !== null && drawer.workers.get(subId)?.status === "run";
+}
+
+/** delta 事件增量渲染（打字机）：reasoning 进 live 思考框；content 折叠思考后进 answer 块。 */
+function liveDelta(d) {
+  if (!liveActive(d.subId)) return;
+  const body = $("#drwBody");
+  const stick = nearBottom(body);
+  if (d.kind === "reasoning") {
+    if (!D.liveSeg.think) {
+      const box = el("div", "think live");
+      box.innerHTML = '<div class="think-h"><span class="tt">💭 思考</span><span class="chev">▾</span></div><div class="think-b"></div>';
+      box.querySelector(".think-h").addEventListener("click", () => box.classList.toggle("collapsed"));
+      box._body = box.querySelector(".think-b");
+      box._raw = "";
+      D.liveSeg.think = box;
+      body.appendChild(box);
+    }
+    D.liveSeg.think._raw += d.text;
+    D.liveSeg.think._body.innerHTML = esc(D.liveSeg.think._raw);
+  } else {
+    liveEndThink();
+    if (!D.liveSeg.answer) {
+      D.liveSeg.answer = el("div", "answer");
+      D.liveSeg.answer._raw = "";
+      body.appendChild(D.liveSeg.answer);
+    }
+    D.liveSeg.answer._raw += d.text;
+    D.liveSeg.answer.innerHTML = mdLite(D.liveSeg.answer._raw);
+  }
+  if (stick) autoscroll(body);
+}
+
+/** tool/toolResult 事件增量渲染：折叠思考、按 callId 配对（与全量渲染同一时间线实例，
+ *  appendToolCall/appendToolResult 自带 callBlks 配对与完成即折叠语义）。 */
+function liveTool(d) {
+  if (!liveActive(d.subId)) return;
+  const body = $("#drwBody");
+  const stick = nearBottom(body);
+  liveEndThink();
+  D.liveSeg.answer = null; // 工具块之后的新正文开新块（与全量渲染的按消息分段一致）
+  if (d.phase === "tool") D.liveTl.appendToolCall({ id: d.id, name: d.toolName, arguments: d.args ?? d.preview }, true);
+  else D.liveTl.appendToolResult(d.id, d.output);
+  if (stick) autoscroll(body);
+}
+
 /** subagent SSE 事件 → 抽屉缓存增量（需求三 docs/8 §3.4：不依赖 C.curTool，处理器只改道到抽屉）。
- *  工具事件只积累进 steps（无存档时的保底视图数据）；运行中详情页的实时呈现走服务端
- *  transcript 轮询（docs/8 第三棒——与事件流互不重叠，思考/正文/工具全量）。
+ *  工具事件积累进 steps（无存档时的保底视图数据）；docs/28 P2 起 delta（思考/文字流）与
+ *  工具事件在详情页开着时**实时增量渲染**（liveDelta/liveTool——事件流为主路径），轮询
+ *  降频为兜底校正（POLL_DETAIL_MS 4s）。delta 不进 steps（切回时 transcript 全量补齐）。
  *  docs/9 新相位：task（followup 起跑——行 idle→run + 摘要更新）、idle（可复用任务结束转
  *  待命：ok/error 为本任务结果，rounds/usage 本任务口径，tasks 为累计次数）、archived（归档
  *  定格——只读）。done/error 仅一次性子代理（=用完即归档）。 */
 function onSubagent(d) {
   const row = ensureDrawerRow(d.subId, d.name);
+  if (d.phase === "delta") {
+    liveDelta(d);
+    return;
+  }
   if (d.phase === "tool" || d.phase === "toolResult") {
     row.steps.push(d);
+    liveTool(d);
     refreshLiveSubSums();
     return;
   }
@@ -551,7 +627,7 @@ async function renderDrawerDetail() {
     return;
   }
   if (running) {
-    note.textContent = "实时 · 随服务端进度同步（思考/正文/工具与结果全量；刷新不丢，完成后自动转为全程存档）";
+    note.textContent = "实时直播 · 思考/文字逐字流式、工具即时呈现（" + Math.round(CFG.POLL_DETAIL_MS / 1000) + "s 轮询兜底校正；刷新不丢，完成后自动转为全程存档）";
     note.classList.remove("hidden");
     drawer.poll = { subId: row.subId, timer: 0, last: "" };
     await pollLiveDetail(row, seq);
@@ -563,12 +639,17 @@ async function renderDrawerDetail() {
   buildLiveTimeline(row, body, keepScroll);
 }
 
-/** 运行中详情页轮询（docs/8 第三棒）：服务端持有 worker 全量历史（activeSubagents 句柄的
- *  liveMessages），每 1.5s 拉一次实时 transcript 整体重渲染（内容无变化不重渲——保留滚动
- *  位置与用户展开态）；done 事件触发详情重渲染自动停轮询（renderSeq 变化）。 */
+/** 运行中详情页轮询（docs/8 第三棒；docs/28 P2-4 起降频为兜底）：服务端持有 worker 全量
+ *  历史（activeSubagents 句柄的 liveMessages），每 POLL_DETAIL_MS 拉一次实时 transcript 整体
+ *  重渲染（内容无变化不重渲——保留滚动位置与用户展开态）；实时呈现的主路径是 delta/tool
+ *  事件的增量渲染（liveDelta/liveTool），本轮询负责首屏基线、事件丢失自愈与 ml 漂移校正。
+ *  done 事件触发详情重渲染自动停轮询（renderSeq 变化）。 */
 function stopLivePoll() {
   if (drawer.poll?.timer) clearTimeout(drawer.poll.timer);
   drawer.poll = null;
+  D.liveTl = null; // docs/28：增量句柄随轮询停用一并作废（重建后由 pollLiveDetail 重新接管）
+  D.liveSeg.think = null;
+  D.liveSeg.answer = null;
 }
 async function pollLiveDetail(row, seq) {
   try {
@@ -594,7 +675,9 @@ async function pollLiveDetail(row, seq) {
     rebuildKeepScroll(body, () => {
       const tl = makeTimeline(body, drawer.expand, keep);
       tl.renderMessages(d.messages || []);
-      tl.appendNote("…运行中，随服务端进度刷新");
+      D.liveTl = tl; // docs/28 P2-4：全量重建后由本时间线接管增量事件（旧增量元素已被覆盖）
+      D.liveSeg.think = null;
+      D.liveSeg.answer = null;
     }, st);
   } catch { /* 网络抖动：下一轮再试 */ }
 }
@@ -615,7 +698,7 @@ function buildLiveTimeline(row, body, st) {
     // docs/13：与 renderMessages 同款完成即收起——结果事件已到的工具步骤收起，未到的展开
     const answered = new Set(row.steps.filter((s) => s.phase === "toolResult").map((s) => s.id));
     for (const s of row.steps) {
-      if (s.phase === "tool") tl.appendToolCall({ id: s.id, name: s.toolName, arguments: s.preview }, !answered.has(s.id));
+      if (s.phase === "tool") tl.appendToolCall({ id: s.id, name: s.toolName, arguments: s.args ?? s.preview }, !answered.has(s.id));
       else tl.appendToolResult(s.id, s.output);
     }
     if (row.status === "done" || row.status === "error") tl.appendNote(subMetaText(row));
@@ -689,14 +772,22 @@ function makeTimeline(container, expand, keepOpen) {
   }
   function appendToolCall(tc, defOpen) {
     const key = "c" + String(tc.id ?? tc.name ?? "?");
+    const raw = tc.arguments ?? "";
     const blk = el("div", "tblock" + (isOpen(key, defOpen) ? "" : " collapsed"));
     blk.dataset.tlKey = key;
-    blk.innerHTML = '<div class="tblock-h"><b>⚙ ' + esc(tc.name ?? "?") + '</b><code class="tprev">' + esc(firstLine(tc.arguments ?? "")) + '</code><span class="chev">▾</span></div><div class="tblock-b"><pre class="targs"></pre></div>';
+    // docs/28 P2-3/P2-4：与主对话 addTool 同款——头部一行摘要（pwsh=description、读/写/编辑=
+    // 动词+文件名）；展开体 write 只显示内容、edit 红绿 diff，其余参数 JSON 照旧
+    blk.innerHTML = '<div class="tblock-h"><b>⚙ ' + esc(tc.name ?? "?") + '</b><code class="tprev">' + esc(toolHeadline(tc.name ?? "?", raw, raw)) + '</code><span class="chev">▾</span></div><div class="tblock-b"></div>';
     blk.querySelector(".tblock-h").addEventListener("click", () => {
       blk.classList.toggle("collapsed");
       if (explicit) explicit.set(key, !blk.classList.contains("collapsed"));
     });
-    blk.querySelector(".targs").textContent = prettyArgs(tc.arguments ?? "");
+    const body = blk.querySelector(".tblock-b");
+    if (!renderToolBody(body, tc.name ?? "?", raw, CFG.TRUNC_TOOL_FULL)) {
+      const pre = el("pre", "targs");
+      pre.textContent = prettyArgs(raw);
+      body.appendChild(pre);
+    }
     if (tc.id) callBlks.set(tc.id, blk);
     container.appendChild(blk);
     stick();

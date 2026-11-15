@@ -30,11 +30,14 @@ export const SSE_EVENTS = {
   turnEnd: "turnEnd",
   /** 会话列表/视图变化：{ current, viewSeq, running, groups, recycled } */
   sessions: "sessions",
-  /** 子代理生命周期与过程流（docs/5 SA4 + docs/6 P3 + docs/7 W2-S + docs/9 + docs/10 R1）：
-   *  { sessionId, subId, name, phase, summary?, rounds?, usage?, error?, transcript?, toolName?, preview?, output?, id?,
-   *    reusable?, tasks?, ok?, contextPct? }
-   *  phase: "spawned"（配额通过已启动）/ "tool" | "toolResult"（方案 B 实时过程流：工具调用与
-   *  结果，带 toolName/preview 或截断 output，id=callId 供配对回填；不带 ml，缓冲重放不过滤）/
+  /** 子代理生命周期与过程流（docs/5 SA4 + docs/6 P3 + docs/7 W2-S + docs/9 + docs/10 R1 + docs/28 P2）：
+   *  { sessionId, subId, name, phase, summary?, rounds?, usage?, error?, transcript?, toolName?, preview?, args?, output?, id?,
+   *    kind?, text?, ml?, reusable?, tasks?, ok?, contextPct? }
+   *  phase: "spawned"（配额通过已启动）/ "delta"（docs/28 P2-1：思考/文字增量——kind
+   *  "reasoning"|"content" + text，120ms 合并批；带 ml 锚点=worker 历史长度，切回重放经
+   *  filterByMl 去重，与主对话 delta 同款语义）/ "tool" | "toolResult"（方案 B 实时过程流：
+   *  工具调用与结果，带 toolName/preview 或截断 output，id=callId 供配对回填；docs/28 P2-2 起
+   *  tool 附 args=完整参数（截 TOOL_EVENT_ARGS_MAX_CHARS）供前端展开体渲染；不带 ml，缓冲重放不过滤）/
    *  "task"（followup 起跑，docs/9）/ "idle"（可复用任务结束转待命，docs/9）/
    *  "archived"（归档定格：手动归档或上下文超线强制归档，docs/9 + docs/10 R1）/
    *  "done"（一次性完成，带用量）/ "error"（失败/中止/超时/打断，docs/18 起打断即终结）；

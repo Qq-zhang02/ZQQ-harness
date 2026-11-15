@@ -127,6 +127,26 @@ export class SessionStore {
   readonly spillRoot: string;
   private orderPath: string;
   private orderCache: Record<string, string[]> | null = null;
+  /** 会话元数据内存缓存（docs/28 P1-1）：id → meta，首次 list() 全量建一次，此后全部
+   *  写路径（save/delete/purge/restore/recycleWorkspace）增量维护——sessionsPayload/
+   *  sweepEmptySessions 等高频读不再每次全量读盘+JSON.parse（一次点击工作区 4 次 list()
+   *  是切换卡顿主因，docs/28 §1.2）。取舍：外部手改 sessions/*.json 需重启才可见
+   *  （正常使用全经 API 写路径，见 docs/28 §1.5）。新增写路径务必同步维护本缓存。 */
+  private metaCache: Map<string, SessionMeta> | null = null;
+
+  /** SessionData → 侧边栏 meta 投影（list() 与写路径缓存维护的单一出处）。 */
+  private metaOf(d: SessionData): SessionMeta {
+    return {
+      id: d.id,
+      title: String(d.title ?? "(无标题)"),
+      updatedAt: String(d.updatedAt ?? ""),
+      workspace: String(d.workspace ?? ""),
+      messageCount: Number(d.messageCount ?? 0),
+      ...(d.kind === "coordinator" ? { kind: "coordinator" as const } : {}),
+      recycled: d.recycled === true,
+      recycledAt: d.recycledAt,
+    };
+  }
 
   constructor(baseDir: string) {
     this.dir = join(baseDir, USER_DIR_LAYOUT.sessions);
@@ -153,29 +173,22 @@ export class SessionStore {
   }
 
   list(): SessionMeta[] {
-    const out: SessionMeta[] = [];
-    for (const f of readdirSync(this.dir)) {
-      if (!f.endsWith(".json") || f === "order.json") continue;
-      if (/\.precompact-\d+\.json$/.test(f)) continue; // 压缩备份不是会话，不进列表也不解析
-      try {
-        const d = JSON.parse(readFileSync(join(this.dir, f), "utf8")) as SessionData;
-        if (d && typeof d.id === "string") {
-          out.push({
-            id: d.id,
-            title: String(d.title ?? "(无标题)"),
-            updatedAt: String(d.updatedAt ?? ""),
-            workspace: String(d.workspace ?? ""),
-            messageCount: Number(d.messageCount ?? 0),
-            ...(d.kind === "coordinator" ? { kind: "coordinator" as const } : {}),
-            recycled: d.recycled === true,
-            recycledAt: d.recycledAt,
-          } as SessionMeta);
+    // P1-1（docs/28）：读盘+解析只在缓存缺失时发生一次（构造后首次调用）；此后全部走内存。
+    if (!this.metaCache) {
+      const cache = new Map<string, SessionMeta>();
+      for (const f of readdirSync(this.dir)) {
+        if (!f.endsWith(".json") || f === "order.json") continue;
+        if (/\.precompact-\d+\.json$/.test(f)) continue; // 压缩备份不是会话，不进列表也不解析
+        try {
+          const d = JSON.parse(readFileSync(join(this.dir, f), "utf8")) as SessionData;
+          if (d && typeof d.id === "string") cache.set(d.id, this.metaOf(d));
+        } catch {
+          // 跳过损坏文件
         }
-      } catch {
-        // 跳过损坏文件
       }
+      this.metaCache = cache;
     }
-    return out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    return [...this.metaCache.values()].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
   }
 
   load(id: string): SessionData | null {
@@ -191,7 +204,10 @@ export class SessionStore {
 
   save(data: SessionData): void {
     const f = this.file(data.id);
-    if (f) writeFileSync(f, JSON.stringify(data, null, 2), "utf8");
+    if (f) {
+      writeFileSync(f, JSON.stringify(data, null, 2), "utf8");
+      this.metaCache?.set(data.id, this.metaOf(data)); // P1-1：写路径同步维护缓存
+    }
   }
 
   delete(id: string): void {
@@ -199,6 +215,7 @@ export class SessionStore {
     if (f && existsSync(f)) {
       rmSync(f);
       this.cleanSpill(id); // 会话已删，超长输出存档一并清理
+      this.metaCache?.delete(id);
     }
   }
 
@@ -334,6 +351,7 @@ export class SessionStore {
         d.recycled = true;
         d.recycledAt = now;
         writeFileSync(p, JSON.stringify(d, null, 2), "utf8");
+        this.metaCache?.set(d.id, this.metaOf(d)); // P1-1：翻回收标记同步缓存（空占位走 this.delete 已维护）
         n++;
       } catch {
         // 跳过损坏文件
@@ -358,6 +376,7 @@ export class SessionStore {
         delete d.recycledAt;
         writeFileSync(f, JSON.stringify(d, null, 2), "utf8");
       }
+      this.metaCache?.set(d.id, this.metaOf(d)); // P1-1：清回收标记同步缓存
       return d;
     } catch {
       return null;
@@ -370,6 +389,7 @@ export class SessionStore {
     if (!f || !existsSync(f)) return false;
     rmSync(f);
     this.cleanSpill(id);
+    this.metaCache?.delete(id);
     // 压缩备份一并清理（会话已不存在，备份失去意义）
     for (const f2 of readdirSync(this.dir)) {
       if (f2.startsWith(`${id}.precompact-`) && f2.endsWith(".json")) rmSync(join(this.dir, f2), { force: true });

@@ -86,7 +86,9 @@ export function estTokens(s: string): number {
 export function messageTokenCount(m: ChatMessage, count: (s: string) => number, passbackThinking = false): number {
   let n = count(typeof m.content === "string" ? m.content : "");
   if (m.role === "assistant") {
-    for (const tc of m.toolCalls) n += count(tc.name + tc.arguments);
+    // ?? []：宽容畸形存档（assistant 消息缺 toolCalls 字段——手改/外部生成的档），
+    // docs/28 冒烟实测缺字段会让 contextEstimate 抛 "not iterable" 炸掉会话装载
+    for (const tc of m.toolCalls ?? []) n += count(tc.name + tc.arguments);
     if (passbackThinking && m.thinking) n += count(m.thinking.text);
   }
   if (m.role === "user" && m.images) n += m.images.length * IMAGE_TOKEN_EST;

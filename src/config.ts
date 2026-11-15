@@ -139,6 +139,12 @@ export const IMAGE_RULES = {
  *  该键可配置后必须挡在地板值之上（rules 校验 + 严格写 400 双闸），config.test 锁定。 */
 export const HTTP_BODY_FLOOR_BYTES = Math.ceil((IMAGE_RULES.maxCount * IMAGE_RULES.maxBytes * 4) / 3) + 1024 * 1024;
 
+/** tool 事件的完整参数广播上限（docs/28 P2-2，显示层协议常量）：makeUi/makeWorkerUi 给前端
+ *  发 args（write_file 的 content / edit_file 的 old_string+new_string 展开体渲染需要全量，
+ *  argsPreview 的 160 字符不够）时截到该值——与前端 CFG.TRUNC_TOOL_FULL（工具结果全文显示
+ *  截断）同量级；超出截断 + 标记，极端大文件正文只显示头部（完整内容模型侧照旧）。 */
+export const TOOL_EVENT_ARGS_MAX_CHARS = 20_000;
+
 // ---- 阈值规则表（docs/24 上提为模块级导出）：每键合法范围的唯一出处 ----
 // lenient 读（parseHarnessConfig 逐项忽略+告警）与 fail-closed 写（validateThresholdsStrict
 // 整体 400 拒绝）共用同一份定义，仅包装语义不同；thresholdSchema() 把它（+缺省值/分组/

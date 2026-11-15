@@ -7,7 +7,7 @@
  */
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { COMPACTION_PRESSURE, COMPACTION_SUMMARY_MAX_CHARS, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, IMAGE_RULES, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT } from "../config.ts";
+import { COMPACTION_PRESSURE, COMPACTION_SUMMARY_MAX_CHARS, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, IMAGE_RULES, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT, TOOL_EVENT_ARGS_MAX_CHARS } from "../config.ts";
 import { COMPACTION_PROMPT } from "../compaction.ts";
 import { pruneToolResult } from "../tools/prune.ts";
 import type { ChatMessage, LLMProvider, UsageBreakdown, UsageInfo } from "../llm/provider.ts";
@@ -68,6 +68,13 @@ const zeroBreakdown = (): UsageBreakdown => ({
 export const viewRt = (sh: SessionShell): SessionRuntime =>
   sh.runtimes.get(sh.viewId) ?? [...sh.runtimes.values()][0]!;
 
+/** 完整参数 → tool 事件载荷（docs/28 P2-2）：截 TOOL_EVENT_ARGS_MAX_CHARS + 截断标记。
+ *  makeUi（主对话）与 makeWorkerUi（子代理）共用——前端展开体渲染（write 内容/edit diff）
+ *  的数据源；截断后前端 JSON.parse 失败会自动退回 preview 展示（toolinfo 降级路径）。 */
+export function clipToolArgs(s: string): string {
+  return s.length <= TOOL_EVENT_ARGS_MAX_CHARS ? s : s.slice(0, TOOL_EVENT_ARGS_MAX_CHARS) + "…（参数过长已截断）";
+}
+
 export const busyIds = (sh: SessionShell): string[] =>
   [...sh.runtimes.values()].filter((rt) => rt.busy).map((rt) => rt.id);
 
@@ -84,6 +91,23 @@ export function rescanSkillsFor(sh: SessionShell, rt: SessionRuntime): SkillInfo
   rt.skills = scanSkills(skillDirsOf(sh.ctx.skillSources.all(), rt.workspace?.root ?? null));
   rt.agent.setSkills(rt.skills);
   return rt.skills;
+}
+
+/** MCP 后台装配（docs/28 P1-3）：连接移出会话创建/换绑的关键路径——stdio 握手数百 ms~数秒，
+ *  旧版串行 await 使每次新建/切换对话的 POST 要等全部服务器连完（切换卡顿次因）。
+ *  这里 fire-and-forget：完成后热更系统提示的 MCP 段并广播 state（顶栏服务器状态即时更新）；
+ *  startTurn 开跑前 await rt.mcpReady 收口。必须在 rt.agent 装配完成**之后**调用（完成回调
+ *  要 setMcpInstructions）。整体失败降级为无 MCP 会话（apply 内建单服务器隔离；吞错防炸广播链）。 */
+export function applyMcpInBackground(sh: SessionShell, rt: SessionRuntime, wsRoot: string | null): void {
+  rt.mcpReady = (async () => {
+    await rt.mcp.apply(
+      await loadMcpConfig([sh.globalMcpFile]),
+      wsRoot ? await loadMcpConfig([join(wsRoot, "mcp.json")]) : { mcpServers: {} },
+      rt.registry,
+    );
+    rt.agent.setMcpInstructions(rt.mcp.instructionsText());
+    sh.broadcast(SSE_EVENTS.state, currentState(sh, rt));
+  })().catch(() => {});
 }
 
 /**
@@ -214,8 +238,17 @@ function makeUi(sh: SessionShell, rt: SessionRuntime): AgentUi {
     // 模型思考流（reasoning_content）增量：前端按 kind === "reasoning" 分流到思考流面板
     printReasoningDelta: (t) => sh.broadcast(SSE_EVENTS.delta, { sessionId: rt.id, ml: ml(), kind: "reasoning", text: t }),
     printTextDelta: (t) => sh.broadcast(SSE_EVENTS.delta, { sessionId: rt.id, ml: ml(), kind: "content", text: t }),
-    printToolCall: (name, preview, callId) =>
-      sh.broadcast(SSE_EVENTS.tool, { sessionId: rt.id, ml: ml(), name, preview, ...(callId ? { id: callId } : {}) }),
+    // P2-2（docs/28）：args=完整参数（截 TOOL_EVENT_ARGS_MAX_CHARS）——前端展开体渲染
+    // write 内容/edit diff 用；argsPreview 仍发（兜底显示与旧前端兼容）
+    printToolCall: (name, preview, callId, args) =>
+      sh.broadcast(SSE_EVENTS.tool, {
+        sessionId: rt.id,
+        ml: ml(),
+        name,
+        preview,
+        ...(callId ? { id: callId } : {}),
+        ...(args ? { args: clipToolArgs(args) } : {}),
+      }),
     printToolResult: (output, meta, callId) =>
       sh.broadcast(SSE_EVENTS.toolResult, { sessionId: rt.id, ml: ml(), output, meta, ...(callId ? { id: callId } : {}) }),
     printInfo: (m) => sh.broadcast(SSE_EVENTS.info, { sessionId: rt.id, message: m }),
@@ -434,14 +467,9 @@ export async function createRuntime(
     rt.registry.register({ ...def.create(toolDeps), summary: def.summary });
   }
   // 协调者不接 MCP（docs/5 D3/§2：registry 仅 agent_task(s)；mcp__ 工具不注册，
-  // 系统提示的 MCP 段也不会注入）。普通会话与 worker 照旧。
-  if (kind !== "coordinator") {
-    await rt.mcp.apply(
-      await loadMcpConfig([sh.globalMcpFile]),
-      workspace ? await loadMcpConfig([join(workspace.root, "mcp.json")]) : { mcpServers: {} },
-      rt.registry,
-    );
-  }
+  // 系统提示的 MCP 段也不会注入）。普通会话与 worker 照旧——但连接改后台装配
+  // （docs/28 P1-3：不再阻塞会话创建；见 applyMcpInBackground 注释）。
+  const wantMcp = kind !== "coordinator";
 
   // 从磁盘恢复：先按会话记录的提供方/档位/策略还原，再回填历史
   const d = opts.fromDisk;
@@ -509,6 +537,8 @@ export async function createRuntime(
     promptSections: coordSections ?? sh.ctx.promptSections, // docs/20：coordinator 加 subagent-prompt 段；normal 直传（字节不变）
   });
   if (d) rt.agent.restore(d.messages);
+  // P1-3（docs/28）：MCP 后台装配放 agent 就位之后启动（完成回调要 setMcpInstructions）
+  if (wantMcp) applyMcpInBackground(sh, rt, workspace?.root ?? null);
   // docs/20 修订（真机反馈）：协调者创建即预热 worker MCP——「子代理系统提示词说明」段
   // 需要 MCP 说明书，但连接原是首个 worker 派发才触发：新会话/重启恢复后的首轮协调者对
   // 子代理 MCP 能力一无所知。fire-and-forget（握手最长 20s，不阻塞会话创建），连接成功后

@@ -92,6 +92,10 @@ export interface SessionRuntime {
   compactions: CompactionRecord[];
   skills: SkillInfo[];
   mcp: McpManager;
+  /** MCP 后台装配Promise（docs/28 P1-3）：会话创建/换绑不再阻塞在 stdio 握手上——连接
+   *  完成后热更系统提示 MCP 段并广播 state；startTurn 开跑前 await 它（首条消息发出时
+   *  mcp__ 工具与说明书必已就位，语义与旧串行装配等价）。永不 reject（失败降级无 MCP）。 */
+  mcpReady?: Promise<void>;
   registry: ToolRegistry;
   busy: boolean;
   /** 累计运行毫秒（只计已结束的轮；随会话存档/恢复，前端显示「累计运行时间」） */
