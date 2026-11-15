@@ -896,20 +896,29 @@ function finishSegments() { endThink(); C.curAnswer = null; C.curTool = null; C.
 // C.state.activeSubagents 运行中瞬态（resetDrawer/syncDrawer 从快照同步）+ subagent SSE 事件
 // 增量（onSubagent 改道进缓存）。不依赖 C.curTool 挂载：事件在 renderHistory/finishSegments
 // 清掉工具块后仍落到抽屉（需求二症状 3 的结构性消除），切走再切回的缓冲重放同路径幂等重建。
-const drawer = {
-  open: false,       // 抽屉开合（纯前端态；切换会话按快照重建）
-  userClosed: false, // 用户手动收起过：本会话内不再自动弹开
-  detail: 0,         // 详情页 subId（0=列表页）
-  // 行状态机（docs/9；docs/18 起暂停/恢复退役）：run（任务执行中，⏹ 可打断）→ idle（可复用待命，
-  // 💤——归档按钮）→ archived（📦 只读）；一次性 run → done/error（=已归档）。stale=服务重启后的
-  // 休眠待命（docs/17：followup 自动唤醒）。
-  workers: new Map(),// subId → { subId,name,summary,status,rounds,usage,error,transcript,steps,reusable,archived,tasks,stale }
-  renderSeq: 0,      // 详情页渲染序号：异步拉取/轮询返回时校验未被新一轮渲染取代
-  poll: null,        // 运行中详情页的轮询句柄 { subId, timer, last }；换页/收起即停
-  expand: null,      // 折叠状态持久化 { subId, explicit: Map<key,boolean> }——轮询重渲染间保留用户展开态
-  renderedDetail: 0, // 详情页当前已渲染的 subId（docs/11 W2：同 id 重渲染不预清空——防异步拉取期的空白跳变）
-  max: false,        // 抽屉放大态（docs/12 A：详情/列表占满整页；纯前端态，切会话/收起抽屉时重置）
-};
+// drawer 区状态仓（docs/26 F2）：drawer 对象**整体并入**（内部字段不变）+ ctx 轮询句柄两游标。
+// drawer.* 的 89 处引用经稳定别名零改动（set 就地合并身份不变，D.drawer 永远是同一个对象）；
+// 渲染保持显式调用（renderDrawer 家族），无订阅者——并入收的是分组与 trace 边界，不是响应式。
+const drawerStore = createStore({
+  drawer: {
+    open: false,       // 抽屉开合（纯前端态；切换会话按快照重建）
+    userClosed: false, // 用户手动收起过：本会话内不再自动弹开
+    detail: 0,         // 详情页 subId（0=列表页）
+    // 行状态机（docs/9；docs/18 起暂停/恢复退役）：run（任务执行中，⏹ 可打断）→ idle（可复用待命，
+    // 💤——归档按钮）→ archived（📦 只读）；一次性 run → done/error（=已归档）。stale=服务重启后的
+    // 休眠待命（docs/17：followup 自动唤醒）。
+    workers: new Map(),// subId → { subId,name,summary,status,rounds,usage,error,transcript,steps,reusable,archived,tasks,stale }
+    renderSeq: 0,      // 详情页渲染序号：异步拉取/轮询返回时校验未被新一轮渲染取代
+    poll: null,        // 运行中详情页的轮询句柄 { subId, timer, last }；换页/收起即停
+    expand: null,      // 折叠状态持久化 { subId, explicit: Map<key,boolean> }——轮询重渲染间保留用户展开态
+    renderedDetail: 0, // 详情页当前已渲染的 subId（docs/11 W2：同 id 重渲染不预清空——防异步拉取期的空白跳变）
+    max: false,        // 抽屉放大态（docs/12 A：详情/列表占满整页；纯前端态，切会话/收起抽屉时重置）
+  },
+  ctxTimer: null, // 运行中子代理 context 轮询句柄（非 null=轮询中）
+  ctxBusy: false, // 上一轮 context 拉取在途标记（防重入）
+}, { trace: TRACE });
+const D = drawerStore.get();
+const drawer = D.drawer;
 
 function ensureDrawerRow(subId, name) {
   let row = drawer.workers.get(subId);
@@ -1202,15 +1211,15 @@ function renderDrawer() {
 // elapsedMs 每轮必变，原先的 renderDrawer() 会每 2s 拆掉重建详情页（时间线闪空、阅读
 // 位置跳变）。全量重渲染只留给低频状态迁移事件（done/idle/archived 等）。
 // 详情页自身另有 1.5s 的 transcript 轮询顺带更新（pollLiveDetail），两条通道互不冲突。
-let ctxTimer = null, ctxBusy = false;
+// （ctxTimer/ctxBusy 在 drawer 区状态仓，见文件头 drawerStore）
 function ensureCtxPoll() {
   const need = drawer.open && C.state.kind === "coordinator" && hasLiveSub();
   if (!need) { stopCtxPoll(); return; }
-  if (ctxTimer !== null) return;
-  ctxTimer = setInterval(async () => {
-    if (ctxBusy) return;
+  if (D.ctxTimer !== null) return;
+  D.ctxTimer = setInterval(async () => {
+    if (D.ctxBusy) return;
     if (!drawer.open || !hasLiveSub()) { stopCtxPoll(); return; }
-    ctxBusy = true;
+    D.ctxBusy = true;
     try {
       const touched = [];
       for (const w of drawer.workers.values()) {
@@ -1228,13 +1237,13 @@ function ensureCtxPoll() {
       }
       for (const w of touched) refreshRowMetaInPlace(w);
     } finally {
-      ctxBusy = false;
+      D.ctxBusy = false;
     }
   }, CFG.POLL_CTX_MS);
 }
 function stopCtxPoll() {
-  if (ctxTimer !== null) { clearInterval(ctxTimer); ctxTimer = null; }
-  ctxBusy = false;
+  if (D.ctxTimer !== null) { clearInterval(D.ctxTimer); D.ctxTimer = null; }
+  D.ctxBusy = false;
 }
 
 // ---------- 运行计时（1s 本地滴答）：主对话顶栏「本次/累计」+ 子代理行/详情页用时 ----------
