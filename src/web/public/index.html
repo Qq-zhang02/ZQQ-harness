@@ -553,24 +553,33 @@ const CFG = {
   INPUT_MAX_H: 160,        // 输入框自动伸展最大高度（px；CSS #input max-height 同值——无构建拿不到 CSS 变量，两处互指）
 };
 
-let state = {
-  busy: false, effort: "high", contextLimit: 0, workspace: "", model: "",
-  providerId: "", providerName: "", kind: "normal",
-  alwaysConfirm: false, askMode: "ask", sandboxMode: "workspace-write",
-  runMs: 0, turnStartedAt: 0, // 运行计时：累计（已结束轮）+ 本次轮开始时刻（本地滴答）
-  audit: { asked: 0, allowed: 0 },
-  totals: {
-    prompt: 0, completion: 0, cacheHit: 0, reasoning: 0,
-    breakdown: { systemPrompt: 0, skills: 0, systemTools: 0, mcp: 0, messages: 0, other: 0 },
+// chat 区状态仓（docs/26 F2）：state 快照 + 流式游标 + 待发图片。
+// 读走稳定快照 C.<field>；游标写直接赋值；**state 的整替必须走 chatStore.set**——applyState 已是
+// 订阅者（见 applyState 定义处），set 后微任务统一刷新，「改 state 忘调 applyState」从纪律变机制。
+const chatStore = createStore({
+  state: {
+    busy: false, effort: "high", contextLimit: 0, workspace: "", model: "",
+    providerId: "", providerName: "", kind: "normal",
+    alwaysConfirm: false, askMode: "ask", sandboxMode: "workspace-write",
+    runMs: 0, turnStartedAt: 0, // 运行计时：累计（已结束轮）+ 本次轮开始时刻（本地滴答）
+    audit: { asked: 0, allowed: 0 },
+    totals: {
+      prompt: 0, completion: 0, cacheHit: 0, reasoning: 0,
+      breakdown: { systemPrompt: 0, skills: 0, systemTools: 0, mcp: 0, messages: 0, other: 0 },
+    },
+    context: {
+      total: 0,
+      breakdown: { systemPrompt: 0, skills: 0, systemTools: 0, mcp: 0, messages: 0, other: 0 },
+    },
+    skills: [],
+    subagents: [],
   },
-  context: {
-    total: 0,
-    breakdown: { systemPrompt: 0, skills: 0, systemTools: 0, mcp: 0, messages: 0, other: 0 },
-  },
-  skills: [],
-  subagents: [],
-};
-let curGroup = null, curThink = null, curAnswer = null, curTool = null;
+  curGroup: null, // 当前轮分组游标（流式渲染，无订阅者）
+  curThink: null, curAnswer: null, curTool: null,
+  toolBlocks: new Map(), // callId → 块元素（结果到达即移除）
+  pendingImages: [], // 待发图片（mime+base64，前端已完成大小/数量校验；docs/10 R3）
+}, { trace: TRACE });
+const C = chatStore.get();
 
 // ---------- 多会话并行：事件按 sessionId 路由 ----------
 // view 区状态仓（docs/26 F2）：读走稳定快照 V.<field>（set 就地合并、身份不变——V 永远最新），
@@ -604,10 +613,10 @@ function route(evName, d, render) {
   c.buf.push({ ev: evName, d });
 }
 
-// ---------- 设置项（§4.11：唯一出处=服务端 config.ts，随 state.meta 下发） ----------
-const metaOf = () => state.meta || {};
+// ---------- 设置项（§4.11：唯一出处=服务端 config.ts，随 C.state.meta 下发） ----------
+const metaOf = () => C.state.meta || {};
 /** 上下文上限：会话记录优先，缺省读 meta（服务端 config 的 DEFAULT_CONTEXT_LENGTH） */
-const ctxLimitOf = () => state.contextLimit || metaOf().defaultContextLength || 0;
+const ctxLimitOf = () => C.state.contextLimit || metaOf().defaultContextLength || 0;
 function sandboxLabel(m) {
   const hit = (metaOf().sandbox || []).find((s) => s.value === m);
   return hit ? hit.text : (m || "");
@@ -692,8 +701,8 @@ function sysLine(text, cls) {
 
 // ---------- 消息渲染 ----------
 function ensureGroup() {
-  if (!curGroup) { curGroup = el("div", "msg assistant"); chat.appendChild(curGroup); }
-  return curGroup;
+  if (!C.curGroup) { C.curGroup = el("div", "msg assistant"); chat.appendChild(C.curGroup); }
+  return C.curGroup;
 }
 /** docs/21 §2.4 协议解耦 + docs/26 F1：判别/拆解逻辑在 /app/autoreport.js（前缀作参数），
  *  此处注入 meta 下发的前缀（autoReportPrefix/autoStatusPrefix，单一出处 core/events.ts），
@@ -764,52 +773,52 @@ function renderAutoReportBubble(bubble, text) {
 /** 新建（或复用）思考框；点击头部折叠/展开；内容区限高滚动，流式时贴底 */
 function onReasoningDelta(text) {
   const g = ensureGroup();
-  if (!curThink) {
+  if (!C.curThink) {
     const box = el("div", "think live");
     box.innerHTML = '<div class="think-h"><span class="tt">💭 思考</span><span class="chev">▾</span></div><div class="think-b"></div>';
-    // 闭包必须捕获 box 自身，不能引用可变的 curThink（轮次结束后会被置 null）
+    // 闭包必须捕获 box 自身，不能引用可变的 C.curThink（轮次结束后会被置 null）
     box.querySelector(".think-h").addEventListener("click", () => box.classList.toggle("collapsed"));
     box._body = box.querySelector(".think-b");
     box._raw = "";
-    curThink = box;
+    C.curThink = box;
     g.appendChild(box);
   }
-  const stick = nearBottom(curThink._body);
-  curThink._raw += text;
-  curThink._body.innerHTML = esc(curThink._raw);
-  if (stick) autoscroll(curThink._body);
+  const stick = nearBottom(C.curThink._body);
+  C.curThink._raw += text;
+  C.curThink._body.innerHTML = esc(C.curThink._raw);
+  if (stick) autoscroll(C.curThink._body);
   if (nearBottom(chat)) autoscroll(chat);
 }
 function onContentDelta(text) {
   const g = ensureGroup();
-  if (!curAnswer) { endThink(); curAnswer = el("div", "answer"); curAnswer._raw = ""; g.appendChild(curAnswer); }
-  curAnswer._raw += text;
-  curAnswer.innerHTML = mdLite(curAnswer._raw);
+  if (!C.curAnswer) { endThink(); C.curAnswer = el("div", "answer"); C.curAnswer._raw = ""; g.appendChild(C.curAnswer); }
+  C.curAnswer._raw += text;
+  C.curAnswer.innerHTML = mdLite(C.curAnswer._raw);
   if (nearBottom(chat)) autoscroll(chat);
 }
 /** 思考段结束：停用流式标记、更新字数、自动折叠 */
 function endThink() {
-  if (curThink) {
-    curThink.classList.remove("live");
-    const tt = curThink.querySelector(".tt");
-    if (tt) tt.textContent = "💭 思考 · " + fmtTok(curThink._raw.length) + " 字";
-    curThink.classList.add("collapsed");
-    curThink = null;
+  if (C.curThink) {
+    C.curThink.classList.remove("live");
+    const tt = C.curThink.querySelector(".tt");
+    if (tt) tt.textContent = "💭 思考 · " + fmtTok(C.curThink._raw.length) + " 字";
+    C.curThink.classList.add("collapsed");
+    C.curThink = null;
   }
 }
 /** 工具调用：生成可折叠块（头部命令摘要 + 展开的参数），运行中标记 live。
- *  callId 用于把结果精确配对回本块：并行调用、切换会话重放时不会串块或残留"运行中"。 */
-const toolBlocks = new Map(); // callId → 块元素（结果到达即移除）
+ *  callId 用于把结果精确配对回本块：并行调用、切换会话重放时不会串块或残留"运行中"。
+ *  （toolBlocks 在 chat 区状态仓，见文件头 chatStore） */
 function addTool(name, preview, callId, pending = true) {
-  endThink(); curAnswer = null;
-  if (callId && toolBlocks.has(callId)) return toolBlocks.get(callId); // 重复事件（切回重放）：块已存在
+  endThink(); C.curAnswer = null;
+  if (callId && C.toolBlocks.has(callId)) return C.toolBlocks.get(callId); // 重复事件（切回重放）：块已存在
   const g = ensureGroup();
   const blk = el("div", "tblock" + (pending ? " live" : ""));
   blk.innerHTML = '<div class="tblock-h"><b>⚙ ' + esc(name) + '</b><code class="tprev">' + esc(firstLine(preview)) + '</code><span class="tstat"></span><span class="chev">▾</span></div><div class="tblock-b"><pre class="targs"></pre></div>';
   blk.querySelector(".tblock-h").addEventListener("click", () => blk.classList.toggle("collapsed"));
   blk.querySelector(".targs").textContent = prettyArgs(preview);
   // 需求三（docs/8 §3.2）：agent_task(s) 块不再内嵌时间线/过程盒——块内只留一行摘要 +
-  // 块头 🤖 快捷入口，实时过程与回看都进右侧抽屉（数据不依赖本块存活，curTool 弱点消除）。
+  // 块头 🤖 快捷入口，实时过程与回看都进右侧抽屉（数据不依赖本块存活，C.curTool 弱点消除）。
   if (name === "agent_task" || name === "agent_tasks") {
     blk._subtool = true;
     const open = el("span", "subopen", "🤖");
@@ -824,20 +833,20 @@ function addTool(name, preview, callId, pending = true) {
     blk._subsum = sum;
     if (pending) refreshSubSum(sum);
   }
-  if (callId) toolBlocks.set(callId, blk);
+  if (callId) C.toolBlocks.set(callId, blk);
   if (!pending) blk.classList.add("collapsed"); // 无结果的调用不显示"运行中"，直接折叠
   g.appendChild(blk);
-  curTool = pending ? blk : curTool;
+  C.curTool = pending ? blk : C.curTool;
   autoscroll(chat);
   return blk;
 }
-/** 工具返回：优先按 callId 找到调用块填入（找不到退回光标 curTool），显示 exit 状态与修剪元数据，自动折叠 */
+/** 工具返回：优先按 callId 找到调用块填入（找不到退回光标 C.curTool），显示 exit 状态与修剪元数据，自动折叠 */
 function addToolRes(output, meta, callId) {
   const text = String(output);
-  const blk = (callId && toolBlocks.get(callId)) || curTool;
+  const blk = (callId && C.toolBlocks.get(callId)) || C.curTool;
   if (blk) {
-    if (callId) toolBlocks.delete(callId);
-    else curTool = null;
+    if (callId) C.toolBlocks.delete(callId);
+    else C.curTool = null;
     blk.classList.remove("live");
     const m = /exit code: (-?\d+|unknown)/.exec(text);
     const stat = blk.querySelector(".tstat");
@@ -880,12 +889,12 @@ function addToolRes(output, meta, callId) {
     ensureGroup().appendChild(el("div", "toolres", "↳ " + esc(text.slice(0, CFG.TRUNC_PREVIEW))));
   }
 }
-function finishSegments() { endThink(); curAnswer = null; curTool = null; curGroup = null; toolBlocks.clear(); }
+function finishSegments() { endThink(); C.curAnswer = null; C.curTool = null; C.curGroup = null; C.toolBlocks.clear(); }
 
 // ---------- 子代理抽屉（需求三 docs/8 §3.2 方案 A）：主列只留摘要，实时过程与回看都进右栏 ----------
-// 数据层：per-worker 行缓存（Map<subId,row>），三路合流——state.subagents 完成审计 +
-// state.activeSubagents 运行中瞬态（resetDrawer/syncDrawer 从快照同步）+ subagent SSE 事件
-// 增量（onSubagent 改道进缓存）。不依赖 curTool 挂载：事件在 renderHistory/finishSegments
+// 数据层：per-worker 行缓存（Map<subId,row>），三路合流——C.state.subagents 完成审计 +
+// C.state.activeSubagents 运行中瞬态（resetDrawer/syncDrawer 从快照同步）+ subagent SSE 事件
+// 增量（onSubagent 改道进缓存）。不依赖 C.curTool 挂载：事件在 renderHistory/finishSegments
 // 清掉工具块后仍落到抽屉（需求二症状 3 的结构性消除），切走再切回的缓冲重放同路径幂等重建。
 const drawer = {
   open: false,       // 抽屉开合（纯前端态；切换会话按快照重建）
@@ -913,7 +922,7 @@ function ensureDrawerRow(subId, name) {
 /** docs/10 R1（docs/21 §2.2-⑤ 三档全量下发）：治理档位全部从服务端 meta 取（warn/cut/arch），
  *  不写 25/35 兜底数字——meta 未到（首帧前）返回 null，显示层只出百分比、不出档位标记。 */
 function ctxTiers() {
-  const m = state.meta || {};
+  const m = C.state.meta || {};
   return m.subagentWarnPct != null && m.subagentFollowupPct != null && m.subagentArchivePct != null
     ? { warn: m.subagentWarnPct, cut: m.subagentFollowupPct, arch: m.subagentArchivePct }
     : null;
@@ -991,9 +1000,9 @@ function resetDrawer(st) {
   renderDrawer();
 }
 
-/** 软同步（init/state 快照到达）：完成记录与运行中清单以快照为准回填，运行中行保留已积累
+/** 软同步（init/C.state 快照到达）：完成记录与运行中清单以快照为准回填，运行中行保留已积累
  *  的实时步骤（不因 interim 合并/压缩的 init 重渲染清空——抽屉是 renderHistory 外的常驻态）。
- *  docs/9：可复用的待命记录（state:"idle"）不强覆盖——活性状态以 activeSubagents 为准；
+ *  docs/9：可复用的待命记录（status:"idle"）不强覆盖——活性状态以 activeSubagents 为准；
  *  待命记录在但活动句柄不在 = 服务重启后的休眠待命 → 保持 💤 idle 展示（stale 标记，
  *  docs/17：agent_followup 派任务时服务端自动从过程存档唤醒，不再失效转只读）。
  *  会话空闲（!busy）时丢弃不在快照里的运行中行——那是服务重启/事件丢失留下的幽灵。
@@ -1059,7 +1068,7 @@ function syncDrawer(st) {
   renderDrawer();
 }
 
-/** subagent SSE 事件 → 抽屉缓存增量（需求三 docs/8 §3.4：不依赖 curTool，处理器只改道到抽屉）。
+/** subagent SSE 事件 → 抽屉缓存增量（需求三 docs/8 §3.4：不依赖 C.curTool，处理器只改道到抽屉）。
  *  工具事件只积累进 steps（无存档时的保底视图数据）；运行中详情页的实时呈现走服务端
  *  transcript 轮询（docs/8 第三棒——与事件流互不重叠，思考/正文/工具全量）。
  *  docs/9 新相位：task（followup 起跑——行 idle→run + 摘要更新）、idle（可复用任务结束转
@@ -1173,7 +1182,7 @@ function refreshLiveSubSums() {
 
 /** 抽屉整体渲染：开合、列表/详情两视图、顶栏开关按钮。普通会话（无 worker）不显示抽屉元素。 */
 function renderDrawer() {
-  const visible = drawer.open && state.kind === "coordinator" && drawer.workers.size > 0;
+  const visible = drawer.open && C.state.kind === "coordinator" && drawer.workers.size > 0;
   $("#subDrawer").classList.toggle("hidden", !visible);
   syncDrawerMax(); // docs/12 A：放大态 class/按钮文案随渲染幂等同步
   const isDetail = visible && drawer.detail !== 0 && drawer.workers.has(drawer.detail);
@@ -1195,7 +1204,7 @@ function renderDrawer() {
 // 详情页自身另有 1.5s 的 transcript 轮询顺带更新（pollLiveDetail），两条通道互不冲突。
 let ctxTimer = null, ctxBusy = false;
 function ensureCtxPoll() {
-  const need = drawer.open && state.kind === "coordinator" && hasLiveSub();
+  const need = drawer.open && C.state.kind === "coordinator" && hasLiveSub();
   if (!need) { stopCtxPoll(); return; }
   if (ctxTimer !== null) return;
   ctxTimer = setInterval(async () => {
@@ -1243,13 +1252,13 @@ function refreshRowMetaInPlace(row) {
 }
 function tickClock() {
   // 主对话：本次 = 当前轮（busy 时 turnStartedAt 起算）；累计 = 存档 runMs + 在飞部分（无双算）
-  const cur = state.turnStartedAt ? Date.now() - state.turnStartedAt : 0;
+  const cur = C.state.turnStartedAt ? Date.now() - C.state.turnStartedAt : 0;
   const clockEl = $("#clock");
   if (clockEl) {
-    clockEl.textContent = state.turnStartedAt
-      ? "⏱ 本次 " + fmtDur(cur) + " · 累计 " + fmtDur((state.runMs || 0) + cur)
-      : "⏱ 累计 " + fmtDur(state.runMs || 0);
-    clockEl.classList.toggle("on", !!state.turnStartedAt);
+    clockEl.textContent = C.state.turnStartedAt
+      ? "⏱ 本次 " + fmtDur(cur) + " · 累计 " + fmtDur((C.state.runMs || 0) + cur)
+      : "⏱ 累计 " + fmtDur(C.state.runMs || 0);
+    clockEl.classList.toggle("on", !!C.state.turnStartedAt);
   }
   // 子代理运行中行：按行就地更新 meta 的用时段（保留悬停与滚动状态）
   document.querySelectorAll("#drwList .drwrow.run .st-meta").forEach((metaEl) => {
@@ -1264,7 +1273,7 @@ function tickClock() {
 setInterval(tickClock, CFG.CLOCK_TICK_MS);
 function updateDrwBtn() {
   const n = drawer.workers.size;
-  const show = state.kind === "coordinator" && n > 0;
+  const show = C.state.kind === "coordinator" && n > 0;
   const btn = $("#subDrwBtn");
   btn.classList.toggle("hidden", !show);
   if (!show) return;
@@ -1646,7 +1655,7 @@ function foldTurns(foldLatest = true) {
 // 历史快照渲染（页面刷新/切换会话后恢复）；助手消息里存档的思考块以折叠态重现（点击头部展开）
 function renderHistory(messages) {
   chat.innerHTML = "";
-  toolBlocks.clear();
+  C.toolBlocks.clear();
   // 预计算：已有结果回填的调用 id 集合 + 最后一条 assistant 的位置。
   // 没有 results 的调用 = 被中断的轮（停止/出错），历史里永远等不到结果，
   // 不能渲染成"运行中"，否则每次打开该会话都永远转圈。
@@ -1663,7 +1672,7 @@ function renderHistory(messages) {
       for (const tc of m.toolCalls ?? []) {
         // 唯一会显示"运行中"的情形：会话正在运行且该调用位于最后一条 assistant（结果真的还在路上）
         const unanswered = !answered.has(tc.id);
-        const pending = state.busy === true && i === lastAsst && unanswered;
+        const pending = C.state.busy === true && i === lastAsst && unanswered;
         const blk = addTool(tc.name, tc.arguments, tc.id, pending);
         if (unanswered && !pending) {
           blk.classList.add("collapsed");
@@ -1675,7 +1684,7 @@ function renderHistory(messages) {
     }
   }
   finishSegments();
-  foldTurns(!state.busy); // 任务运行中的重渲染不收纳最新轮（保持实时流可见）；结束后收纳
+  foldTurns(!C.state.busy); // 任务运行中的重渲染不收纳最新轮（保持实时流可见）；结束后收纳
 }
 /** 历史思考块：折叠态重现，样式与流式思考框一致（无 live 标记，内容一次性填充） */
 function addHistoryThink(g, text) {
@@ -1691,69 +1700,73 @@ function addHistoryThink(g, text) {
 // ---------- 状态与控件 ----------
 function normWs(p) { return String(p || "").toLowerCase().replace(/[\\/]+$/, ""); }
 function applyState() {
-  $("#modelBadge").textContent = state.model;
-  $("#kindBadge").classList.toggle("hidden", state.kind !== "coordinator"); // 协调者会话徽标（按会话记录）
+  $("#modelBadge").textContent = C.state.model;
+  $("#kindBadge").classList.toggle("hidden", C.state.kind !== "coordinator"); // 协调者会话徽标（按会话记录）
   updateDrwBtn(); // 需求三：子代理抽屉开关按钮（协调者会话且有 worker 记录才显示）
   renderTree();
   // 先填 option 再设值：首帧 effort/sandbox 才能选中真实档位而非落在「默认」（dev-docs/5 偏差 10）
   renderSettingOptions();
   const csel = $("#confirmSelect");
-  csel.value = state.askMode === "never" ? "never" : state.alwaysConfirm ? "confirm" : "ask";
-  csel.disabled = state.busy;
+  csel.value = C.state.askMode === "never" ? "never" : C.state.alwaysConfirm ? "confirm" : "ask";
+  csel.disabled = C.state.busy;
   const sel = $("#effortSelect");
-  sel.value = state.effort;
-  sel.disabled = state.busy;
+  sel.value = C.state.effort;
+  sel.disabled = C.state.busy;
   const ssel = $("#sandboxSelect");
-  ssel.value = state.sandboxMode || "workspace-write";
-  ssel.disabled = state.busy;
-  const noWs = !state.workspace;
+  ssel.value = C.state.sandboxMode || "workspace-write";
+  ssel.disabled = C.state.busy;
+  const noWs = !C.state.workspace;
   input.disabled = noWs;
   sendBtn.disabled = noWs;
   $("#newChatBtn").disabled = noWs; // 后台会话运行不影响开新对话
   $("#newCoordBtn").disabled = noWs;
   $("#wsBrowse").disabled = false;
-  const ctxTotal = (state.context && state.context.total) || 0;
+  const ctxTotal = (C.state.context && C.state.context.total) || 0;
   const limit = ctxLimitOf();
   const pressure = limit > 0 ? ctxTotal / limit : 0;
   const tokEl = $("#tok");
-  // 压缩阈值单一出处=服务端 config（随 state.meta 下发）；初始 state 尚无 meta 时不预警
-  const threshold = state.meta ? state.meta.pressureThreshold : Infinity;
+  // 压缩阈值单一出处=服务端 config（随 C.state.meta 下发）；初始 C.state 尚无 meta 时不预警
+  const threshold = C.state.meta ? C.state.meta.pressureThreshold : Infinity;
   renderFormatOptions();
-  tokEl.innerHTML = "输入 <b>" + fmtTok(state.totals.prompt) + "</b> · 输出 <b>" + fmtTok(state.totals.completion) +
+  tokEl.innerHTML = "输入 <b>" + fmtTok(C.state.totals.prompt) + "</b> · 输出 <b>" + fmtTok(C.state.totals.completion) +
     "</b> · 上下文 <b" + (pressure >= threshold ? ' style="color:var(--red)" title="上下文占用已达 ' + Math.round(pressure * 100) + '%，建议 /compact 压缩"' : "") + ">" +
     fmtTok(ctxTotal) + "</b>" + (pressure >= threshold ? " ⚠" : "");
   if (!$("#tokPanel").classList.contains("hidden")) renderTokPanel();
-  tickClock(); // state 快照到达即刻刷新计时（轮起/轮止不必等下一个整秒）
+  tickClock(); // C.state 快照到达即刻刷新计时（轮起/轮止不必等下一个整秒）
   // W2-L1（docs/7 §2.3）：协调者会话 busy 时发送/停止语义分离——发送仍可用（消息入队，
   // 当前任务结束后处理），停止走独立 ⏹ 按钮；普通会话维持「busy=发送变停止」现状。
-  const coordBusy = state.busy && state.kind === "coordinator";
-  sendBtn.textContent = state.busy && !coordBusy ? "⏹ 停止" : "发送";
+  const coordBusy = C.state.busy && C.state.kind === "coordinator";
+  sendBtn.textContent = C.state.busy && !coordBusy ? "⏹ 停止" : "发送";
   $("#stopBtn").classList.toggle("hidden", !coordBusy);
   // docs/10 R3：📎 上传按钮只在该会话提供方声明视觉时显示；busy 期隐藏（插话/排队不带图）。
   // 按钮不可见（切会话/切提供方/busy）时清空待发图片——图片只属于发起时的那个会话与那轮。
   // docs/22 §4.1：按钮 title 由 meta.imageRules 插值（HTML 静态 title 仅无 JS 降级）；
   // meta 未到（首帧前，正常不可见）时禁用，规则到达即恢复。
-  const imgVisible = state.vision === true && !noWs && !state.busy;
+  const imgVisible = C.state.vision === true && !noWs && !C.state.busy;
   const imgR = imgRules();
   $("#imgBtn").classList.toggle("hidden", !imgVisible);
   $("#imgBtn").disabled = imgVisible && !imgR;
   if (imgVisible && imgR) {
     $("#imgBtn").title = "附加图片（当前提供方支持视觉，最多 " + imgR.maxCount + " 张、每张 ≤" + (imgR.maxBytes / 1048576) + "MB；随消息直接发给模型看）";
   }
-  if (!imgVisible && pendingImages.length > 0) { pendingImages = []; renderImgBar(); }
+  if (!imgVisible && C.pendingImages.length > 0) { C.pendingImages = []; renderImgBar(); }
   input.placeholder = noWs
     ? "请先在左侧选择工作区"
-    : state.busy
+    : C.state.busy
       ? coordBusy
         ? "运行中，可直接插话（即时回应，不打断子代理；不适用时排队轮末处理）…（⏹ 可中断）"
         : "任务进行中…（点“停止”可中断）"
-      : state.kind === "coordinator"
+      : C.state.kind === "coordinator"
         ? "描述整体目标，协调者将分解任务并派出子代理…（/help 查看命令）"
         : "输入消息，Enter 发送，Shift+Enter 换行（/help 查看命令）";
 }
+// F2（docs/26 §4）：applyState 从「谁都要记得调」变为 chatStore 订阅者——state 经 set 整替后，
+// 微任务统一刷新（同 tick 多次 set 合并为一轮，applyState 幂等全量刷新天然适配）；
+// 游标键（curThink 等）不触发。非 state 驱动的刷新点仍显式调用（如 pClose 关模态）。
+chatStore.subscribe((c, ks) => { if (ks.has("state")) applyState(); });
 /** 提供方表单的"接口格式"选项：由服务端 meta 下发（providers.* 模块注册的 ProviderFormatDef） */
 function renderFormatOptions() {
-  const list = (state.meta && state.meta.providerFormats) || [];
+  const list = (C.state.meta && C.state.meta.providerFormats) || [];
   if (list.length === 0) return;
   const sel = $("#pFormat");
   const cur = sel.value;
@@ -1779,13 +1792,13 @@ function fmtPct(part, total) {
   return (p >= 10 ? String(Math.round(p)) : p.toFixed(1)) + "%";
 }
 function renderTokPanel() {
-  const bd = state.context && state.context.breakdown; // 构成 = 下次请求的单次估算（技能清单/MCP 工具恒定，消息随对话增长）
+  const bd = C.state.context && C.state.context.breakdown; // 构成 = 下次请求的单次估算（技能清单/MCP 工具恒定，消息随对话增长）
   const p = $("#tokPanel");
   if (!bd) {
     p.innerHTML = '<div class="tokrow"><span>等待本轮用量数据…</span></div>';
     return;
   }
-  const ctxTotal = (state.context && state.context.total) || 0;
+  const ctxTotal = (C.state.context && C.state.context.total) || 0;
   let h =
     '<h4>Token 构成（下次请求估算；合计为会话累计）</h4>' +
     '<div class="tokrow total"><span>当前上下文（下次请求）</span><b>' +
@@ -1797,10 +1810,10 @@ function renderTokPanel() {
     tokRow("MCP 工具", bd.mcp) +
     tokRow("消息（随对话增长）", bd.messages);
   if (bd.other > 0) h += tokRow("其他", bd.other);
-  h += '<div class="tokrow total"><span>输入合计（会话累计）</span><b>' + fmtTok(state.totals.prompt) + '</b></div>';
-  h += '<div class="tokrow"><span>输出合计（会话累计）</span><b>' + fmtTok(state.totals.completion) + '</b></div>';
-  if (state.totals.cacheHit > 0) h += tokRow("缓存命中率（API 实测）", cacheRatePct(state.totals.cacheHit, state.totals.prompt));
-  if (state.totals.reasoning > 0) h += tokRow("其中思考（API 实测，累计）", state.totals.reasoning);
+  h += '<div class="tokrow total"><span>输入合计（会话累计）</span><b>' + fmtTok(C.state.totals.prompt) + '</b></div>';
+  h += '<div class="tokrow"><span>输出合计（会话累计）</span><b>' + fmtTok(C.state.totals.completion) + '</b></div>';
+  if (C.state.totals.cacheHit > 0) h += tokRow("缓存命中率（API 实测）", cacheRatePct(C.state.totals.cacheHit, C.state.totals.prompt));
+  if (C.state.totals.reasoning > 0) h += tokRow("其中思考（API 实测，累计）", C.state.totals.reasoning);
   h += '<div class="toknote">「消息」= 对话正文 + 工具调用的参数与结果（技能正文、MCP 查询结果都计入这里）；「技能清单」「MCP 工具」为每次请求固定携带的开销，只随配置增减变化</div>';
   p.innerHTML = h;
 }
@@ -1840,13 +1853,13 @@ const SSE_HANDLERS = {
     c.state = d.state;
     c.turn = (d.state && d.state.turn) || null;
     if (d.state && d.state.workspace) { wsExpanded.add(normWs(d.state.workspace)); saveExpanded(); }
-    if (viewIs(d.sessionId)) { state = d.state; renderHistory(d.messages); syncDrawer(d.state); applyState(); }
+    if (viewIs(d.sessionId)) { chatStore.set({ state: d.state }); renderHistory(d.messages); syncDrawer(d.state); }
   },
-  state(d) { route("state", d, (s) => { state = s; cacheOf(V.viewId).turn = s.turn ?? null; syncDrawer(s); applyState(); }); },
+  state(d) { route("state", d, (s) => { chatStore.set({ state: s }); cacheOf(V.viewId).turn = s.turn ?? null; syncDrawer(s); }); },
   delta(d) { route("delta", d, () => { if (d.kind === "reasoning") onReasoningDelta(d.text); else onContentDelta(d.text); }); },
   tool(d) { route("tool", d, () => addTool(d.name, d.preview, d.id)); },
   toolResult(d) { route("toolResult", d, () => addToolRes(d.output, d.meta, d.id)); },
-  usage(d) { route("usage", d, () => { state.totals = d.totals; if (d.context) state.context = d.context; applyState(); }); },
+  usage(d) { route("usage", d, () => { C.state.totals = d.totals; if (d.context) C.state.context = d.context; chatStore.set({ state: C.state }); }); },
   info(d) { route("info", d, () => sysLine(d.message, typeof d.message === "string" && d.message.startsWith("📩") ? "queued" : undefined)); },
   compaction(d) { route("compaction", d, () => renderCompactionLine(d)); },
   error(d) { route("error", d, () => sysLine("[出错] " + d.message, "err")); },
@@ -1908,11 +1921,11 @@ async function switchSession(id) {
     c.state = r.data.state;
     if (V.viewId !== id) return; // 等待期间用户又点了别的会话：丢弃过期快照
     if (r.data.state && r.data.state.workspace) { wsExpanded.add(normWs(r.data.state.workspace)); saveExpanded(); }
-    state = r.data.state;
+    chatStore.set({ state: r.data.state });
     // 需求三（docs/8 §3.4）：抽屉按新会话快照硬重置（完成审计 + 运行中瞬态），
     // 在 renderHistory 之前——工具块的摘要行随建随取新会话统计；切走期间的
-    // subagent 缓冲事件随后重放，经 onSubagent 幂等增量进抽屉（不依赖 curTool）。
-    resetDrawer(state);
+    // subagent 缓冲事件随后重放，经 onSubagent 幂等增量进抽屉（不依赖 C.curTool）。
+    resetDrawer(C.state);
     // 快照=服务端完整历史（含本轮已完成部分），保证永不空白；
     // 缓冲事件按 ml（发出时历史长度）过滤，只重放"尚未落入快照"的在途流（决策在 /app/replay.js）
     const msgs = r.data.messages || [];
@@ -1920,8 +1933,8 @@ async function switchSession(id) {
     const buf = filterByMl(c.buf.splice(0), msgs.length);
     for (const item of buf) dispatchBuffered(item);
     c.turn = null;
-    c.needsRefresh = !!state.busy;
-    applyState();
+    c.needsRefresh = !!C.state.busy;
+    // applyState 不再显式调：chatStore.set 的订阅在本 handler 结束的微任务里统一刷新（F2）
   } finally {
     c.loading = false;
     if (V.switchingTo === id) V.switchingTo = null;
@@ -1947,9 +1960,8 @@ async function refreshSnapshot() {
   const r = await post("/api/sessions/load", { id: V.viewId });
   if (!r.ok) return;
   const c = cacheOf(V.viewId);
-  state = r.data.state;
+  chatStore.set({ state: r.data.state });
   renderHistory(r.data.messages);
-  applyState();
   c.buf.length = 0;
 }
 
@@ -2062,7 +2074,7 @@ function updateSessionItem(n, s, currentId, g) {
   n._sid = s.id;
   n._wsPath = g.workspace;
   n._wsItems = g.items;
-  const running = ((state.runningIds || V.lastSessions.running || [])).includes(s.id);
+  const running = ((C.state.runningIds || V.lastSessions.running || [])).includes(s.id);
   n.classList.toggle("cur", s.id === currentId);
   n.title = (s.kind === "coordinator" ? "协调者会话\n" : "") + (s.title || "") + "\n" + (s.workspace || "") + (running ? "\n（运行中，点击切换查看）" : "");
   for (const b of [...n.children]) if (b.classList.contains("srun")) b.remove();
@@ -2108,7 +2120,7 @@ function wsHeadNode() {
     wsExpanded.add(normWs(head._ws));
     saveExpanded();
     renderTree(); // 立即给展开反馈；切换结果由服务端广播后重渲染（运行中的后台会话不受影响）
-    if (normWs(head._ws) !== normWs(state.workspace || "")) {
+    if (normWs(head._ws) !== normWs(C.state.workspace || "")) {
       void post("/api/workspace", { path: head._ws }).then((r) => { if (!r.ok) sysLine(r.data.error ?? "切换失败", "err"); });
     }
   });
@@ -2147,7 +2159,7 @@ function wsHeadNode() {
 /** 工作区行动态部分刷新（keyed 复用时每轮调用）：选中态/title/chev 方向/名称/条数。 */
 function updateWsHead(n, g) {
   n._ws = g.workspace;
-  n.classList.toggle("cur", normWs(g.workspace) === normWs(state.workspace || ""));
+  n.classList.toggle("cur", normWs(g.workspace) === normWs(C.state.workspace || ""));
   n.title = g.workspace + "\n（点击选中并展开，拖动排序）";
   n.querySelector(".chev").textContent = wsExpanded.has(normWs(g.workspace)) ? "▾" : "▸";
   n.querySelector(".wname").textContent = g.workspace.split(/[\\/]/).pop() || g.workspace;
@@ -2259,20 +2271,20 @@ const COMMANDS = new Map([
     help: "查看模型、工作区、开关状态与 token 累计",
     async run() {
       sysLine(
-        "模型 " + state.model + " · 工作区 " + (state.workspace || "未选择") +
-        " · 形态" + (state.kind === "coordinator" ? "协调者（仅派子代理）" : "普通") +
-        " · 思考" + (state.effort === "default" ? "默认" : state.effort) +
-        " · 审批" + (state.askMode === "never" ? "无人值守" : state.alwaysConfirm ? "逐条确认" : "正常") +
-        " · 沙箱" + sandboxLabel(state.sandboxMode) +
-        " · MCP " + (state.mcpServers && state.mcpServers.length ? state.mcpServers.join("、") : "未配置") +
-        " · 技能 " + (state.skills && state.skills.length ? state.skills.join("、") : "未配置"),
+        "模型 " + C.state.model + " · 工作区 " + (C.state.workspace || "未选择") +
+        " · 形态" + (C.state.kind === "coordinator" ? "协调者（仅派子代理）" : "普通") +
+        " · 思考" + (C.state.effort === "default" ? "默认" : C.state.effort) +
+        " · 审批" + (C.state.askMode === "never" ? "无人值守" : C.state.alwaysConfirm ? "逐条确认" : "正常") +
+        " · 沙箱" + sandboxLabel(C.state.sandboxMode) +
+        " · MCP " + (C.state.mcpServers && C.state.mcpServers.length ? C.state.mcpServers.join("、") : "未配置") +
+        " · 技能 " + (C.state.skills && C.state.skills.length ? C.state.skills.join("、") : "未配置"),
       );
-      const audit = state.audit;
+      const audit = C.state.audit;
       if (audit && audit.asked > 0) sysLine("本会话审批 " + audit.asked + " 次（批准 " + audit.allowed + " 次）");
       // 运行计时：busy 时本次（在飞滴答）+ 累计（存档 runMs + 在飞，与顶栏同口径）
-      sysLine("⏱ 运行时间 累计 " + fmtDur((state.runMs || 0) + (state.turnStartedAt ? Date.now() - state.turnStartedAt : 0)) +
-        (state.turnStartedAt ? " · 本次 " + fmtDur(Date.now() - state.turnStartedAt) : "（当前空闲）"));
-      const subs = state.subagents || []; // worker 审计记录（SA4）：次数/成败/用量（已计入顶栏合计）
+      sysLine("⏱ 运行时间 累计 " + fmtDur((C.state.runMs || 0) + (C.state.turnStartedAt ? Date.now() - C.state.turnStartedAt : 0)) +
+        (C.state.turnStartedAt ? " · 本次 " + fmtDur(Date.now() - C.state.turnStartedAt) : "（当前空闲）"));
+      const subs = C.state.subagents || []; // worker 审计记录（SA4）：次数/成败/用量（已计入顶栏合计）
       if (subs.length > 0) {
         const okN = subs.filter((s) => s.ok).length;
         const uIn = subs.reduce((a, s) => a + ((s.usage && s.usage.prompt) || 0), 0);
@@ -2282,13 +2294,13 @@ const COMMANDS = new Map([
           "）· worker 累计输入 " + fmtTok(uIn) + " / 输出 " + fmtTok(uOut) + " tokens" +
           (uMs > 0 ? " · 累计用时 " + fmtDur(uMs) : ""));
       }
-      const bd = state.context && state.context.breakdown; // 下次请求的单次构成（技能/MCP 为固定开销，结果类增长在消息里）
+      const bd = C.state.context && C.state.context.breakdown; // 下次请求的单次构成（技能/MCP 为固定开销，结果类增长在消息里）
       if (bd) {
-        const cache = state.totals.cacheHit > 0 ? "（缓存命中率 " + cacheRatePct(state.totals.cacheHit, state.totals.prompt) + "）" : "";
-        const think = state.totals.reasoning > 0 ? "（含思考 " + fmtTok(state.totals.reasoning) + "）" : "";
-        const ctxTotal = (state.context && state.context.total) || 0;
+        const cache = C.state.totals.cacheHit > 0 ? "（缓存命中率 " + cacheRatePct(C.state.totals.cacheHit, C.state.totals.prompt) + "）" : "";
+        const think = C.state.totals.reasoning > 0 ? "（含思考 " + fmtTok(C.state.totals.reasoning) + "）" : "";
+        const ctxTotal = (C.state.context && C.state.context.total) || 0;
         sysLine(
-          "token 输入 " + fmtTok(state.totals.prompt) + cache + " / 输出 " + fmtTok(state.totals.completion) + think +
+          "token 输入 " + fmtTok(C.state.totals.prompt) + cache + " / 输出 " + fmtTok(C.state.totals.completion) + think +
           " · 当前上下文 ≈ " + fmtTok(ctxTotal) + "（" + fmtPct(ctxTotal, ctxLimitOf()) + "）" +
           " ｜ 构成（下次请求估算）：系统提示词 " + fmtTok(bd.systemPrompt) + " · 技能 " + fmtTok(bd.skills) +
           " · 系统工具 " + fmtTok(bd.systemTools) + " · MCP " + fmtTok(bd.mcp) +
@@ -2318,21 +2330,20 @@ async function handleCommand(text) {
 }
 
 // ---------- 发送 / 停止 ----------
-// 图片上传（docs/10 R3）：pendingImages 持有待发图片（mime+base64，前端已完成大小/数量校验）；
-// 显示条件 = 当前提供方声明视觉能力（state.vision，随 state 下发）。
-let pendingImages = [];
+// 图片上传（docs/10 R3）：C.pendingImages 持有待发图片（chat 区状态仓，见文件头 chatStore）；
+// 显示条件 = 当前提供方声明视觉能力（C.state.vision，随 C.state 下发）。
 function renderImgBar() {
   const bar = $("#imgBar");
   bar.innerHTML = "";
-  bar.classList.toggle("hidden", pendingImages.length === 0);
-  pendingImages.forEach((im, i) => {
+  bar.classList.toggle("hidden", C.pendingImages.length === 0);
+  C.pendingImages.forEach((im, i) => {
     const prev = el("div", "imgprev");
     const img = document.createElement("img");
     img.src = "data:" + im.mime + ";base64," + im.data;
     prev.appendChild(img);
     const del = el("button", "imgdel", "✕");
     del.title = "移除这张图片";
-    del.addEventListener("click", () => { pendingImages.splice(i, 1); renderImgBar(); });
+    del.addEventListener("click", () => { C.pendingImages.splice(i, 1); renderImgBar(); });
     prev.appendChild(del);
     bar.appendChild(prev);
   });
@@ -2346,7 +2357,7 @@ async function addImageFiles(files) {
   for (const f of files) {
     const r = imgRules();
     if (!r) { sysLine("服务端配置未就绪，请稍候重试", "err"); break; }
-    if (pendingImages.length >= r.maxCount) { sysLine("一次最多携带 " + r.maxCount + " 张图片", "err"); break; }
+    if (C.pendingImages.length >= r.maxCount) { sysLine("一次最多携带 " + r.maxCount + " 张图片", "err"); break; }
     if (!r.mimes.includes(f.type)) { sysLine("不支持的图片格式：" + (f.type || "未知") + "（支持 PNG/JPEG/GIF/WEBP）", "err"); continue; }
     if (f.size > r.maxBytes) { sysLine("图片 " + (f.name || "（剪贴板）") + " 超过 " + (r.maxBytes / 1048576) + "MB 上限", "err"); continue; }
     const data = await new Promise((res) => {
@@ -2355,7 +2366,7 @@ async function addImageFiles(files) {
       fr.onerror = () => res("");
       fr.readAsDataURL(f);
     });
-    if (data) pendingImages.push({ mime: f.type, data });
+    if (data) C.pendingImages.push({ mime: f.type, data });
   }
   renderImgBar();
 }
@@ -2367,7 +2378,7 @@ $("#imgFile").addEventListener("change", async () => {
 // 粘贴贴图（docs/12 R2）：Ctrl+V 截图直接进预览条——与 📎 同一校验管线；纯文本粘贴不受影响。
 // 门控与 📎 按钮一致（当前提供方声明视觉才可带图——无视觉端点收多模态会 400）。
 input.addEventListener("paste", (e) => {
-  if (state.vision !== true) return; // 无视觉：不拦粘贴（文本照常），也不收图
+  if (C.state.vision !== true) return; // 无视觉：不拦粘贴（文本照常），也不收图
   const files = [...(e.clipboardData?.items ?? [])]
     .filter((it) => it.kind === "file" && (imgRules()?.mimes ?? []).includes(it.type))
     .map((it) => it.getAsFile())
@@ -2377,10 +2388,10 @@ input.addEventListener("paste", (e) => {
   void addImageFiles(files);
 });
 async function send() {
-  if (state.busy) {
+  if (C.state.busy) {
     if (input.value.trim().startsWith("/")) { sysLine("当前对话任务运行中，斜杠命令暂不可用", "err"); return; }
-    if (state.kind === "coordinator") {
-      if (pendingImages.length > 0) { sysLine("运行中插话不支持图片——请等本轮完成后发送", "err"); return; }
+    if (C.state.kind === "coordinator") {
+      if (C.pendingImages.length > 0) { sysLine("运行中插话不支持图片——请等本轮完成后发送", "err"); return; }
       // W2-L2（docs/8 §1.3.4）：协调者运行中消息优先 interim 即时应答（服务端流式回 delta，
       // 轮末合并进历史并广播 init 重渲染）；不适用时服务端落 📩 队列、轮末处理。
       // 气泡统一乐观本地渲染：POST 响应要等 interim chat 完成才返回，而流式 delta 先到，
@@ -2399,19 +2410,19 @@ async function send() {
     return;
   }
   const text = input.value.trim();
-  if (!text && pendingImages.length === 0) return;
+  if (!text && C.pendingImages.length === 0) return;
   if (!text) { sysLine("请同时输入文字说明（图片需要文字提问）", "err"); return; }
-  const images = pendingImages.length > 0 ? pendingImages.map(({ mime, data }) => ({ mime, data })) : undefined;
+  const images = C.pendingImages.length > 0 ? C.pendingImages.map(({ mime, data }) => ({ mime, data })) : undefined;
   input.value = "";
   autosize();
   if (text.startsWith("/")) { void handleCommand(text); return; }
-  pendingImages = [];
+  C.pendingImages = [];
   renderImgBar();
   userBubble(text, images);
   const r = await post("/api/chat", { text, ...(images ? { images } : {}) });
   if (!r.ok) {
     sysLine(r.data.error ?? "发送失败", "err");
-    if (images) { pendingImages = images; renderImgBar(); } // 失败退回预览条，不丢图
+    if (images) { C.pendingImages = images; renderImgBar(); } // 失败退回预览条，不丢图
   }
 }
 $("#stopBtn").addEventListener("click", () => void post("/api/stop", { sessionId: V.viewId }));
@@ -2440,7 +2451,7 @@ $("#confirmSelect").addEventListener("change", async (e) => {
   const body = v === "never" ? { askMode: "never", alwaysConfirm: false }
     : v === "confirm" ? { askMode: "ask", alwaysConfirm: true }
     : { askMode: "ask", alwaysConfirm: false };
-  const prev = state.askMode === "never" ? "never" : state.alwaysConfirm ? "confirm" : "ask";
+  const prev = C.state.askMode === "never" ? "never" : C.state.alwaysConfirm ? "confirm" : "ask";
   const r = await post("/api/settings", body);
   if (!r.ok) {
     sysLine(r.data.error ?? "设置失败", "err");
@@ -2449,7 +2460,7 @@ $("#confirmSelect").addEventListener("change", async (e) => {
 });
 // 思考档位按当前对话记录：切换会写进会话存档；提供方表单里的档位只是新对话的初始值
 $("#effortSelect").addEventListener("change", async (e) => {
-  const prev = state.effort;
+  const prev = C.state.effort;
   const r = await post("/api/settings", { effort: e.target.value });
   if (!r.ok) {
     sysLine(r.data.error ?? "设置失败", "err");
@@ -2458,7 +2469,7 @@ $("#effortSelect").addEventListener("change", async (e) => {
 });
 // 沙箱模式按当前对话记录：受约束模式在无后端时 fail-closed（命令返回 SANDBOX_UNAVAILABLE）
 $("#sandboxSelect").addEventListener("change", async (e) => {
-  const prev = state.sandboxMode;
+  const prev = C.state.sandboxMode;
   const r = await post("/api/settings", { sandboxMode: e.target.value });
   if (!r.ok) {
     sysLine(r.data.error ?? "设置失败", "err");
@@ -2522,7 +2533,7 @@ function renderProvList() {
     return;
   }
   for (const p of provData.providers) {
-    const isCurrent = p.id === state.providerId; // 当前对话正在使用
+    const isCurrent = p.id === C.state.providerId; // 当前对话正在使用
     const isDefault = p.id === provData.active;  // 新对话的默认提供方
     const row = el("div", "provrow" + (isCurrent ? " cur" : ""));
     const info = el("div", "pinfo");
@@ -2815,7 +2826,7 @@ async function browse(p) {
 }
 $("#wsBrowse").addEventListener("click", () => {
   wsModal.classList.remove("hidden");
-  browse(state.workspace || "");
+  browse(C.state.workspace || "");
 });
 $("#wsGo").addEventListener("click", () => browse(wsPath.value));
 wsPath.addEventListener("keydown", (e) => { if (e.key === "Enter") browse(wsPath.value); });
