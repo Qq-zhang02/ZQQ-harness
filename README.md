@@ -8,7 +8,7 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **8 个系统�
 - **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（51 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）统一路线**——①地基（DT0+F1 纯逻辑抽离：`public/app/*.js` ES 模块，node:test 直测，零构建）②桌面形态（DT1 Electron 薄壳 + DT2 打包）③质量渐进（**F2 store 化**：手写状态仓五区迁仓 + applyState 订阅化；**F3 渲染 keyed 收官**：抽屉列表/回收站/提供方列表三点迁移，历史/时间线豁免——= docs/23 D3 剩余项，已收官）均已完成；④剩 **DT3 增强**（通知/托盘/自启）与 **F4 大分区拆文件**（条件已成立）。前端「运行阈值」设置入口已完成（[docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)）；桌面详案见 [docs/25](docs/25_开发文档-桌面端版本方案.md)。每项独立验收、独立 commit。
+- **当前进行中**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）统一路线**——①地基（DT0+F1 纯逻辑抽离：`public/app/*.js` ES 模块，node:test 直测，零构建）②桌面形态（DT1 Electron 薄壳 + DT2 打包）③质量渐进（**F2 store 化**：手写状态仓五区迁仓 + applyState 订阅化；**F3 渲染 keyed 收官**：抽屉列表/回收站/提供方列表三点迁移，历史/时间线豁免——= docs/23 D3 剩余项）④**F4 大分区拆文件已完成**（index.html 2,906→473 行，视图代码七模块无环分层 dom/state/drawer/sidebar/chat/modals/main，不变量正式修订为「无构建：原生 ES Modules」）均已完成；剩 **DT3 增强**（通知/托盘/自启）。前端「运行阈值」设置入口已完成（[docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)）；桌面详案见 [docs/25](docs/25_开发文档-桌面端版本方案.md)。每项独立验收、独立 commit。
 
 ## 快速开始
 
@@ -345,18 +345,24 @@ src/
     │                     （finalizeArchive）——家族叶子
     ├── sessions.ts       会话存档 + 回收站 + 手动排序 + spill 清理
     ├── workspaces.ts     工作区注册表（树顺序/重排/删除遗忘）
-    └── public/           前端（无构建；docs/26 F1 起为原生 ES Modules）：
-        ├── index.html    视图层：多会话路由 + 事件缓冲重放 +
-        │                 三表驱动（COMMANDS/SSE_HANDLERS/选项由 meta 渲染）+
-        │                 子代理侧栏抽屉（列表/详情两视图 + 运行中实时历史轮询 docs/8 +
-        │                 放大/缩小 docs/12）+ 图片上传/粘贴收图/气泡渲染与
-        │                 提供方视觉设置（docs/10 + docs/12 R2）
-        └── app/          纯逻辑模块（node:test 直测 + checkJs 类型检查；零依赖、
-                          禁 DOM——哨兵锁定）：replay.js（事件路由/缓冲过滤/乒乓防护）、
-                          turns.js（轮分组/折叠决策）、autoreport.js（送达解析/格式化）、
-                          store.js（手写状态仓 get/set/subscribe + 微任务合并 flush，
-                          index.html 顶层状态五区 view/chat/drawer/prov-set/tree 迁入，
-                          applyState 为 chatStore 订阅者——docs/26 F2）
+    └── public/           前端（无构建：原生 ES Modules；禁止 node_modules 构建链与
+                          前端 npm 依赖，模块间 import 一律相对路径——docs/26 F4 不变量）：
+        ├── index.html    骨架 + CSS + 单外链 /app/main.js（≤500 行哨兵锁定；
+        │                 F4 前视图代码全在此内联，2,906 行 → 473 行）
+        └── app/          ① 纯逻辑四模块（node:test 直测 + checkJs 严检；零依赖、
+            │             禁 DOM——哨兵锁定）：replay.js（事件路由/缓冲过滤/乒乓防护）、
+            │             turns.js（轮分组/折叠决策）、autoreport.js（送达解析/格式化）、
+            │             store.js（手写状态仓 get/set/subscribe + 微任务合并 flush）
+            └② 视图七模块（docs/26 F4 大分区，无环分层 dom→state→{drawer,sidebar}→
+                          chat→modals→main 入口；import 图经 tsconfig.frontend-view.json
+                          检查）：dom.js（el/esc/mdLite/滚动/keyed/post）、state.js
+                          （chat/view/prov-set 三区状态仓 + CFG + meta 助手）、drawer.js
+                          （子代理抽屉家族 + makeTimeline）、sidebar.js（工作区树/回收站/
+                          拖拽；会话切换经回调槽注入）、chat.js（消息渲染/applyState/
+                          token 面板/renderHistory）、modals.js（提供方+运行阈值+工作区
+                          浏览三模态，纯副作用装载）、main.js（入口：SSE_HANDLERS 表/
+                          切换竞态/发送/图片/命令）；drawer/tree 两区 store 随区域模块就地
+                          建仓，applyState 为 chatStore 订阅者（docs/26 F2 语义不变）
 scripts/
 ├── smoke.ts              真机冒烟：连通性 / 工具闭环 / 审批拒绝
 ├── smoke-anthropic.ts    anthropic 路线冒烟：多轮工具 + 思考存档/回放
@@ -417,7 +423,7 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `23_交接文档-阶段D结构优化接力.md`——第三棒交接：A/B/C 三段成果摘要（384 测试基线）、阶段 D 三项（subagents.ts 拆五块 / config 惰性化 / 前端渲染统一）的入口与约束、可选阶段 B 第二批 8 键、踩坑记录（双哨兵/模板字面量插值/taskkill 等）与不变量清单
 - `24_交接文档-前端设置入口与harness热应用.md`——第四棒交接（**已实施**，头部含实施记录）：Web UI「运行阈值」设置入口——THRESHOLD_RULES 上提 + thresholdSchema 单一出处、web-settings 模块 GET + /save POST（严格校验+原子写+initConfig 热生效）、热生效边界三类（立即跟随/新会话生效/需重启）、schema 驱动前端（零硬编码哨兵）、GUI 冒烟两处修复（确认行顺序、两步关闭确认）
 - `25_开发文档-桌面端版本方案.md`——桌面端版本方案（**DT0–DT2 已实施**，头部含实施记录；DT3 可选增强待做）：2026-11-15 架构复审评级 + 三档路线（L0 现状 bat / L1 Edge 应用模式 / L2 Electron 薄壳推荐）+ 服务端就绪化（DT0：127.0.0.1 绑定/动态端口握手/优雅停机）+ 壳落地与打包分发（DT1–DT3）+ 维护纪律（壳不进业务、双入口回归、Electron 升级核对单）
-- `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**实施顺序以此为准；F1/F2/F3 已实施**，头部含实施记录）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化（app/store.js 手写状态仓 + ~22 顶层变量五区迁仓 + applyState 订阅化）→ F3 渲染 keyed 收官（抽屉列表/回收站/提供方列表三点 + renderHistory/makeTimeline 豁免及其依据）→ F4 条件拆文件与不变量修订 + 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
+- `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**实施顺序以此为准；F1–F4 已全部实施**，头部含实施记录）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化（app/store.js 手写状态仓 + ~22 顶层变量五区迁仓 + applyState 订阅化）→ F3 渲染 keyed 收官（抽屉列表/回收站/提供方列表三点 + renderHistory/makeTimeline 豁免及其依据）→ F4 大分区拆文件（视图七模块无环分层 + index.html 骨架化 ≤500 行 + 不变量正式修订）+ 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
 - `27_操作手册-桌面端打包与冒烟.md`——**给自己看的速查手册**（照抄命令即可，原理看 25/26）：dist/ 里每个产物是什么/怎么用（Setup/portable/win-unpacked/blockmap）、重建安装包完整命令（PS 与 Git Bash 双写法+双镜像原因）、三层冒烟法（自动测试→开发模式人工看→打包版实测清单）、静默装/卸、常见坑速查表（exit 3/卡下载/哨兵红/新模块 404）
 
 ## 已知限制
