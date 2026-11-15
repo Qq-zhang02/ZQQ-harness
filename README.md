@@ -8,7 +8,7 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **8 个系统�
 - **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（51 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）统一路线**——①地基（DT0 服务端就绪化 + F1 纯逻辑抽离可测化：竞态决策/轮折叠/自动送达解析抽为 `public/app/*.js` ES 模块，node:test 直测，零构建）→ ②桌面形态（DT1 Electron 薄壳 + DT2 打包）→ ③质量渐进（F2 store 化 + F3 渲染 keyed 收官 = docs/23 D3 剩余项）→ ④增强/条件项（DT3 通知依赖 F1、F4 拆文件条件触发）。前端「运行阈值」设置入口已完成（[docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)）；桌面详案见 [docs/25](docs/25_开发文档-桌面端版本方案.md)。每项独立验收、独立 commit。
+- **当前进行中**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）统一路线**——①地基（DT0+F1 纯逻辑抽离：`public/app/*.js` ES 模块，node:test 直测，零构建）②桌面形态（DT1 Electron 薄壳 + DT2 打包）③质量渐进（**F2 store 化**：手写状态仓五区迁仓 + applyState 订阅化；**F3 渲染 keyed 收官**：抽屉列表/回收站/提供方列表三点迁移，历史/时间线豁免——= docs/23 D3 剩余项，已收官）均已完成；④剩 **DT3 增强**（通知/托盘/自启）与 **F4 大分区拆文件**（条件已成立）。前端「运行阈值」设置入口已完成（[docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)）；桌面详案见 [docs/25](docs/25_开发文档-桌面端版本方案.md)。每项独立验收、独立 commit。
 
 ## 快速开始
 
@@ -417,7 +417,7 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `23_交接文档-阶段D结构优化接力.md`——第三棒交接：A/B/C 三段成果摘要（384 测试基线）、阶段 D 三项（subagents.ts 拆五块 / config 惰性化 / 前端渲染统一）的入口与约束、可选阶段 B 第二批 8 键、踩坑记录（双哨兵/模板字面量插值/taskkill 等）与不变量清单
 - `24_交接文档-前端设置入口与harness热应用.md`——第四棒交接（**已实施**，头部含实施记录）：Web UI「运行阈值」设置入口——THRESHOLD_RULES 上提 + thresholdSchema 单一出处、web-settings 模块 GET + /save POST（严格校验+原子写+initConfig 热生效）、热生效边界三类（立即跟随/新会话生效/需重启）、schema 驱动前端（零硬编码哨兵）、GUI 冒烟两处修复（确认行顺序、两步关闭确认）
 - `25_开发文档-桌面端版本方案.md`——桌面端版本方案（**DT0–DT2 已实施**，头部含实施记录；DT3 可选增强待做）：2026-11-15 架构复审评级 + 三档路线（L0 现状 bat / L1 Edge 应用模式 / L2 Electron 薄壳推荐）+ 服务端就绪化（DT0：127.0.0.1 绑定/动态端口握手/优雅停机）+ 壳落地与打包分发（DT1–DT3）+ 维护纪律（壳不进业务、双入口回归、Electron 升级核对单）
-- `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**实施顺序以此为准；F1/F2 已实施**，头部含实施记录）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化（app/store.js 手写状态仓 + ~22 顶层变量五区迁仓 + applyState 订阅化）→ F3 渲染 keyed 收官（并入 docs/23 D3 剩余项）→ F4 条件拆文件与不变量修订 + 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
+- `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**实施顺序以此为准；F1/F2/F3 已实施**，头部含实施记录）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化（app/store.js 手写状态仓 + ~22 顶层变量五区迁仓 + applyState 订阅化）→ F3 渲染 keyed 收官（抽屉列表/回收站/提供方列表三点 + renderHistory/makeTimeline 豁免及其依据）→ F4 条件拆文件与不变量修订 + 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
 
 ## 已知限制
 
