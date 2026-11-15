@@ -353,7 +353,10 @@ src/
         │                 提供方视觉设置（docs/10 + docs/12 R2）
         └── app/          纯逻辑模块（node:test 直测 + checkJs 类型检查；零依赖、
                           禁 DOM——哨兵锁定）：replay.js（事件路由/缓冲过滤/乒乓防护）、
-                          turns.js（轮分组/折叠决策）、autoreport.js（送达解析/格式化）
+                          turns.js（轮分组/折叠决策）、autoreport.js（送达解析/格式化）、
+                          store.js（手写状态仓 get/set/subscribe + 微任务合并 flush，
+                          index.html 顶层状态五区 view/chat/drawer/prov-set/tree 迁入，
+                          applyState 为 chatStore 订阅者——docs/26 F2）
 scripts/
 ├── smoke.ts              真机冒烟：连通性 / 工具闭环 / 审批拒绝
 ├── smoke-anthropic.ts    anthropic 路线冒烟：多轮工具 + 思考存档/回放
@@ -414,7 +417,7 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `23_交接文档-阶段D结构优化接力.md`——第三棒交接：A/B/C 三段成果摘要（384 测试基线）、阶段 D 三项（subagents.ts 拆五块 / config 惰性化 / 前端渲染统一）的入口与约束、可选阶段 B 第二批 8 键、踩坑记录（双哨兵/模板字面量插值/taskkill 等）与不变量清单
 - `24_交接文档-前端设置入口与harness热应用.md`——第四棒交接（**已实施**，头部含实施记录）：Web UI「运行阈值」设置入口——THRESHOLD_RULES 上提 + thresholdSchema 单一出处、web-settings 模块 GET + /save POST（严格校验+原子写+initConfig 热生效）、热生效边界三类（立即跟随/新会话生效/需重启）、schema 驱动前端（零硬编码哨兵）、GUI 冒烟两处修复（确认行顺序、两步关闭确认）
 - `25_开发文档-桌面端版本方案.md`——桌面端版本方案（**DT0–DT2 已实施**，头部含实施记录；DT3 可选增强待做）：2026-11-15 架构复审评级 + 三档路线（L0 现状 bat / L1 Edge 应用模式 / L2 Electron 薄壳推荐）+ 服务端就绪化（DT0：127.0.0.1 绑定/动态端口握手/优雅停机）+ 壳落地与打包分发（DT1–DT3）+ 维护纪律（壳不进业务、双入口回归、Electron 升级核对单）
-- `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**实施顺序以此为准；F1 已实施**，头部含实施记录）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化 → F3 渲染 keyed 收官（并入 docs/23 D3 剩余项）→ F4 条件拆文件与不变量修订 + 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
+- `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**实施顺序以此为准；F1/F2 已实施**，头部含实施记录）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化（app/store.js 手写状态仓 + ~22 顶层变量五区迁仓 + applyState 订阅化）→ F3 渲染 keyed 收官（并入 docs/23 D3 剩余项）→ F4 条件拆文件与不变量修订 + 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
 
 ## 已知限制
 
