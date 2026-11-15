@@ -218,8 +218,8 @@ try {
     const end = html.indexOf("\n};", start);
     const hasKey = html.slice(start, end).includes("\n  subagent(");
     record(
-      "前端三端：SSE_HANDLERS 含 subagent 键 + onSubagent 渲染函数 + /status 子代理行；server.ts 零改动（≤250 行）",
-      hasKey && html.includes("function onSubagent") && html.includes("🎯 子代理 ") && serverLines <= 250,
+      "前端三端：SSE_HANDLERS 含 subagent 键 + onSubagent 渲染函数 + /status 子代理行；server.ts 零改动（≤270 行，DT0 调整）",
+      hasKey && html.includes("function onSubagent") && html.includes("🎯 子代理 ") && serverLines <= 270, // docs/25 DT0：250→270（进程生命周期代码合法进壳）
       `handler=${hasKey}；server.ts=${serverLines} 行`,
     );
     // docs/22 §4.1：图片规则单一出处——前端校验/按钮 title 全走 meta.imageRules（imgRules()），

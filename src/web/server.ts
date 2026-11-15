@@ -209,13 +209,9 @@ const server = createServer(async (req, res) => {
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {
-  if (err.code === "EADDRINUSE") {
-    console.error(`端口 ${PORT} 已被占用（可能是上一个还没退干净的服务进程）。`);
-    console.error(`  排查：netstat -ano | findstr :${PORT}  找到 PID，然后 taskkill /F /PID <PID>`);
-    console.error(`  或换个端口启动（PowerShell）：$env:PORT=8788; npm run web`);
-    process.exit(1);
-  }
-  throw err;
+  if (err.code !== "EADDRINUSE") throw err; // PORT=0 随机端口不会撞，显式端口才会
+  console.error(`端口 ${PORT} 已被占用（可能是上一个还没退干净的服务进程）。\n  排查：netstat -ano | findstr :${PORT}  找到 PID，然后 taskkill /F /PID <PID>\n  或换个端口启动（PowerShell）：$env:PORT=8788; npm run web`);
+  process.exit(1);
 });
 
 // ---- 启动：创建初始引导会话（未选择工作区，禁止对话） ----
@@ -225,13 +221,32 @@ sessions.currentId = shell.viewId;
 sweepEmptySessions(shell); // 清理历史积累的空占位档（无消息、非当前视图的都算）
 
 process.on("exit", () => {
-  for (const rt of shell.runtimes.values()) rt.mcp.stop();
+  for (const rt of shell.runtimes.values()) rt.mcp.stop(); // 幂等（stopped 闸）：exit 前统一停 MCP 子进程
 });
 
-server.listen(PORT, () => {
-  const url = `http://localhost:${PORT}`;
+// ---- DT0 服务端就绪化（docs/25 §5，桌面壳契约；浏览器模式同步受益） ----
+let shuttingDown = false;
+/** 优雅停机（DT0-3）：停接新连接 → 落盘各会话（每轮本已自动落盘，最坏丢在飞轮）→ 经 exit 钩子停 MCP。
+ *  触发源：SIGINT/SIGTERM 与 stdin EOF（spawn 模式的父进程死亡感知——父进程关闭管道即触发）。 */
+function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  server.close();
+  for (const rt of shell.runtimes.values()) { try { persistSession(shell, rt); } catch { /* 落盘失败不阻断退出 */ } }
+  process.exit(0);
+}
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, shutdown); // 终端 Ctrl+C / 进程树结束
+process.stdin.resume(); // 流动化后 EOF 才发 end（stdin 不承载任何输入，纯死亡感知）
+process.stdin.on("end", shutdown); // 桌面壳关窗/父 shell 关闭管道 → 本进程即刻自退
+
+// ---- 监听（DT0-1：默认只听 127.0.0.1，局域网不可达；ZQQ_HOST 显式覆盖回 0.0.0.0 自担风险） ----
+server.listen(PORT, process.env.ZQQ_HOST ?? "127.0.0.1", () => {
+  const addr = server.address(); // DT0-2：PORT=0 时为内核分配的随机端口
+  const actual = typeof addr === "object" && addr ? addr.port : PORT;
+  const url = `http://localhost:${actual}`;
   const v = viewRt(shell);
   const mcp = v.mcp.status();
+  console.log(`ZQQ-READY ${actual}`); // DT0-2：机器可读握手行（desktop 壳逐行解析取端口；浏览器模式打印无害）
   console.log(`ZQQ-harness Web UI 已启动：${url}`);
   console.log(`  模型：${shell.providerFile.data.providers.find((p) => p.id === v.providerId)?.model ?? "?"}  工作区：${v.workspace ? v.workspace.root : "未选择（启动后在界面选择）"}`);
   console.log(`  MCP：${mcp.length > 0 ? mcp.join("、") : "未配置"}`);

@@ -1,14 +1,14 @@
 # ZQQ-harness
 
-Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **7 个系统工具**（run_pwsh / read_file / write_file / edit_file / load_skill / manage_mcp / view_image）+ MCP + 技能，带**命令审核、Windows 受限令牌沙箱、上下文管理、多会话并行与思考内容管理、视觉支持**（有视觉能力的模型直看图片；没有的用 view_image 工具借视觉模型分析）；大型任务可开**协调者会话**（两层架构：子代理**非阻塞并行派发、完成/失败/打断即时送达**（像用户消息一样到达，协调者随时处于收信状态）/打断（stop，无暂停恢复）/可复用与归档（重启后 followup 自动从存档唤醒）/异常变动自动报告，见[协调者会话与子代理](#协调者会话与子代理大型任务)）。代码按**模块化架构**组织（`src/core/` 内核 + `src/modules/` 组合式模块，产品 = 一张模块清单），新增/删减能力只需增删模块；**运行阈值与模块启停可经用户级 `harness.json` 覆盖、外部模块目录可零源码扩展**（见[用户级配置](#用户级配置-harnessjson-与外部模块)）。
+Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **8 个系统工具**（run_pwsh / read_file / write_file / edit_file / load_skill / manage_mcp / view_image / read_archive）+ MCP + 技能，带**命令审核、Windows 受限令牌沙箱、上下文管理、多会话并行与思考内容管理、视觉支持**（有视觉能力的模型直看图片；没有的用 view_image 工具借视觉模型分析）；大型任务可开**协调者会话**（两层架构：子代理**非阻塞并行派发、完成/失败/打断即时送达**（像用户消息一样到达，协调者随时处于收信状态）/打断（stop，无暂停恢复）/可复用与归档（重启后 followup 自动从存档唤醒）/异常变动自动报告，见[协调者会话与子代理](#协调者会话与子代理大型任务)）。代码按**模块化架构**组织（`src/core/` 内核 + `src/modules/` 组合式模块，产品 = 一张模块清单），新增/删减能力只需增删模块；**运行阈值与模块启停可经用户级 `harness.json` 覆盖、外部模块目录可零源码扩展**（见[用户级配置](#用户级配置-harnessjson-与外部模块)）。
 
 ## 维护导航（新对话/新协作者先读）
 
-- **架构体检与改进路线**：[docs/21_开发文档-架构可维护性审计与参数化改进.md](docs/21_开发文档-架构可维护性审计与参数化改进.md)——2026-11-14 全项目审计基线，含**硬编码参数全清单（P0–P3 分级）**、参数间矛盾、分阶段实施路线图（§4）与不变量清单（§5）。**阶段 A（P0）8/8、阶段 B 第一批（P1 8 键）、阶段 C（P2 常量收敛+协议解耦+前端 CFG/XSS）、阶段 D1（subagents.ts 拆五文件）、D2（config initConfig 显式装载）、D3 首块（renderTree keyed 更新）均已完成**（实施记录见文档头部）；剩余渐进项（D3 其余重灌点 keyed 化、可选阶段 B 第二批）接力看 [docs/23 交接文档](docs/23_交接文档-阶段D结构优化接力.md)。改参数/改架构前先看它。
-- **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（46 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
+- **架构体检与改进路线**：[docs/21_开发文档-架构可维护性审计与参数化改进.md](docs/21_开发文档-架构可维护性审计与参数化改进.md)——2026-11-14 全项目审计基线，含**硬编码参数全清单（P0–P3 分级）**、参数间矛盾、分阶段实施路线图（§4）与不变量清单（§5）。**阶段 A（P0）8/8、阶段 B 第一批（P1 8 键）与第二批（后 9 键，25→34 键收官）、阶段 C（P2 常量收敛+协议解耦+前端 CFG/XSS）、阶段 D1（subagents.ts 拆五文件）、D2（config initConfig 显式装载）、D3 首块（renderTree keyed 更新）均已完成**（实施记录见文档头部）；D3 其余重灌点已并入前端优化路线（[docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) F3）。改参数/改架构前先看它。
+- **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（48 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 docs/23）：阶段 D 渐进项——D3 其余整列表重灌点 keyed 化（独立可停）、可选阶段 B 第二批（docs/21 §2.3 后 8 键）。每项独立验收、独立 commit。（前端「运行阈值」设置入口已完成，见 [docs/24](docs/24_交接文档-前端设置入口与harness热应用.md) 实施记录。）
+- **当前进行中**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）统一路线**——①地基（DT0 服务端就绪化 + F1 纯逻辑抽离可测化：竞态决策/轮折叠/自动送达解析抽为 `public/app/*.js` ES 模块，node:test 直测，零构建）→ ②桌面形态（DT1 Electron 薄壳 + DT2 打包）→ ③质量渐进（F2 store 化 + F3 渲染 keyed 收官 = docs/23 D3 剩余项）→ ④增强/条件项（DT3 通知依赖 F1、F4 拆文件条件触发）。前端「运行阈值」设置入口已完成（[docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)）；桌面详案见 [docs/25](docs/25_开发文档-桌面端版本方案.md)。每项独立验收、独立 commit。
 
 ## 快速开始
 
@@ -18,6 +18,7 @@ npm run web               # 打开 http://localhost:8787（自动弹浏览器，
 ```
 
 - 不想自动弹浏览器（脚本/远程环境）：设环境变量 `ZQQ_NO_BROWSER=1` 再启动
+- **服务默认只监听 `127.0.0.1`（本机）**，局域网不可达（docs/25 DT0）；确需局域网访问设 `ZQQ_HOST=0.0.0.0` 再启动（自担风险——服务暴露会话数据与 API key 操作面）。`PORT=0` 为随机端口，启动首行 stdout 打印 `ZQQ-READY <端口>` 握手行（供桌面壳解析，浏览器模式忽略无害）；关停支持 Ctrl+C 与 stdin 关闭（父进程退出联动）
 - **用户级调整**：不改源码即可启停模块、覆盖运行阈值——在 Web UI 顶栏 **⚙** 可视化编辑（保存即热应用，见[用户级配置](#用户级配置-harnessjson-与外部模块)），或直接改 `~/.ZQQ-harness/harness.json`（支持注释，重启生效）
 
 **一键启动**：双击项目根目录的 `start-zqq.bat`（纯 ASCII；bat 含中文会被 GBK 解析撕裂）或桌面快捷方式"ZQQ-harness"，自动起服务并打开浏览器；关闭时直接关掉那个控制台窗口。
@@ -219,6 +220,7 @@ description: 为本项目生成规范的 git 提交信息
     "subagentWarnContextPct": 25,
     "subagentFollowupContextPct": 35,
     "subagentArchiveContextPct": 50,
+    "archiveRenderMaxChars": 80000,
     "escalationMax": 8,
     "agentsMdMaxChars": 16000,
     "mcpHandshakeTimeoutMs": 20000,
@@ -241,7 +243,7 @@ description: 为本项目生成规范的 git 提交信息
 ```
 
 - **disabledModules（模块启停）**：按模块名从组合清单过滤（内置与外部模块一视同仁）。禁用不存在的名字会在启动日志提醒（防打字错误）；被保留模块 `dependsOn` 被禁模块 → 启动失败并指名（装配器 fail-fast）。禁用 UI 模块（如 `web.workspaces`）对应功能即消失——请知道自己在做什么。
-- **thresholds（阈值覆盖）**：三十五个运行阈值——子代理八个（并发/累计/轮次上限、报告预算、可复用任务数上限、上下文预警线/followup 门槛/强制归档线，docs/10；存档注入渲染预算 `archiveRenderMaxChars` 默认 80k，docs/17）+ **阶段 B 第一批八个**（docs/21 §2.3 / docs/22 §4.2）：`escalationMax` 审批升级额度（默认 8）、`agentsMdMaxChars` AGENTS.md 注入截断（16k）、`mcpHandshakeTimeoutMs`/`mcpCallTimeoutMs` MCP 握手/调用超时（20s/60s——慢 MCP 服务器或首次下载依赖时可放宽）、`pwshCaptureMaxBytes` 输出采集软上限（1MB）、`precompactKeep` 压缩备份保留份数（3，环形覆写）、`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 启动清扫年龄（168h/24h）+ **阶段 B 第二批九个**（docs/21 §2.3 后段）：`visionTimeoutMs` 视觉分析超时（120s）、`providerTestTimeoutMs` 提供方测试连接超时（20s）、`textFileMaxBytes` 文件三工具大小边界（5MB）、`readFileDefaultLines`/`readFileMaxChars` read_file 缺省行数/单次字符上限（2000/100k）、`subagentTimeoutMinMs` 子代理任务可申请超时下限（60s）、`compactionSummaryMaxChars` 压缩摘要输入预算（300k）、`httpBodyMaxBytes` 请求体上限（32MB，**校验强制 ≥ 图片消息 base64 地板值**）、`imageTokenEst` 每图 token 估算（800，换视觉模型可校准）。键省略即用缺省；非法值（越界/类型错）逐项忽略并告警；未知键告警（检查拼写）。生效值经 `config.ts` 导出常量下发——所有消费方（压缩触发/保留预算、工具轮次、pwsh 超时、修剪预算、默认上下文、子代理配额与上下文治理、文件工具边界、请求体上限）零改动即被覆盖，`/api/meta` 同步反映。（`spillThreshold` 已废弃——docs/10 起修剪触发即落盘无门槛；已配置的旧键静默忽略不告警。docs/21 阶段 A 起三个压缩键更名为 `compaction*`（历史拼写错误修正），**旧拼写 `compection*` 三键双读兼容**——读到即映射到新键并告警更名提示，建议改用新键。）**可视化编辑（docs/24）**：Web UI 顶栏 ⚙ 打开「运行阈值」面板——分组/说明/范围/默认值全部由服务端 schema 下发（`thresholdSchema()` 单一出处，前端零硬编码），保存走严格校验（任一键非法整体 400 拒绝指名该键）→ 原子写回纯 JSON（注释会丢，值不变）→ `initConfig()` 热应用（各运行时读取点立即生效、`/api/meta` 随之反映，**包括运行中会话的工具轮次上限**；`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 清扫与 `disabledModules` 装配标「重启后生效」；子代理轮次上限按后续派发生效）。`disabledModules` 面板内只读展示。
+- **thresholds（阈值覆盖）**：三十四个运行阈值——子代理九个（并发/累计/轮次上限、报告预算、可复用任务数上限、上下文预警线/followup 门槛/强制归档线，docs/10；存档注入渲染预算 `archiveRenderMaxChars` 默认 80k，docs/17）+ **阶段 B 第一批八个**（docs/21 §2.3 / docs/22 §4.2）：`escalationMax` 审批升级额度（默认 8）、`agentsMdMaxChars` AGENTS.md 注入截断（16k）、`mcpHandshakeTimeoutMs`/`mcpCallTimeoutMs` MCP 握手/调用超时（20s/60s——慢 MCP 服务器或首次下载依赖时可放宽）、`pwshCaptureMaxBytes` 输出采集软上限（1MB）、`precompactKeep` 压缩备份保留份数（3，环形覆写）、`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 启动清扫年龄（168h/24h）+ **阶段 B 第二批九个**（docs/21 §2.3 后段）：`visionTimeoutMs` 视觉分析超时（120s）、`providerTestTimeoutMs` 提供方测试连接超时（20s）、`textFileMaxBytes` 文件三工具大小边界（5MB）、`readFileDefaultLines`/`readFileMaxChars` read_file 缺省行数/单次字符上限（2000/100k）、`subagentTimeoutMinMs` 子代理任务可申请超时下限（60s）、`compactionSummaryMaxChars` 压缩摘要输入预算（300k）、`httpBodyMaxBytes` 请求体上限（32MB，**校验强制 ≥ 图片消息 base64 地板值**）、`imageTokenEst` 每图 token 估算（800，换视觉模型可校准）。键省略即用缺省；非法值（越界/类型错）逐项忽略并告警；未知键告警（检查拼写）。生效值经 `config.ts` 导出常量下发——所有消费方（压缩触发/保留预算、工具轮次、pwsh 超时、修剪预算、默认上下文、子代理配额与上下文治理、文件工具边界、请求体上限）零改动即被覆盖，`/api/meta` 同步反映。（`spillThreshold` 已废弃——docs/10 起修剪触发即落盘无门槛；已配置的旧键静默忽略不告警。docs/21 阶段 A 起三个压缩键更名为 `compaction*`（历史拼写错误修正），**旧拼写 `compection*` 三键双读兼容**——读到即映射到新键并告警更名提示，建议改用新键。）**可视化编辑（docs/24）**：Web UI 顶栏 ⚙ 打开「运行阈值」面板——分组/说明/范围/默认值全部由服务端 schema 下发（`thresholdSchema()` 单一出处，前端零硬编码），保存走严格校验（任一键非法整体 400 拒绝指名该键）→ 原子写回纯 JSON（注释会丢，值不变）→ `initConfig()` 热应用（各运行时读取点立即生效、`/api/meta` 随之反映，**包括运行中会话的工具轮次上限**；`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 清扫与 `disabledModules` 装配标「重启后生效」；子代理轮次上限按后续派发生效）。`disabledModules` 面板内只读展示。
 - **外部模块目录 `~/.ZQQ-harness/modules/*.ts`**：每个文件 `export default` 一个模块对象（`{ name, dependsOn?, setup(ctx) }`），在内置模块之后按文件名序装载。模块体可以**零 import**——`setup(ctx)` 收到的 `ctx` 上就是各扩展点注册表（`ctx.tools` / `ctx.routes` / `ctx.promptSections` / `ctx.skillSources` …），直接 `register` 即可；需要类型提示时用 `import type` 从本项目 `src/core/*` 引入（`import type` 在类型擦除后零运行时开销，不会产生真实依赖）。**宽松装载**：导入失败 / 缺合法 default 导出 / 与已有模块重名 / `dependsOn` 不在已装配清单 → 打印错误并跳过该文件，不影响其余模块与应用启动；`setup` 抛错仍 fail-fast 退出（错误信息带模块名）。`*.test.ts` 不装载；多个外部模块按文件名序可互相依赖（先装载者可为后者的依赖）。
 
 ## 斜杠命令
@@ -284,7 +286,7 @@ src/
 │   ├── mcp/stdio/        stdio 传输（JSON-RPC 客户端；cmd /c 包装、PYTHONUTF8 注入）
 │   ├── sandbox/windows-acl/  受限令牌沙箱后端（koffi 懒加载，available() 探测）
 │   ├── skills/fs-source/ 全局+工作区两个技能目录来源
-│   └── web-{approval,providers,sessions,workspaces}/   全部 /api/* 路由（28 条）
+│   └── web-{approval,providers,sessions,settings,workspaces}/   全部 /api/* 路由（30 条）
 ├── agent.ts              Agent 循环（工具 schema 每轮重取；思考存档/回放降级告警；
 │                         压缩/溢出重试；setSkills/setProvider/setVision/setSandboxMode/setMcpInstructions；
 │                         run 支持 user 消息携带图片——docs/10 R3）
@@ -364,7 +366,7 @@ scripts/
 
 ```bash
 npm run typecheck        # tsc 类型检查（noEmit，直接 node 跑 TS）
-npm test                 # node:test 单元测试 384 项（含契约测试/哨兵与沙箱真实执行测试，需 Windows + pwsh；**显式文件清单**——新增测试文件须同步登记 package.json）
+npm test                 # node:test 单元测试 402 项（含契约测试/哨兵与沙箱真实执行测试，需 Windows + pwsh；**显式文件清单**——新增测试文件须同步登记 package.json）
 npm run smoke            # 真实 API 冒烟：连通性 / 工具闭环 / 审批拒绝（消耗少量 token）
 npm run smoke:anthropic  # anthropic 路线冒烟：多轮工具 + 思考存档/回放（消耗少量 token）
 npm run smoke:subagent   # 子代理机制冒烟：真实装配 + 非阻塞派发 + worker 工具循环 + 审批标注（零 token）
@@ -401,6 +403,8 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `22_交接文档-阶段A维护实施与后续接力.md`——阶段 A 实施交接：git 基线与 commit 结构、本次全部改动清单与验证证据、踩坑记录（npm test 显式清单等）、剩余工作与接力入口（IMAGE_RULES → 阶段 B/C/D）
 - `23_交接文档-阶段D结构优化接力.md`——第三棒交接：A/B/C 三段成果摘要（384 测试基线）、阶段 D 三项（subagents.ts 拆五块 / config 惰性化 / 前端渲染统一）的入口与约束、可选阶段 B 第二批 8 键、踩坑记录（双哨兵/模板字面量插值/taskkill 等）与不变量清单
 - `24_交接文档-前端设置入口与harness热应用.md`——第四棒交接（**已实施**，头部含实施记录）：Web UI「运行阈值」设置入口——THRESHOLD_RULES 上提 + thresholdSchema 单一出处、web-settings 模块 GET + /save POST（严格校验+原子写+initConfig 热生效）、热生效边界三类（立即跟随/新会话生效/需重启）、schema 驱动前端（零硬编码哨兵）、GUI 冒烟两处修复（确认行顺序、两步关闭确认）
+- `25_开发文档-桌面端版本方案.md`——桌面端版本方案（**规划稿，未实施**）：2026-11-15 架构复审评级 + 三档路线（L0 现状 bat / L1 Edge 应用模式 / L2 Electron 薄壳推荐）+ 服务端就绪化（DT0：127.0.0.1 绑定/动态端口握手/优雅停机）+ 壳落地与打包分发（DT1–DT3）+ 维护纪律（壳不进业务、双入口回归、Electron 升级核对单）
+- `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**规划稿，实施顺序以此为准**）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化 → F3 渲染 keyed 收官（并入 docs/23 D3 剩余项）→ F4 条件拆文件与不变量修订 + 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
 
 ## 已知限制
 

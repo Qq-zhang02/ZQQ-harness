@@ -316,9 +316,9 @@ test("哨兵（P5 已启用）：server.ts 不再写死技能目录数组与沙�
   assert.ok(!serverSrc.includes("WindowsAclRunner"), "沙箱后端应来自 ctx.sandboxBackends 选型");
 });
 
-test("哨兵（P6 已启用）：server.ts 瘦壳 ≤250 行", () => {
+test("哨兵（P6 已启用；docs/25 DT0 调整 250→270）：server.ts 瘦壳 ≤270 行", () => {
   const lines = serverSrc.split("\n").length;
-  assert.ok(lines <= 250, `server.ts 应只剩 bootstrap/静态/SSE/meta/分发，当前 ${lines} 行`);
+  assert.ok(lines <= 270, `server.ts 应只剩 bootstrap/静态/SSE/meta/分发/进程生命周期（DT0 优雅停机），当前 ${lines} 行`);
 });
 
 test("哨兵（P8 已启用；docs/23 D2 改显式装载）：阈值常量经 initConfig() 重绑的生效值，导入期不读 harness.json", () => {
