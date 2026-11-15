@@ -24,7 +24,9 @@ win:
   # icon.ico 暂缺（docs/25 DT1 偏差记录）：用 builder 默认图标；后续补 desktop/icon.ico 后此处指向
 nsis:
   artifactName: "ZQQ-harness-Setup-${version}.${ext}"
-  oneClick: true # 个人工具：一键按用户安装（不写 Program Files、无需管理员）
+  oneClick: false # 引导式安装（2026-11-15 用户需求：可选安装位置）
+  allowToChangeInstallationDirectory: true # 目录页可编辑；默认仍按用户装（无需管理员），选受保护路径时按需提权
+  perMachine: false
 portable:
   artifactName: "ZQQ-harness-${version}-portable.${ext}"
 # 卸载不清档：用户数据在 ~/.ZQQ-harness（数据与程序分离，docs/25 §6-DT2 设计决定）——无需配置
