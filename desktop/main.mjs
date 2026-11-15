@@ -13,7 +13,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync, watch } from "node:fs";
 import { dirname, join } from "node:path";
-import { app, BrowserWindow, dialog, Menu, nativeImage, Tray } from "electron";
+import { app, BrowserWindow, dialog, Menu, nativeImage, powerMonitor, Tray } from "electron";
 
 const APP_ROOT = join(import.meta.dirname, ".."); // desktop/ 的上级 = 项目根（src/、node_modules/ 所在）
 const READY_PREFIX = "ZQQ-READY ";
@@ -77,6 +77,11 @@ async function start() {
   openWindow(`http://127.0.0.1:${port}`);
   applyDesktopPrefs(); // DT3-②/③：服务已就绪（userDir 已建）→ 读 desktop.json 应用自启/托盘
   watchDesktopJson(); // DT3-③：此后 web 端保存偏好即时生效（fs.watch 去抖重读）
+  // DT3-④（默认开）：系统休眠唤醒后 SSE 连接已静默断开——整页 reload 走 init 快照恢复
+  // （前端本身有刷新恢复能力，这是兜底；docs/25 §9 风险行「系统休眠后 SSE 静默断开」）。
+  powerMonitor.on("resume", () => {
+    if (win && !win.isDestroyed()) win.webContents.reload();
+  });
 
   child.on("exit", (code) => {
     if (!quitting) {
