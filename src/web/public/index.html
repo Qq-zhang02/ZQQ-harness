@@ -573,19 +573,28 @@ let state = {
 let curGroup = null, curThink = null, curAnswer = null, curTool = null;
 
 // ---------- 多会话并行：事件按 sessionId 路由 ----------
-// viewId=正在查看的会话；后台会话的事件先进入各自缓冲，切换查看时取快照渲染再从当前位置继续实时显示。
-let viewId = "";
-const sessCache = new Map(); // id -> { buf: [], loading: false, approval: false, needsRefresh: false, turn: null }
+// view 区状态仓（docs/26 F2）：读走稳定快照 V.<field>（set 就地合并、身份不变——V 永远最新），
+// 写直接赋值 V.<field>（本区纯数据游标，无订阅者；trace：?zqqtrace=1 可见走 set 的写点）。
+// V.viewId=正在查看的会话；后台会话的事件先进入各自缓冲，切换查看时取快照渲染再从当前位置继续实时显示。
+const viewStore = createStore({
+  viewId: "",
+  sessCache: new Map(), // id -> { buf: [], loading: false, approval: false, needsRefresh: false, turn: null }
+  switchingTo: null,    // 正在进行的客户端主动切换（抑制 sessions 跟随，防止乒乓循环）
+  pendingFollow: null,  // 切换进行中错过的服务端视图变更：切换完成后补跟随
+  viewSeqSeen: 0,       // 已见过的最大服务端视图序号（小于它的 sessions 事件是排队中的过期事件，忽略跟随）
+  lastSessions: { current: "", groups: [], recycled: [] },
+}, { trace: TRACE });
+const V = viewStore.get();
 function cacheOf(id) {
-  let c = sessCache.get(id);
-  if (!c) { c = { buf: [], loading: false, approval: false, needsRefresh: false, turn: null }; sessCache.set(id, c); }
+  let c = V.sessCache.get(id);
+  if (!c) { c = { buf: [], loading: false, approval: false, needsRefresh: false, turn: null }; V.sessCache.set(id, c); }
   return c;
 }
-function viewIs(id) { return id === viewId && !cacheOf(id).loading; }
+function viewIs(id) { return id === V.viewId && !cacheOf(id).loading; }
 /** 会话事件路由：分支判定在 /app/replay.js decideRoute（可单测），此处只执行动作——
  *  render=视图会话（或无归属）直接渲染；state/usage/turnEnd=后台会话只更新缓存；buffer=进缓冲。 */
 function route(evName, d, render) {
-  const act = decideRoute(evName, d, { viewId, loading: d && d.sessionId ? cacheOf(d.sessionId).loading : false });
+  const act = decideRoute(evName, d, { viewId: V.viewId, loading: d && d.sessionId ? cacheOf(d.sessionId).loading : false });
   if (act === "render") { render(d); return; }
   const c = cacheOf(d.sessionId);
   if (act === "state") { c.state = d; c.turn = d.turn ?? null; return; }
@@ -975,7 +984,7 @@ function resetDrawer(st) {
   drawer.detail = 0;
   drawer.renderedDetail = 0; // docs/11 W2：换会话后旧详情内容不算数，重开详情按新开处理（清空+贴底）
   stopLivePoll();
-  stopCtxPoll(); // docs/10 R1 修订：切会话停掉占比轮询（viewId 已换）
+  stopCtxPoll(); // docs/10 R1 修订：切会话停掉占比轮询（V.viewId 已换）
   drawer.userClosed = false;
   drawer.max = false; // docs/12 A：换会话退出放大态（新会话从侧边抽屉开始）
   syncDrawer(st);
@@ -1198,7 +1207,7 @@ function ensureCtxPoll() {
       for (const w of drawer.workers.values()) {
         if (w.status !== "run") continue;
         try {
-          const r = await fetch("/api/subagent/context?sessionId=" + encodeURIComponent(viewId) + "&subId=" + encodeURIComponent(String(w.subId)));
+          const r = await fetch("/api/subagent/context?sessionId=" + encodeURIComponent(V.viewId) + "&subId=" + encodeURIComponent(String(w.subId)));
           if (!r.ok) continue;
           const d = await r.json().catch(() => ({}));
           let changed = false;
@@ -1311,7 +1320,7 @@ function drwCtlBtn(row) {
   b.title = "打断该子代理的当前任务（立即中止进行中的请求/工具；一次性随之归档，可复用转空闲待命——没有恢复，继续工作需发新任务）";
   b.addEventListener("click", (ev) => {
     ev.stopPropagation();
-    void post("/api/subagent/control", { sessionId: viewId, subId: row.subId, action: "stop" })
+    void post("/api/subagent/control", { sessionId: V.viewId, subId: row.subId, action: "stop" })
       .then((r) => { if (!r.ok || r.data.ok === false) sysLine(r.data.error ?? r.data.message ?? "操作失败", "err"); });
   });
   return b;
@@ -1324,7 +1333,7 @@ function drwArchBtn(row) {
   b.title = "归档该可复用子代理（空闲立即归档；执行中会先中止当前任务）。归档后仅可查看存档，不可再派任务";
   b.addEventListener("click", (ev) => {
     ev.stopPropagation();
-    void post("/api/subagent/control", { sessionId: viewId, subId: row.subId, action: "archive" })
+    void post("/api/subagent/control", { sessionId: V.viewId, subId: row.subId, action: "archive" })
       .then((r) => { if (!r.ok || r.data.ok === false) sysLine(r.data.error ?? r.data.message ?? "操作失败", "err"); });
   });
   return b;
@@ -1360,7 +1369,7 @@ async function renderDrawerDetail() {
     note.classList.remove("hidden");
     let d;
     try {
-      const r = await fetch("/api/subagent-transcript?sessionId=" + encodeURIComponent(viewId) + "&subId=" + encodeURIComponent(String(row.subId)));
+      const r = await fetch("/api/subagent-transcript?sessionId=" + encodeURIComponent(V.viewId) + "&subId=" + encodeURIComponent(String(row.subId)));
       d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error ?? "HTTP " + r.status);
     } catch (e) {
@@ -1401,7 +1410,7 @@ function stopLivePoll() {
 }
 async function pollLiveDetail(row, seq) {
   try {
-    const r = await fetch("/api/subagent-transcript?sessionId=" + encodeURIComponent(viewId) + "&subId=" + encodeURIComponent(String(row.subId)));
+    const r = await fetch("/api/subagent-transcript?sessionId=" + encodeURIComponent(V.viewId) + "&subId=" + encodeURIComponent(String(row.subId)));
     const d = await r.json().catch(() => ({}));
     if (seq !== drawer.renderSeq || !drawer.poll || drawer.poll.subId !== row.subId) return;
     if (!r.ok) {
@@ -1825,7 +1834,7 @@ const es = new EventSource("/api/events");
 // ---------- SSE 处理表（§4.11）：监听注册与缓冲重放共用同一张表；13 个事件名与 core/events.ts 由契约测试锁定 ----------
 const SSE_HANDLERS = {
   init(d) {
-    if (!viewId) viewId = d.sessionId; // 首个 init：采纳服务端当前视图
+    if (!V.viewId) V.viewId = d.sessionId; // 首个 init：采纳服务端当前视图
     const c = cacheOf(d.sessionId);
     c.messages = d.messages;
     c.state = d.state;
@@ -1833,7 +1842,7 @@ const SSE_HANDLERS = {
     if (d.state && d.state.workspace) { wsExpanded.add(normWs(d.state.workspace)); saveExpanded(); }
     if (viewIs(d.sessionId)) { state = d.state; renderHistory(d.messages); syncDrawer(d.state); applyState(); }
   },
-  state(d) { route("state", d, (s) => { state = s; cacheOf(viewId).turn = s.turn ?? null; syncDrawer(s); applyState(); }); },
+  state(d) { route("state", d, (s) => { state = s; cacheOf(V.viewId).turn = s.turn ?? null; syncDrawer(s); applyState(); }); },
   delta(d) { route("delta", d, () => { if (d.kind === "reasoning") onReasoningDelta(d.text); else onContentDelta(d.text); }); },
   tool(d) { route("tool", d, () => addTool(d.name, d.preview, d.id)); },
   toolResult(d) { route("toolResult", d, () => addToolRes(d.output, d.meta, d.id)); },
@@ -1856,19 +1865,19 @@ const SSE_HANDLERS = {
       foldTurns();
       $("#approval").classList.add("hidden");
       // 运行中途切进来过的会话：轮结束后拉一次完整快照，补齐切换前丢失的实时片段
-      if (cacheOf(viewId).needsRefresh) { cacheOf(viewId).needsRefresh = false; void refreshSnapshot(); }
+      if (cacheOf(V.viewId).needsRefresh) { cacheOf(V.viewId).needsRefresh = false; void refreshSnapshot(); }
     });
   },
   sessions(d) {
-    lastSessions = d;
+    V.lastSessions = d;
     // 服务端切换了视图（新建对话/切工作区/清空）时客户端跟随；乒乓防护决策在 /app/replay.js
     // decideFollow（可单测）：follow=立即切换；defer=客户端主动切换进行中、切换完成后补跟随
     // （带序号防过期）；ignore=过期事件或无视图变更——照常刷新列表。只认"更新的"视图序号：
     // 快速连点时服务端排队广播会携带过期 current 晚到，据此回切会与服务端互相触发（乒乓闪烁）。
-    const f = decideFollow(d, { viewId, viewSeqSeen, switchingTo });
-    if (d.viewSeq > viewSeqSeen) viewSeqSeen = d.viewSeq;
+    const f = decideFollow(d, { viewId: V.viewId, viewSeqSeen: V.viewSeqSeen, switchingTo: V.switchingTo });
+    if (d.viewSeq > V.viewSeqSeen) V.viewSeqSeen = d.viewSeq;
     if (f.type === "follow") { void switchSession(f.id); return; }
-    if (f.type === "defer") { pendingFollow = { id: f.id, seq: f.seq }; return; }
+    if (f.type === "defer") { V.pendingFollow = { id: f.id, seq: f.seq }; return; }
     renderTree();
     renderRecycle(d.recycled);
   },
@@ -1880,26 +1889,24 @@ for (const [name, handler] of Object.entries(SSE_HANDLERS)) {
 es.onopen = () => {};
 es.onerror = () => { /* EventSource 自动重连 */ };
 
-/** 切换正在查看的会话：取服务端快照渲染；后台会话不受影响，仍在运行的任务继续跑 */
-let switchingTo = null; // 正在进行的客户端主动切换（抑制 sessions 跟随，防止乒乓循环）
-let pendingFollow = null; // 切换进行中错过的服务端视图变更：切换完成后补跟随
-let viewSeqSeen = 0; // 已见过的最大服务端视图序号（小于它的 sessions 事件是排队中的过期事件，忽略跟随）
+/** 切换正在查看的会话：取服务端快照渲染；后台会话不受影响，仍在运行的任务继续跑
+ *  （switchingTo/pendingFollow/viewSeqSeen 三游标在 view 区状态仓，见文件头 viewStore） */
 async function switchSession(id) {
-  if (!id || id === viewId) return;
-  switchingTo = id;
-  viewId = id;
+  if (!id || id === V.viewId) return;
+  V.switchingTo = id;
+  V.viewId = id;
   const c = cacheOf(id);
   c.loading = true;
   finishSegments();
   try {
     const r = await post("/api/sessions/load", { id });
     if (!r.ok) {
-      if (viewId === id) sysLine(r.data.error ?? "切换失败", "err");
+      if (V.viewId === id) sysLine(r.data.error ?? "切换失败", "err");
       return;
     }
     c.messages = r.data.messages;
     c.state = r.data.state;
-    if (viewId !== id) return; // 等待期间用户又点了别的会话：丢弃过期快照
+    if (V.viewId !== id) return; // 等待期间用户又点了别的会话：丢弃过期快照
     if (r.data.state && r.data.state.workspace) { wsExpanded.add(normWs(r.data.state.workspace)); saveExpanded(); }
     state = r.data.state;
     // 需求三（docs/8 §3.4）：抽屉按新会话快照硬重置（完成审计 + 运行中瞬态），
@@ -1917,12 +1924,12 @@ async function switchSession(id) {
     applyState();
   } finally {
     c.loading = false;
-    if (switchingTo === id) switchingTo = null;
-    const pf = pendingFollow;
+    if (V.switchingTo === id) V.switchingTo = null;
+    const pf = V.pendingFollow;
     if (pf) {
-      if (pf.seq !== viewSeqSeen) pendingFollow = null; // 已被更新的视图事件取代：过期，不再补切
-      else if (!switchingTo && pf.id !== viewId) {
-        pendingFollow = null;
+      if (pf.seq !== V.viewSeqSeen) V.pendingFollow = null; // 已被更新的视图事件取代：过期，不再补切
+      else if (!V.switchingTo && pf.id !== V.viewId) {
+        V.pendingFollow = null;
         void switchSession(pf.id); // 补上切换进行中错过的服务端视图变更
       }
     }
@@ -1937,9 +1944,9 @@ function dispatchBuffered(item) {
 
 /** 拉取当前视图会话的最新快照并整体重渲染 */
 async function refreshSnapshot() {
-  const r = await post("/api/sessions/load", { id: viewId });
+  const r = await post("/api/sessions/load", { id: V.viewId });
   if (!r.ok) return;
-  const c = cacheOf(viewId);
+  const c = cacheOf(V.viewId);
   state = r.data.state;
   renderHistory(r.data.messages);
   applyState();
@@ -1949,7 +1956,6 @@ async function refreshSnapshot() {
 // ---------- 侧边栏：工作区树（点击选中并展开；工作区与对话均可拖动排序） ----------
 let dragSessionId = null;
 let dragWsId = null;
-let lastSessions = { current: "", groups: [], recycled: [] };
 const wsExpanded = new Set(JSON.parse(localStorage.getItem("zqq.wsExpanded") || "[]"));
 function saveExpanded() {
   try { localStorage.setItem("zqq.wsExpanded", JSON.stringify([...wsExpanded])); } catch { /* 隐私模式等场景忽略 */ }
@@ -2044,7 +2050,7 @@ function sessionItemNode() {
     if (!ids) return;
     const r = await post("/api/sessions/reorder", { workspace: it._wsPath, ids });
     if (!r.ok) { sysLine(r.data.error ?? "排序失败", "err"); return; }
-    lastSessions = r.data;
+    V.lastSessions = r.data;
     renderTree();
   });
   return it;
@@ -2056,7 +2062,7 @@ function updateSessionItem(n, s, currentId, g) {
   n._sid = s.id;
   n._wsPath = g.workspace;
   n._wsItems = g.items;
-  const running = ((state.runningIds || lastSessions.running || [])).includes(s.id);
+  const running = ((state.runningIds || V.lastSessions.running || [])).includes(s.id);
   n.classList.toggle("cur", s.id === currentId);
   n.title = (s.kind === "coordinator" ? "协调者会话\n" : "") + (s.title || "") + "\n" + (s.workspace || "") + (running ? "\n（运行中，点击切换查看）" : "");
   for (const b of [...n.children]) if (b.classList.contains("srun")) b.remove();
@@ -2128,11 +2134,11 @@ function wsHeadNode() {
     const dragId = dragWsId;
     dragWsId = null;
     if (!dragId || normWs(dragId) === normWs(head._ws)) return;
-    const ids = reordered(lastSessions.groups.map((x) => x.workspace), dragId, head._ws, below);
+    const ids = reordered(V.lastSessions.groups.map((x) => x.workspace), dragId, head._ws, below);
     if (!ids) return;
     const r = await post("/api/workspaces/reorder", { ids });
     if (!r.ok) { sysLine(r.data.error ?? "排序失败", "err"); return; }
-    lastSessions = r.data;
+    V.lastSessions = r.data;
     renderTree();
   });
   return head;
@@ -2153,7 +2159,7 @@ function renderTree() {
   // 复用既有节点，只增删/移动/刷新差异——选中、折叠、运行/审批标记与两步确认的 armed 态
   // 不再因整树重灌丢失；组内条目递归 reconcile（box 内独立 keyed 列表）。
   const tree = $("#wsTree");
-  const groups = lastSessions.groups || [];
+  const groups = V.lastSessions.groups || [];
   if (!groups.length) {
     reconcileKeyed(tree, [{ key: "empty", make: () => el("div", "sempty", "暂无工作区<br>点击「添加工作区」开始") }]);
     return;
@@ -2170,7 +2176,7 @@ function renderTree() {
         reconcileKeyed(box, (g.items || []).map((s) => ({
           key: "s:" + s.id,
           make: sessionItemNode,
-          update: (n) => updateSessionItem(n, s, lastSessions.current, g),
+          update: (n) => updateSessionItem(n, s, V.lastSessions.current, g),
         })));
       },
     });
@@ -2389,7 +2395,7 @@ async function send() {
       if (!r.ok) sysLine(r.data.error ?? "发送失败", "err");
       return;
     }
-    await post("/api/stop", { sessionId: viewId });
+    await post("/api/stop", { sessionId: V.viewId });
     return;
   }
   const text = input.value.trim();
@@ -2408,7 +2414,7 @@ async function send() {
     if (images) { pendingImages = images; renderImgBar(); } // 失败退回预览条，不丢图
   }
 }
-$("#stopBtn").addEventListener("click", () => void post("/api/stop", { sessionId: viewId }));
+$("#stopBtn").addEventListener("click", () => void post("/api/stop", { sessionId: V.viewId }));
 sendBtn.addEventListener("click", send);
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -2419,10 +2425,10 @@ input.addEventListener("input", autosize);
 // ---------- 批准 ----------
 function answerApproval(decision) {
   $("#approval").classList.add("hidden");
-  const c = cacheOf(viewId);
+  const c = cacheOf(V.viewId);
   c.approval = false;
   c.buf = c.buf.filter((x) => x.ev !== "approval"); // 已决议的卡不再随缓冲重放
-  void post("/api/approval", { decision, sessionId: viewId });
+  void post("/api/approval", { decision, sessionId: V.viewId });
 }
 $("#aYes").addEventListener("click", () => answerApproval("allowed-once"));
 $("#aNo").addEventListener("click", () => answerApproval("rejected"));
