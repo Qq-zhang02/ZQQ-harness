@@ -11,9 +11,9 @@
  * → 子进程退出后 app.quit()；5s 未退硬杀兜底。单实例：二次启动聚焦已有窗口后退出。
  */
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { app, BrowserWindow, dialog } from "electron";
+import { readFileSync, watch } from "node:fs";
+import { dirname, join } from "node:path";
+import { app, BrowserWindow, dialog, Menu, nativeImage, Tray } from "electron";
 
 const APP_ROOT = join(import.meta.dirname, ".."); // desktop/ 的上级 = 项目根（src/、node_modules/ 所在）
 const READY_PREFIX = "ZQQ-READY ";
@@ -22,11 +22,15 @@ const KILL_GRACE_MS = 5_000;
 // DT3-②（docs/25 §6/§8-1）：桌面壳偏好文件——壳对业务数据目录的**唯一例外**（只读这一个；
 // 由服务端 web.desktop 模块维护〔端点经页面调用，壳不直接访问〕，路径不得 import src/** 故本地拼写）。
 const DESKTOP_JSON = join(app.getPath("home"), ".ZQQ-harness", "desktop.json");
+/** 托盘图标（DT3-③）：32×32 PNG 内嵌 base64（圆角蓝底白 Z）——desktop/ ≤2 文件铁律，不落第二个文件。 */
+const TRAY_ICON_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABc0lEQVR42u2XvUsDQRDFf3sGE9AgKIqIRKsQsLJQEBNQxMZGxN4q2FpEwSZ+FVqqvf+DYiVIAipaiVgqVomooDFg/OAiZ85iPSIxIRHjXpQcHMzsDby3b+Zmd8DmRxT64Gr0mOUG05NxUZSABTy8Hiv7bnenOr4QEbngvwGcj4hFQlMNbqlrKa1VRBGq3H1uKmxXwPGd4I0xaKkrLTa4BbdPxeNsV+BvpSC4mX+9zwOzARAfXeUgBnfPihTwNUOoPwt+egOrh2CaCgi0uSE8ALU10r+4h+U9MDIKaqDBBQtD4HZK/yoFi1HQDQVF6HRAeBBa66WfeIG5CKTSCv4CTcCMH7xN0n98hflI6UX3YwKTPdDbLu20AUtRuHxQ1AfGu2DEK+23DKzsw3lCUSMKdMJEt7RNYO0ITq4VNqJRX/b2IoCQX74Fz41j2D6rngVlTMH0zj9VoEpAswYFa2hQeSHVk3FROSlQqcLnyaiyZkM7puN3TQV15+x2jzoAAAAASUVORK5CYII=";
 
 /** @type {import("node:child_process").ChildProcess | null} */
 let child = null;
 /** @type {import("electron").BrowserWindow | null} */
 let win = null;
+/** @type {import("electron").Tray | null} DT3-③：非 null = 托盘常驻开启（关窗=隐藏） */
+let tray = null;
 let quitting = false;
 
 if (!app.requestSingleInstanceLock()) {
@@ -71,7 +75,8 @@ async function start() {
     return;
   }
   openWindow(`http://127.0.0.1:${port}`);
-  applyDesktopPrefs(); // DT3-②：服务已就绪（userDir 已建）→ 读 desktop.json 应用自启
+  applyDesktopPrefs(); // DT3-②/③：服务已就绪（userDir 已建）→ 读 desktop.json 应用自启/托盘
+  watchDesktopJson(); // DT3-③：此后 web 端保存偏好即时生效（fs.watch 去抖重读）
 
   child.on("exit", (code) => {
     if (!quitting) {
@@ -111,8 +116,7 @@ function waitForReady(proc) {
   });
 }
 
-/** DT3-②：读 desktop.json 应用开机自启（启动时一次；读侧 lenient——缺失/损坏=全关缺省）。
- *  仅打包版注册：dev 的 electron.exe 进注册表会污染系统自启项；显式 false 同时清理旧注册。 */
+/** DT3-②/③：读 desktop.json 并应用（开机自启 + 托盘）。读侧 lenient——缺失/损坏=全关缺省。 */
 function applyDesktopPrefs() {
   let prefs = {};
   try {
@@ -120,14 +124,59 @@ function applyDesktopPrefs() {
   } catch { /* 文件缺失/损坏：保持缺省（web.desktop 读侧同款宽宥） */ }
   try {
     if (prefs.autoStart === true) {
+      // 仅打包版注册：dev 的 electron.exe 进注册表会污染系统自启项；显式 false 同时清理旧注册
       if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true });
       else console.log("[shell] 开机自启=开（dev 模式不注册，打包版生效）");
     } else if (app.isPackaged) {
-      app.setLoginItemSettings({ openAtLogin: false }); // 缺省/关闭：清掉可能存在的旧注册
+      app.setLoginItemSettings({ openAtLogin: false });
     }
   } catch (e) {
     console.log(`[shell] 自启设置应用失败：${e instanceof Error ? e.message : String(e)}`);
   }
+  setTray(prefs.tray === true);
+}
+
+/** desktop.json 活应用（DT3-③）：web 端保存（原子写=rename 替换）触发目录事件 → 去抖重读应用。
+ *  目录缺失（服务未建 userDir 的窗口期）只记日志跳过——退化为启动时读一次，不致命。 */
+function watchDesktopJson() {
+  try {
+    let timer = null;
+    watch(dirname(DESKTOP_JSON), (_ev, fname) => {
+      if (fname !== "desktop.json") return;
+      clearTimeout(timer);
+      timer = setTimeout(applyDesktopPrefs, 150);
+    });
+  } catch (e) {
+    console.log(`[shell] desktop.json 监听未建立（退化为启动读一次）：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** DT3-③ 托盘常驻（默认关——会话运行态常驻内存被放大，docs/25 §1.2-⑤）：开启 = 创建托盘 +
+ *  关窗改隐藏（close 事件在 openWindow 里查 tray 标记）；关闭 = 销毁托盘 + 唤回隐藏窗（不留不可见孤儿）。 */
+function setTray(on) {
+  if (on && !tray) {
+    tray = new Tray(nativeImage.createFromDataURL(TRAY_ICON_URL));
+    tray.setToolTip("ZQQ-harness（正在运行）");
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: "显示主窗口", click: () => showMainWindow() },
+      { type: "separator" },
+      { label: "退出", click: () => stopService() }, // 走优雅停机总闸（stdin-EOF → 落盘 → quit）
+    ]));
+    tray.on("click", () => showMainWindow()); // 左键单击 = 显示/聚焦
+    console.log("[shell] 托盘常驻=开（关闭按钮将隐藏到托盘；退出经托盘菜单）");
+  } else if (!on && tray) {
+    tray.destroy();
+    tray = null;
+    console.log("[shell] 托盘常驻=关");
+    if (win && !win.isVisible()) showMainWindow();
+  }
+}
+
+function showMainWindow() {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
 }
 
 function openWindow(url) {
@@ -145,6 +194,13 @@ function openWindow(url) {
   win.setMenuBarVisibility(false);
   win.once("ready-to-show", () => win && win.show());
   void win.loadURL(url);
+  win.on("close", (e) => {
+    // DT3-③：托盘常驻时关窗=隐藏到托盘（会话后台继续）；真正退出走托盘菜单的 stopService 总闸
+    if (tray && !quitting) {
+      e.preventDefault();
+      win.hide();
+    }
+  });
   win.on("closed", () => {
     win = null;
   });

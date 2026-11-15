@@ -398,6 +398,8 @@ async function renderDesktopPrefs() {
   setDesktopBox.appendChild(head);
   setDesktopBox.appendChild(deskRow("开机自启", "随 Windows 登录启动（仅打包版注册；dev 模式只记录不注册）", d.autoStart,
     (v) => post("/api/desktop/save", { autoStart: v })));
+  setDesktopBox.appendChild(deskRow("最小化到托盘", "关闭按钮=隐藏到托盘、会话后台继续，退出经托盘菜单（默认关——常驻会放大内存占用）", d.tray,
+    (v) => post("/api/desktop/save", { tray: v })));
   setDesktopBox.classList.remove("hidden");
 }
 /** 偏好行：checkbox + 标签 + 说明；change 即存，失败回滚勾选并报错。 */
