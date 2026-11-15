@@ -18,7 +18,7 @@ npm run web               # 打开 http://localhost:8787（自动弹浏览器，
 npm run desktop           # 桌面版（Electron 薄壳，docs/25 DT1）：独立窗口 + 动态端口 + 关窗即退
 ```
 
-- **桌面版首次安装**：electron 二进制（~120MB）由 postinstall 下载；本机 allow-scripts 策略会拦截该脚本时，手动补跑：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ node node_modules/electron/install.js`（registry 已是 npmmirror）。壳只管进程与窗口（`desktop/main.mjs`，≤2 文件哨兵锁定）——与浏览器版跑**同一份** server.ts 与前端，双入口零漂移
+- **桌面版首次安装**：electron 二进制（~120MB）由 postinstall 下载；本机 allow-scripts 策略会拦截该脚本时，手动补跑：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ node node_modules/electron/install.js`（registry 已是 npmmirror）。壳只管进程与窗口（`desktop/main.mjs` + `icon.ico`〔c1-energy 应用图标〕，≤2 文件哨兵锁定）——与浏览器版跑**同一份** server.ts 与前端，双入口零漂移
 - **打包分发**（docs/25 DT2）：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ npx electron-builder --win` → `dist/ZQQ-harness-Setup-<版本>.exe`（nsis 引导式安装，**安装位置可选**——默认按用户装无需管理员，静默装/卸：`Setup.exe /S /D=<不带引号的目录>` 与 `Uninstall ZQQ-harness.exe /S`；卸载**不清** `~/.ZQQ-harness/` 用户数据）与 `dist/ZQQ-harness-<版本>-portable.exe`（免安装单文件）。目标机只需 Windows 10/11 x64 + PowerShell 7（Node/浏览器均不需要，Electron 自带）。`asar: false`（ELECTRON_RUN_AS_NODE 子进程加载 .ts 与 koffi DLL 走真实文件最稳）；未签名（SmartScreen/杀软可能误报，portable 自用为主——已知取舍）；portable 双击运行无控制台（排障用 dev 模式 `npm run desktop` 看 `[svc]` 服务日志）
 - **桌面增强**（docs/25 DT3，已全部落地）：**审批通知**（审批卡到达且窗口失焦时系统通知，点击聚焦）；**开机自启/托盘常驻**（偏好存 `~/.ZQQ-harness/desktop.json`，经 web.desktop 模块 `/api/desktop` 读写——设置模态「🖥 桌面版」区即时生效，壳 fs.watch 活应用；两项默认关，自启仅打包版注册）；**休眠恢复**（唤醒后整页 reload 走 init 快照，默认开）
 

@@ -189,6 +189,7 @@ function openWindow(url) {
     width: 1400,
     height: 900,
     title: "ZQQ-harness",
+    icon: join(import.meta.dirname, "icon.ico"), // c1-energy 图标（打包版 exe/安装器图标由 builder 同源嵌入；此处覆盖 dev 模式窗口/任务栏默认图标）
     show: false, // 就绪后再 show：避免白屏期闪现（loadURL 完成回调里显示）
     webPreferences: {
       contextIsolation: true, // 默认值，显式声明（页面 = 纯 Web，无 node 集成）
