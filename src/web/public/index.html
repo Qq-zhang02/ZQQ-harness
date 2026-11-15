@@ -1861,7 +1861,7 @@ const SSE_HANDLERS = {
     c.messages = d.messages;
     c.state = d.state;
     c.turn = (d.state && d.state.turn) || null;
-    if (d.state && d.state.workspace) { wsExpanded.add(normWs(d.state.workspace)); saveExpanded(); }
+    if (d.state && d.state.workspace) { T.wsExpanded.add(normWs(d.state.workspace)); saveExpanded(); }
     if (viewIs(d.sessionId)) { chatStore.set({ state: d.state }); renderHistory(d.messages); syncDrawer(d.state); }
   },
   state(d) { route("state", d, (s) => { chatStore.set({ state: s }); cacheOf(V.viewId).turn = s.turn ?? null; syncDrawer(s); }); },
@@ -1929,7 +1929,7 @@ async function switchSession(id) {
     c.messages = r.data.messages;
     c.state = r.data.state;
     if (V.viewId !== id) return; // 等待期间用户又点了别的会话：丢弃过期快照
-    if (r.data.state && r.data.state.workspace) { wsExpanded.add(normWs(r.data.state.workspace)); saveExpanded(); }
+    if (r.data.state && r.data.state.workspace) { T.wsExpanded.add(normWs(r.data.state.workspace)); saveExpanded(); }
     chatStore.set({ state: r.data.state });
     // 需求三（docs/8 §3.4）：抽屉按新会话快照硬重置（完成审计 + 运行中瞬态），
     // 在 renderHistory 之前——工具块的摘要行随建随取新会话统计；切走期间的
@@ -1975,15 +1975,20 @@ async function refreshSnapshot() {
 }
 
 // ---------- 侧边栏：工作区树（点击选中并展开；工作区与对话均可拖动排序） ----------
-let dragSessionId = null;
-let dragWsId = null;
-const wsExpanded = new Set(JSON.parse(localStorage.getItem("zqq.wsExpanded") || "[]"));
+// tree 区状态仓（docs/26 §2 F2）：拖拽两游标 + 展开集合。wsExpanded 的 localStorage 持久化键照旧
+// （"zqq.wsExpanded"——迁移不得改键名，否则丢用户展开态）；Set 就地增删，读走 T.<field>、写直接操作。
+const treeStore = createStore({
+  dragSessionId: null, // 正在拖动的会话 id
+  dragWsId: null,      // 正在拖动的工作区 id（路径）
+  wsExpanded: new Set(JSON.parse(localStorage.getItem("zqq.wsExpanded") || "[]")),
+}, { trace: TRACE });
+const T = treeStore.get();
 function saveExpanded() {
-  try { localStorage.setItem("zqq.wsExpanded", JSON.stringify([...wsExpanded])); } catch { /* 隐私模式等场景忽略 */ }
+  try { localStorage.setItem("zqq.wsExpanded", JSON.stringify([...T.wsExpanded])); } catch { /* 隐私模式等场景忽略 */ }
 }
 function toggleWs(ws) {
   const k = normWs(ws);
-  if (wsExpanded.has(k)) wsExpanded.delete(k); else wsExpanded.add(k);
+  if (T.wsExpanded.has(k)) T.wsExpanded.delete(k); else T.wsExpanded.add(k);
   saveExpanded();
   renderTree();
 }
@@ -2044,13 +2049,13 @@ function sessionItemNode() {
   it.appendChild(del);
   it.addEventListener("click", () => { void switchSession(it._sid); });
   it.addEventListener("dragstart", (e) => {
-    dragSessionId = it._sid;
+    T.dragSessionId = it._sid;
     it.classList.add("dragging");
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
   });
-  it.addEventListener("dragend", () => { it.classList.remove("dragging"); dragSessionId = null; });
+  it.addEventListener("dragend", () => { it.classList.remove("dragging"); T.dragSessionId = null; });
   it.addEventListener("dragover", (e) => {
-    if (!dragSessionId || dragSessionId === it._sid) return;
+    if (!T.dragSessionId || T.dragSessionId === it._sid) return;
     e.preventDefault();
     e.stopPropagation();
     const rect = it.getBoundingClientRect();
@@ -2064,8 +2069,8 @@ function sessionItemNode() {
     e.stopPropagation();
     const below = it.classList.contains("drop-below");
     it.classList.remove("drop-above", "drop-below");
-    const dragId = dragSessionId;
-    dragSessionId = null;
+    const dragId = T.dragSessionId;
+    T.dragSessionId = null;
     if (!dragId || dragId === it._sid) return;
     const ids = reordered(it._wsItems.map((x) => x.id), dragId, it._sid, below);
     if (!ids) return;
@@ -2117,7 +2122,7 @@ function wsHeadNode() {
     }
     void post("/api/workspace/delete", { path: head._ws }).then((r) => {
       if (!r.ok) { sysLine(r.data.error ?? "删除失败", "err"); return; }
-      wsExpanded.delete(normWs(head._ws));
+      T.wsExpanded.delete(normWs(head._ws));
       saveExpanded();
       PS.recycleOpen = true;
       updateRecycleVis();
@@ -2126,7 +2131,7 @@ function wsHeadNode() {
   });
   head.appendChild(del);
   head.addEventListener("click", () => {
-    wsExpanded.add(normWs(head._ws));
+    T.wsExpanded.add(normWs(head._ws));
     saveExpanded();
     renderTree(); // 立即给展开反馈；切换结果由服务端广播后重渲染（运行中的后台会话不受影响）
     if (normWs(head._ws) !== normWs(C.state.workspace || "")) {
@@ -2134,13 +2139,13 @@ function wsHeadNode() {
     }
   });
   head.addEventListener("dragstart", (e) => {
-    dragWsId = head._ws;
+    T.dragWsId = head._ws;
     head.classList.add("dragging");
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
   });
-  head.addEventListener("dragend", () => { head.classList.remove("dragging"); dragWsId = null; });
+  head.addEventListener("dragend", () => { head.classList.remove("dragging"); T.dragWsId = null; });
   head.addEventListener("dragover", (e) => {
-    if (!dragWsId || normWs(dragWsId) === normWs(head._ws)) return;
+    if (!T.dragWsId || normWs(T.dragWsId) === normWs(head._ws)) return;
     e.preventDefault();
     const rect = head.getBoundingClientRect();
     const below = e.clientY > rect.top + rect.height / 2;
@@ -2152,8 +2157,8 @@ function wsHeadNode() {
     e.preventDefault();
     const below = head.classList.contains("drop-below");
     head.classList.remove("drop-above", "drop-below");
-    const dragId = dragWsId;
-    dragWsId = null;
+    const dragId = T.dragWsId;
+    T.dragWsId = null;
     if (!dragId || normWs(dragId) === normWs(head._ws)) return;
     const ids = reordered(V.lastSessions.groups.map((x) => x.workspace), dragId, head._ws, below);
     if (!ids) return;
@@ -2170,7 +2175,7 @@ function updateWsHead(n, g) {
   n._ws = g.workspace;
   n.classList.toggle("cur", normWs(g.workspace) === normWs(C.state.workspace || ""));
   n.title = g.workspace + "\n（点击选中并展开，拖动排序）";
-  n.querySelector(".chev").textContent = wsExpanded.has(normWs(g.workspace)) ? "▾" : "▸";
+  n.querySelector(".chev").textContent = T.wsExpanded.has(normWs(g.workspace)) ? "▾" : "▸";
   n.querySelector(".wname").textContent = g.workspace.split(/[\\/]/).pop() || g.workspace;
   n.querySelector(".wcount").textContent = String(g.items.length);
 }
@@ -2193,7 +2198,7 @@ function renderTree() {
       key: "box:" + k,
       make: () => el("div", "wsitems"),
       update: (box) => {
-        box.classList.toggle("collapsed", !wsExpanded.has(k));
+        box.classList.toggle("collapsed", !T.wsExpanded.has(k));
         reconcileKeyed(box, (g.items || []).map((s) => ({
           key: "s:" + s.id,
           make: sessionItemNode,

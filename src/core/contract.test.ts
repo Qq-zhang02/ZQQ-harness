@@ -476,6 +476,16 @@ test("哨兵（docs/26 F1 已启用）：index.html 为原生 module 单 script 
   }
 });
 
+test("哨兵（docs/26 F2 已启用）：index.html 顶层裸 let ≤3（状态收敛入五区 store）", () => {
+  const m = html.match(/<script type="module">([\s\S]*?)<\/script>/);
+  assert.ok(m, "index.html 应有 module script（上一哨兵同款前置）");
+  const lets = m[1]!.split("\n").filter((l) => /^let /.test(l));
+  assert.ok(
+    lets.length <= 3,
+    `顶层裸 let 应 ≤3（docs/26 §4 验收：~22→≤3；新状态入对应区 store，快照常量用 const），当前 ${lets.length}：${lets.join(" | ")}`,
+  );
+});
+
 // ---------- 哨兵（docs/25 DT1：桌面壳「不进业务」边界，§8-1 锁法） ----------
 
 test("哨兵（docs/25 DT1 已启用）：desktop/ 壳不进业务——≤2 文件、不 import src/、不碰 /api/ 与用户数据目录", () => {
