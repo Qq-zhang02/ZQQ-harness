@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Agent harness MVP: DeepSeek (OpenAI-compatible) + pwsh tool, workspace-guarded",
+  "main": "desktop/main.mjs",
   "engines": {
     "node": ">=22"
   },
@@ -26,6 +27,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "electron": "^45.3.2",
+    "electron-builder": "^26.18.0",
     "typescript": "^5.6.0"
   }
 }

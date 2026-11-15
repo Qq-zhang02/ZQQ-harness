@@ -49,10 +49,14 @@ async function start() {
     },
     stdio: ["pipe", "pipe", "pipe"], // stdin 管道 = 父死亡感知通道（关窗即优雅停机）
   });
-  // 服务日志逐行转发（打包版无控制台也有 stderr 可收集；dev 下直接可见——docs/25 §10 主信息源）
-  for (const stream of [child.stdout, child.stderr]) {
-    stream.on("data", (c) => process.stdout.write("[svc] " + String(c)));
-  }
+  // 服务日志逐行转发（dev 下直接可见——docs/25 §10 主信息源）。打包版从图标启动时本进程
+  // 无控制台（GUI 子系统），process.stdout 是无效句柄——写失败只丢转发，绝不能炸主进程。
+  const fwd = (c) => {
+    try {
+      process.stdout.write("[svc] " + String(c));
+    } catch { /* 无控制台：静默丢弃（加 --enable-logging 可见） */ }
+  };
+  for (const stream of [child.stdout, child.stderr]) stream.on("data", fwd);
 
   const port = await waitForReady(child);
   if (!port) {

@@ -1,0 +1,30 @@
+# electron-builder 配置（docs/25 §6-DT2/§7）：win 双产物（nsis 安装器 + portable 便携版）。
+# asar: false —— ELECTRON_RUN_AS_NODE 子进程加载 .ts 模块与 koffi DLL 定位走真实文件最稳
+#        （§4.2 决策：本地工具无代码保密需求；后续开 asar 需完整回归冒烟）。
+# files：业务三目录 + package.json；node_modules 生产依赖（openai/koffi）由 builder 自动
+#        裁剪进包（devDependencies 不进）；koffi 的 win32 平台包是 optionalDependencies，
+#        打包后必须核对 DLL 在包内（§7 备忘：builder 重装可能漏 optional）。
+appId: com.zqq.harness
+productName: ZQQ-harness
+directories:
+  output: dist
+asar: false
+files:
+  - "src/**/*"
+  - "!src/**/*.test.ts" # 测试与冒烟不进包（web-static 只注册非 .test.js）
+  - "!src/**/*.test.js"
+  - "desktop/**/*"
+  - "assets/**/*" # deepseek_v4_tokenizer 数据（tokens.ts BPE 加载）
+  - "package.json"
+  - "!.zcode/**"
+win:
+  target:
+    - nsis
+    - portable
+  # icon.ico 暂缺（docs/25 DT1 偏差记录）：用 builder 默认图标；后续补 desktop/icon.ico 后此处指向
+nsis:
+  artifactName: "ZQQ-harness-Setup-${version}.${ext}"
+  oneClick: true # 个人工具：一键按用户安装（不写 Program Files、无需管理员）
+portable:
+  artifactName: "ZQQ-harness-${version}-portable.${ext}"
+# 卸载不清档：用户数据在 ~/.ZQQ-harness（数据与程序分离，docs/25 §6-DT2 设计决定）——无需配置
