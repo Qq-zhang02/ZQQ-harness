@@ -5,11 +5,12 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **8 个系统�
 ## 维护导航（新对话/新协作者先读）
 
 - **架构体检与改进路线**：[docs/21_开发文档-架构可维护性审计与参数化改进.md](docs/21_开发文档-架构可维护性审计与参数化改进.md)——2026-11-14 全项目审计基线，含**硬编码参数全清单（P0–P3 分级）**、参数间矛盾、分阶段实施路线图（§4）与不变量清单（§5）。**阶段 A（P0）8/8、阶段 B 第一批（P1 8 键）与第二批（后 9 键，25→34 键收官）、阶段 C（P2 常量收敛+协议解耦+前端 CFG/XSS）、阶段 D1（subagents.ts 拆五文件）、D2（config initConfig 显式装载）、D3 首块（renderTree keyed 更新）均已完成**（实施记录见文档头部）；D3 其余重灌点已并入前端优化路线（[docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) F3）。改参数/改架构前先看它。
-- **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（51 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
+- **五分钟建立全局感**（docs/21 §6 有完整版）：`src/modules.ts`（54 行产品全貌）→ `src/core/context.ts` + `core/types.ts`（扩展点形状）→ `src/config.ts`（全部运行参数生效值唯一出处）→ `src/agent.ts`（Agent 循环）→ `src/web/server.ts`（bootstrap 瘦壳）。
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
-- **当前进行中**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）统一路线——全部收官**。①地基（DT0+F1）②桌面形态（DT1 薄壳 + DT2 打包）③质量渐进（F2 store 化；F3 keyed 收官）④F4 大分区拆文件（index.html 2,906→473 行，视图七模块无环分层）⑤**DT3 桌面增强已完成**（审批通知/开机自启/托盘常驻/休眠恢复，四项独立 commit，详见 [docs/25](docs/25_开发文档-桌面端版本方案.md) 头部实施记录）。前端「运行阈值」设置入口见 [docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)。路线内无遗留开发项；后续新工作另立文档。
-- **最新一轮**（[docs/28](docs/28_开发文档-会话切换性能与子代理过程流实时化.md)，2026-11-16 收官）：**切换/新建对话性能**（会话元数据内存缓存 + MCP 连接后台装配 + 空占位就地换绑）与**子代理过程流实时化**（worker 思考/文字 ~120ms 合并流 + 工具块折叠行摘要〔pwsh=description、读写编辑=文件名〕与展开体〔write 只显示内容、edit 红绿 diff〕，主对话与抽屉同款）。
+- **前端与桌面统一路线（已全部收官）**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）**。①地基（DT0+F1）②桌面形态（DT1 薄壳 + DT2 打包）③质量渐进（F2 store 化；F3 keyed 收官）④F4 大分区拆文件（index.html 2,906→473 行，视图七模块无环分层）⑤**DT3 桌面增强已完成**（审批通知/开机自启/托盘常驻/休眠恢复，四项独立 commit，详见 [docs/25](docs/25_开发文档-桌面端版本方案.md) 头部实施记录）。前端「运行阈值」设置入口见 [docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)。路线内无遗留开发项；后续新工作另立文档。
+- **最新一轮**（[docs/28](docs/28_开发文档-会话切换性能与子代理过程流实时化.md)，随 v0.3.0 发布）：**切换/新建对话性能**（会话元数据内存缓存 + MCP 连接后台装配 + 空占位就地换绑）与**子代理过程流实时化**（worker 思考/文字 ~120ms 合并流 + 工具块折叠行摘要〔pwsh=description、读写编辑=文件名〕与展开体〔write 只显示内容、edit 红绿 diff〕，主对话与抽屉同款）。
+- **打包与冒烟速查**：[docs/27](docs/27_操作手册-桌面端打包与冒烟.md)——给自己看的操作手册（照抄命令即可）：预检三件套（typecheck + test + smoke:sa4）→ 双镜像 electron-builder 打包 → 打包版验收清单与常见坑速查。改版本号发版走这条线（v0.3.1 即按此流程）。
 
 ## 快速开始
 
@@ -27,7 +28,7 @@ npm run desktop           # 桌面版（Electron 薄壳，docs/25 DT1）：独�
 - **服务默认只监听 `127.0.0.1`（本机）**，局域网不可达（docs/25 DT0）；确需局域网访问设 `ZQQ_HOST=0.0.0.0` 再启动（自担风险——服务暴露会话数据与 API key 操作面）。`PORT=0` 为随机端口，启动首行 stdout 打印 `ZQQ-READY <端口>` 握手行（供桌面壳解析，浏览器模式忽略无害）；关停支持 Ctrl+C 与 stdin 关闭（父进程退出联动）
 - **用户级调整**：不改源码即可启停模块、覆盖运行阈值——在 Web UI 顶栏 **⚙** 可视化编辑（保存即热应用，见[用户级配置](#用户级配置-harnessjson-与外部模块)），或直接改 `~/.ZQQ-harness/harness.json`（支持注释，重启生效）
 
-**一键启动**：双击项目根目录的 `start-zqq.bat`（纯 ASCII；bat 含中文会被 GBK 解析撕裂）或桌面快捷方式"ZQQ-harness"，自动起服务并打开浏览器；关闭时直接关掉那个控制台窗口。
+**一键启动**：双击项目根目录的 `start-zqq.bat`（浏览器版，纯 ASCII；bat 含中文会被 GBK 解析撕裂）或 `start-zqq-desktop.bat`（桌面版，等价 `npm run desktop`），或桌面快捷方式"ZQQ-harness"，自动起服务并打开窗口/浏览器；关闭时直接关掉那个控制台窗口。
 
 **API key**：提供方连接信息统一存放在 `~/.ZQQ-harness/providers.json`（含 key）。首次启动且该文件不存在时，自动从环境变量 `DEEPSEEK_API_KEY` → `C:\Users\<用户>\.ZQQ-harness\.credentials.yaml`（规范位置，`DEEPSEEK_API_KEY: sk-xxx`）→ 启动目录/工作区根的旧位置迁移，并填好 DeepSeek 提供方（https://api.deepseek.com + `deepseek-flash` + 思考高；`DEEPSEEK_MODEL`/`DEEPSEEK_MAX_TOKENS`/`DEEPSEEK_CONTEXT_LENGTH` 环境变量同样只在这次迁移时读取）。**之后一律以 providers.json 为准**，在界面"提供方管理"里增删改。
 
@@ -262,7 +263,7 @@ description: 为本项目生成规范的 git 提交信息
 
 ```
 src/
-├── modules.ts            BUILTIN_MODULES 组合清单（产品=这张表，20 个模块）
+├── modules.ts            BUILTIN_MODULES 组合清单（产品=这张表，21 个模块）
 ├── core/                 零依赖内核
 │   ├── registry.ts       Registry<T, K>：按键注册/注销，重复注册抛错
 │   ├── context.ts        HarnessContext：7 张注册表 + 路径 + sessionHost 接缝
@@ -320,8 +321,9 @@ src/
 ├── tools/registry.ts     会话工具注册表（错误回传 + 统一修剪 executeWithMeta）
 ├── tools/prune.ts        头部保留修剪 + 触发即全文落盘（spill，docs/10）
 └── web/
-    ├── server.ts         瘦壳（≤250 行哨兵）：bootstrap 装配（harness.json 模块过滤 +
-    │                     外部模块装载）+ 静态页 + SSE + /api/meta + 路由查表分发
+    ├── server.ts         瘦壳（≤278 行哨兵：DT0 250→270；2026-11-16 真机回归 270→278——
+    │                     WinNAT 端口回退属监听生命周期，合法进壳）：bootstrap 装配
+    │                     （harness.json 模块过滤 + 外部模块装载）+ 静态页 + SSE + /api/meta + 路由查表分发
     ├── session-runtime.ts    每会话装配（工具按 kind 分流实例化/MCP 重连/审批串行接缝/
     │                     状态快照/子代理服务注入与存档恢复）
     ├── session-lifecycle.ts  工作区绑定/视图切换/存档（kind/subagents 审计随档）/
@@ -351,10 +353,12 @@ src/
                           前端 npm 依赖，模块间 import 一律相对路径——docs/26 F4 不变量）：
         ├── index.html    骨架 + CSS + 单外链 /app/main.js（≤500 行哨兵锁定；
         │                 F4 前视图代码全在此内联，2,906 行 → 473 行）
-        └── app/          ① 纯逻辑四模块（node:test 直测 + checkJs 严检；零依赖、
+        └── app/          ① 纯逻辑五模块（node:test 直测 + checkJs 严检；零依赖、
             │             禁 DOM——哨兵锁定）：replay.js（事件路由/缓冲过滤/乒乓防护）、
             │             turns.js（轮分组/折叠决策）、autoreport.js（送达解析/格式化）、
-            │             store.js（手写状态仓 get/set/subscribe + 微任务合并 flush）
+            │             store.js（手写状态仓 get/set/subscribe + 微任务合并 flush）、
+            │             toolinfo.js（工具块展示信息：折叠行摘要与展开体片段，
+            │             主对话/时间线共用，docs/28）
             └② 视图七模块（docs/26 F4 大分区，无环分层 dom→state→{drawer,sidebar}→
                           chat→modals→main 入口；import 图经 tsconfig.frontend-view.json
                           检查）：dom.js（el/esc/mdLite/滚动/keyed/post）、state.js
@@ -387,7 +391,7 @@ scripts/
 
 ```bash
 npm run typecheck        # tsc 类型检查（noEmit，直接 node 跑 TS）
-npm test                 # node:test 单元测试 402 项（含契约测试/哨兵与沙箱真实执行测试，需 Windows + pwsh；**显式文件清单**——新增测试文件须同步登记 package.json）
+npm test                 # node:test 单元测试 465 项（含契约测试/哨兵与沙箱真实执行测试，需 Windows + pwsh；**显式文件清单**——新增测试文件须同步登记 package.json）
 npm run smoke            # 真实 API 冒烟：连通性 / 工具闭环 / 审批拒绝（消耗少量 token）
 npm run smoke:anthropic  # anthropic 路线冒烟：多轮工具 + 思考存档/回放（消耗少量 token）
 npm run smoke:subagent   # 子代理机制冒烟：真实装配 + 非阻塞派发 + worker 工具循环 + 审批标注（零 token）
@@ -427,6 +431,7 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `25_开发文档-桌面端版本方案.md`——桌面端版本方案（**DT0–DT3 已全部实施**，头部含实施记录）：2026-11-15 架构复审评级 + 三档路线（L0 现状 bat / L1 Edge 应用模式 / L2 Electron 薄壳推荐）+ 服务端就绪化（DT0：127.0.0.1 绑定/动态端口握手/优雅停机）+ 壳落地与打包分发（DT1–DT3）+ 维护纪律（壳不进业务、双入口回归、Electron 升级核对单）
 - `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**实施顺序以此为准；F1–F4 已全部实施**，头部含实施记录）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化（app/store.js 手写状态仓 + ~22 顶层变量五区迁仓 + applyState 订阅化）→ F3 渲染 keyed 收官（抽屉列表/回收站/提供方列表三点 + renderHistory/makeTimeline 豁免及其依据）→ F4 大分区拆文件（视图七模块无环分层 + index.html 骨架化 ≤500 行 + 不变量正式修订）+ 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
 - `27_操作手册-桌面端打包与冒烟.md`——**给自己看的速查手册**（照抄命令即可，原理看 25/26）：dist/ 里每个产物是什么/怎么用（Setup/portable/win-unpacked/blockmap）、重建安装包完整命令（PS 与 Git Bash 双写法+双镜像原因）、三层冒烟法（自动测试→开发模式人工看→打包版实测清单）、静默装/卸、常见坑速查表（exit 3/卡下载/哨兵红/新模块 404）
+- `28_开发文档-会话切换性能与子代理过程流实时化.md`——切换/新建对话性能（会话元数据内存缓存、MCP 连接后台装配、空占位就地换绑）+ 子代理过程流实时化（worker 思考/文字增量 ~120ms 合并流、工具块折叠行摘要与展开体分流〔write 只显内容 / edit 红绿 diff〕，主对话与抽屉同款）+ v0.2.0 真机回归修复记录
 
 ## 已知限制
 
