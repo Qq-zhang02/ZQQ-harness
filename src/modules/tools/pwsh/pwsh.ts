@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { checkCommandAgainstWorkspace, isReadOnlyPwshCommand, pathHintsOutsideScope } from "../../../workspace.ts";
 import { DEFAULTS, ESCALATION_MAX, PWSH_CAPTURE_MAX_BYTES } from "../../../config.ts";
 import type { Tool, ToolContext } from "../../../tools/registry.ts";
+import type { SystemToolDeps } from "../../../core/types.ts";
 import { getSandboxRunner } from "../../../sandbox/runner.ts";
 import type { SandboxMode, SandboxPolicy } from "../../../sandbox/types.ts";
 import type { ApprovalDecision } from "../../../approval/types.ts";
@@ -124,8 +125,10 @@ function refusalText(decision: ApprovalDecision): string {
 
 /** 提供给模型的 pwsh 工具：带命令摘要（description）、守卫提示与审批/沙箱模式裁决。
  *  每会话实例化一份（SystemToolDef.create()）：升级额度是会话内状态，多会话互不影响。
+ *  docs/30：沙箱模式/逐条确认经 deps **live 读**会话设置（ctx 快照仅作无 deps 测试桩的
+ *  回退）——运行中改权限，本命令的裁决就用新值；审批卡「解除沙箱并放行」对本条立即生效。
  *  系统提示的"可用工具"行文案由模块 index.ts 的 SystemToolDef.summary 声明，不在此处。 */
-export function createPwshTool(): Tool {
+export function createPwshTool(deps?: SystemToolDeps): Tool {
   let escalationCredits = 0;
 
   /** 沙箱后端可用时的受限执行；工作区外写入被 OS 拒绝时回传拒绝事实 + 原样 stderr + 升级提示。 */
@@ -136,7 +139,12 @@ export function createPwshTool(): Tool {
   ): Promise<string> {
     const runner = getSandboxRunner();
     const r = await runner.run(command, policy, opts);
-    const denied = r.code !== 0 && /is denied|拒绝访问|访问被拒/i.test(r.stderr);
+    // 拒绝识别只看 stderr，不设 exit-code 门槛（真机回归 docs/30 §5）：Remove-Item 等
+    // 非终止性错误后脚本继续执行（Test-Path/Write-Output），pwsh 整体 exit 0——按旧口径
+    // （code!==0 且 stderr 命中）这类拒绝完全漏检：不打 [sandbox:] 标、不攒升级额度，
+    // 模型带 justification 重试被静默忽略，永远走不到人工审批。误攒成本可控：额度只在
+    // 模型随后真的带 justification 时消费（每次 -1），且有 8 点/会话上限。
+    const denied = /is denied|拒绝访问|访问被拒/i.test(r.stderr);
     if (!denied) return formatResult({ ...r, spawnError: undefined });
     escalationCredits = Math.min(escalationCredits + 1, ESCALATION_MAX);
     return (
@@ -188,7 +196,9 @@ export function createPwshTool(): Tool {
 
       // 守卫（提示层，永远跑）：产出 reasons 喂给审批卡，不再承担放行/拦截裁决
       const check = checkCommandAgainstWorkspace(command, ctx.workspace.root);
-      const mode: SandboxMode = ctx.sandboxMode ?? "workspace-write";
+      // docs/30：沙箱模式 live 读（deps 会话闭包；无 deps 的测试桩回退 ctx 快照）——每个
+      // 裁决点各读一次，运行中改模式/审批卡上切模式，裁决与执行就用当下生效值
+      const modeOf = (): SandboxMode => deps?.sandboxMode() ?? (ctx.sandboxMode ?? "workspace-write");
       // 子代理 scope 越界（docs/5 §5.4）：文件级硬约束的 pwsh 侧补丁——守卫检测到引用
       // scope 外路径时强制弹卡（任何沙箱模式都弹，含 danger-full-access），由用户裁决。
       // 检测是启发式（与 checkCommandAgainstWorkspace 同族），如实标注为诚实边界。
@@ -223,16 +233,17 @@ export function createPwshTool(): Tool {
         });
 
       // 逐条确认（任何模式）或 scope 越界（§5.4 强制）：先弹卡过人工——批准的是命令本身，
-      // 执行仍按当前沙箱模式（全开放=无约束执行；受约束模式=走下方受限执行，区外写入仍被 OS 拒绝走升级链路）
-      if (ctx.alwaysConfirm || scopeReasons.length > 0) {
+      // 执行按批准时刻的沙箱模式（live 重读：卡上点「解除沙箱并放行」本条即无约束执行；
+      // 受约束模式=走下方受限执行，区外写入仍被 OS 拒绝走升级链路）
+      if ((deps ? deps.alwaysConfirm() : ctx.alwaysConfirm === true) || scopeReasons.length > 0) {
         const decision = await askApproval(approvalReasons);
         if (decision !== "allowed-once") return refusalText(decision);
-        if (mode === "danger-full-access") {
+        if (modeOf() === "danger-full-access") {
           return await runPwsh(command, { cwd: ctx.workspace.root, timeoutMs, signal: ctx.signal });
         }
       }
 
-      if (mode === "danger-full-access") {
+      if (modeOf() === "danger-full-access") {
         // 完全不约束（用户明示）：未开逐条确认时不弹卡
         return await runPwsh(command, { cwd: ctx.workspace.root, timeoutMs, signal: ctx.signal });
       }
@@ -241,7 +252,7 @@ export function createPwshTool(): Tool {
       const runner = getSandboxRunner();
       if (!runner.available()) {
         return (
-          `SANDBOX_UNAVAILABLE：当前平台没有可用的沙箱后端，无法保证 ${MODE_LABEL[mode]} 约束。已拒绝执行。\n` +
+          `SANDBOX_UNAVAILABLE：当前平台没有可用的沙箱后端，无法保证 ${MODE_LABEL[modeOf()]} 约束。已拒绝执行。\n` +
           "可选：请用户把沙箱模式切换到 danger-full-access（无约束，守卫+审批照常工作），或在设置中启用沙箱后端。"
         );
       }
@@ -257,11 +268,21 @@ export function createPwshTool(): Tool {
         return await runPwsh(command, { cwd: ctx.workspace.root, timeoutMs, signal: ctx.signal });
       }
 
-      return await runSandboxed(
+      const out = await runSandboxed(
         command,
-        { mode, workspaceRoot: ctx.workspace.root, ...(ctx.privateTempDir ? { privateTempDir: ctx.privateTempDir } : {}) },
+        { mode: modeOf(), workspaceRoot: ctx.workspace.root, ...(ctx.privateTempDir ? { privateTempDir: ctx.privateTempDir } : {}) },
         { timeoutMs, signal: ctx.signal },
       );
+      // justification 带了但入口时额度为 0（额度由真实拒绝攒出）——此前静默忽略，模型与
+      // 用户都不知道提权没发生（真机实录：删除命令连试多次全败却无一卡）。给一句明示：
+      // 刚被拒（本拒绝攒出 1 点）→ 指引立即带 justification 重试即可弹卡；未被拒 → 说明无需提权。
+      if (justification) {
+        const hint = escalationCredits > 0
+          ? "（本次 justification 未生效：申请时升级额度为 0；该命令刚被沙箱拒绝、现已攒出 1 点额度——下一次调用带 justification 重试即可转人工审批。）"
+          : "（本次 justification 未生效：升级额度为 0，且本命令并未被沙箱拒绝——无需提权，请直接使用以上结果。）";
+        return out + "\n" + hint;
+      }
+      return out;
     },
   };
 }

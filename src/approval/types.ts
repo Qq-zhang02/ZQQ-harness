@@ -33,15 +33,17 @@ export function normalizeDecision(raw: unknown): ApprovalDecision {
     : "unavailable";
 }
 
-/** 会话审批策略：ask=正常弹卡；never=无人值守/CI（连审批卡都不弹，直接 unavailable）。 */
-export type AskMode = "ask" | "never";
+/** 会话审批策略：ask=正常弹卡；auto=自动放行（docs/30：普通拦截卡不弹直接 allowed-once，
+ *  justification 提权卡仍弹人工——防模型自我升权）；never=无人值守/CI（连审批卡都不弹，直接 unavailable）。 */
+export type AskMode = "ask" | "auto" | "never";
 
-/** 归一化会话审批策略：只有显式 "never" 生效，其余（缺省/野值）回默认 ask。 */
+/** 归一化会话审批策略：显式 "never"/"auto" 生效，其余（缺省/野值）回默认 ask。 */
 export function normalizeAskMode(raw: unknown): AskMode {
-  return raw === "never" ? "never" : "ask";
+  return raw === "never" ? "never" : raw === "auto" ? "auto" : "ask";
 }
 
-/** 会话策略闸门：never（无人值守）不弹卡直接 unavailable；ask 时透传给真正的审批服务。 */
+/** 会话策略闸门：never（无人值守）不弹卡直接 unavailable；ask/auto 透传给真正的审批服务
+ *  （auto 的不弹卡短路在运行时层 askOnce——审计要记 auto 放行事件，词汇层拿不到审计数组）。 */
 export async function askWithMode(
   askMode: AskMode,
   req: ApprovalRequest,
@@ -68,6 +70,8 @@ export interface AuditEvent {
   subagent?: string;
   /** 仅 decided 事件有 */
   decision?: ApprovalDecision;
+  /** 仅 decided 事件有：auto 策略自动放行（未弹卡，docs/30）——审计形状与人工决议一致，靠本标注区分 */
+  auto?: boolean;
 }
 
 /** 下一个审计序号（空会话从 1 开始）。 */
@@ -89,12 +93,13 @@ export function auditAsked(events: AuditEvent[], req: ApprovalRequest, at = new 
   };
 }
 
-/** 构造 approval/decided 事件（决议时写）。 */
+/** 构造 approval/decided 事件（决议时写）。auto=true 表示 auto 策略未弹卡的自动放行（docs/30）。 */
 export function auditDecided(
   events: AuditEvent[],
   req: ApprovalRequest,
   decision: ApprovalDecision,
   at = new Date().toISOString(),
+  opts?: { auto?: boolean },
 ): AuditEvent {
   return {
     seq: nextAuditSeq(events),
@@ -105,6 +110,7 @@ export function auditDecided(
     reasons: req.reasons,
     ...(req.subagent ? { subagent: req.subagent } : {}),
     decision,
+    ...(opts?.auto ? { auto: true } : {}),
   };
 }
 

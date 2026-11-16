@@ -329,10 +329,11 @@
       <button class="badge badgebtn hidden" id="subDrwBtn" title="子代理抽屉：列表/详情两视图（运行中实时过程与完成后回看）">🤖 子代理</button>
       <button class="badge badgebtn" id="modelBadge" title="管理提供方（点击打开）">…</button>
       <button class="badge badgebtn" id="settingsBadge" title="运行阈值设置（harness.json）：分组说明/范围/默认值均由服务端下发，保存即热生效">⚙</button>
-        <label class="switch" title="审批策略（按当前对话记录）：正常=敏感操作弹审批卡；逐条确认=所有命令与写入都弹卡；无人值守=不弹卡直接拒绝（挂机/CI）">
+        <label class="switch" title="审批策略（按当前对话记录）：正常=敏感操作弹审批卡；逐条确认=所有命令与写入都弹卡；自动放行=拦截卡自动批准不弹（提权卡仍弹人工）；无人值守=不弹卡直接拒绝（挂机/CI）">
           <select id="confirmSelect">
             <option value="ask">🛡 正常审批</option>
             <option value="confirm">🛡 逐条确认</option>
+            <option value="auto">🛡 自动放行</option>
             <option value="never">🛡 无人值守</option>
           </select>
         </label>
@@ -364,7 +365,9 @@
             <ul id="aReasons"></ul>
             <div class="arow">
               <button class="btn danger" id="aNo">拒绝</button>
+              <button class="btn hidden" id="aFull" title="放行本条并把本会话沙箱切到全开放（无约束）——区外命令从此真能执行">🔓 解除沙箱并放行</button>
               <button class="btn primary" id="aYes">允许一次</button>
+              <button class="btn primary hidden" id="aAlways" title="放行本条并把本会话审批策略切到自动放行——后续拦截卡自动批准（提权卡仍会弹）">允许并不再询问</button>
             </div>
           </div>
         </div>

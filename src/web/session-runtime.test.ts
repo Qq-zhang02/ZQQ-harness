@@ -387,6 +387,40 @@ test("审批串行队列：signal 已中止时排队请求立即 cancelled，不
   rmSync(h.dir, { recursive: true, force: true });
 });
 
+// ---------- docs/30：auto 自动放行（askOnce 短路不弹卡）与审批策略 live 读 ----------
+
+test("auto 自动放行：普通卡不弹直接 allowed-once，审计记 asked+decided(auto:true)；策略切换即生效（live 读）", async () => {
+  const h = approvalHarness();
+  const p1 = h.ask({ toolName: "t1", command: "cmd-1", reasons: [] }); // ask 模式：正常弹卡
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(h.rt.pendingApproval, "ask 模式先正常弹卡");
+  h.settle("rejected");
+  assert.equal(await p1, "rejected");
+  h.rt.settings.askMode = "auto"; // 运行中切换（docs/30）：下一次 ask 即生效
+  const r2 = await h.ask({ toolName: "t2", command: "cmd-2", reasons: [] });
+  assert.equal(r2, "allowed-once");
+  assert.equal(h.rt.pendingApproval, null, "auto 短路不占单槽（无卡在等）");
+  const decided = h.rt.auditEvents.filter((e) => e.type === "approval/decided");
+  const autoEvent = decided[decided.length - 1]!;
+  assert.equal(autoEvent.decision, "allowed-once");
+  assert.equal(autoEvent.auto, true, "审计带 auto 标注");
+  assert.equal(h.rt.auditEvents.filter((e) => e.type === "approval/asked").length, 2, "审计形状一致（auto 也记 asked+decided 对）");
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test("auto + justification 提权卡不短路：照常弹卡由人工决议（模型自我升权保留人工关口）", async () => {
+  const h = approvalHarness();
+  h.rt.settings.askMode = "auto";
+  const p = h.ask({ toolName: "run_pwsh", command: "cmd", reasons: ["上一条命令刚被沙箱拒绝"], justification: "需要写工作区外配置" });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(h.rt.pendingApproval, "提权卡仍弹出");
+  h.settle("allowed-once");
+  assert.equal(await p, "allowed-once");
+  const last = h.rt.auditEvents[h.rt.auditEvents.length - 1]!;
+  assert.ok(!("auto" in last), "人工决议不带 auto 标注");
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
 // ---------- P1：审批卡挂起死锁修复（docs/6 §1，doAsk 的 abort 监听） ----------
 
 test("P1 abort 解锁：正在等的卡随 signal abort 立即 resolved cancelled（无需手动决议），排队后卡快速排空", async () => {

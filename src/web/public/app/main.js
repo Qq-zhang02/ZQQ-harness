@@ -46,6 +46,9 @@ function showApprovalCard(d) {
   just.classList.toggle("hidden", !d.justification);
   $("#aCmd").textContent = d.command;
   $("#aReasons").innerHTML = (d.reasons || []).map((r) => "<li>" + esc(r) + "</li>").join("");
+  // docs/30：权限更改按钮按会话当前状态显隐——已是全开放/自动放行时对应按钮无意义，藏
+  $("#aFull").classList.toggle("hidden", C.state.sandboxMode === "danger-full-access");
+  $("#aAlways").classList.toggle("hidden", C.state.askMode === "auto");
   $("#approval").classList.remove("hidden");
   autoscroll(chat);
   notifyApproval(d);
@@ -193,7 +196,7 @@ const COMMANDS = new Map([
         "模型 " + C.state.model + " · 工作区 " + (C.state.workspace || "未选择") +
         " · 形态" + (C.state.kind === "coordinator" ? "协调者（仅派子代理）" : "普通") +
         " · 思考" + (C.state.effort === "default" ? "默认" : C.state.effort) +
-        " · 审批" + (C.state.askMode === "never" ? "无人值守" : C.state.alwaysConfirm ? "逐条确认" : "正常") +
+        " · 审批" + (C.state.askMode === "never" ? "无人值守" : C.state.askMode === "auto" ? "自动放行" : C.state.alwaysConfirm ? "逐条确认" : "正常") +
         " · 沙箱" + sandboxLabel(C.state.sandboxMode) +
         " · MCP " + (C.state.mcpServers && C.state.mcpServers.length ? C.state.mcpServers.join("、") : "未配置") +
         " · 技能 " + (C.state.skills && C.state.skills.length ? C.state.skills.join("、") : "未配置"),
@@ -336,24 +339,31 @@ function autosize() { input.style.height = "auto"; input.style.height = Math.min
 input.addEventListener("input", autosize);
 
 // ---------- 批准 ----------
-function answerApproval(decision) {
+// docs/30：apply（可选）= 随决议原子应用的权限补丁——服务端在 settle 前应用（排队的
+// 并行 worker 后卡立即见新模式），state 广播后下拉/按钮显隐自动同步。
+function answerApproval(decision, apply) {
   $("#approval").classList.add("hidden");
   const c = cacheOf(V.viewId);
   c.approval = false;
   c.buf = c.buf.filter((x) => x.ev !== "approval"); // 已决议的卡不再随缓冲重放
-  void post("/api/approval", { decision, sessionId: V.viewId });
+  void post("/api/approval", { decision, ...(apply ? { apply } : {}), sessionId: V.viewId });
 }
-$("#aYes").addEventListener("click", () => answerApproval("allowed-once"));
 $("#aNo").addEventListener("click", () => answerApproval("rejected"));
+$("#aYes").addEventListener("click", () => answerApproval("allowed-once"));
+$("#aFull").addEventListener("click", () => answerApproval("allowed-once", { sandboxMode: "danger-full-access" }));
+$("#aAlways").addEventListener("click", () => answerApproval("allowed-once", { askMode: "auto", alwaysConfirm: false }));
 
 // ---------- 设置 ----------
-// 审批策略按当前对话记录：正常=敏感操作弹卡；逐条确认=所有命令与写入都弹卡；无人值守=不弹卡直接拒绝
+// 审批策略按当前对话记录：正常=敏感操作弹卡；逐条确认=所有命令与写入都弹卡；
+// 自动放行=拦截卡自动批准不弹（提权卡仍弹人工，docs/30）；无人值守=不弹卡直接拒绝。
+// 运行中也可切换（docs/30：服务端 busy 放行权限三键，live 读下一命令即生效）。
 $("#confirmSelect").addEventListener("change", async (e) => {
   const v = e.target.value;
   const body = v === "never" ? { askMode: "never", alwaysConfirm: false }
     : v === "confirm" ? { askMode: "ask", alwaysConfirm: true }
+    : v === "auto" ? { askMode: "auto", alwaysConfirm: false }
     : { askMode: "ask", alwaysConfirm: false };
-  const prev = C.state.askMode === "never" ? "never" : C.state.alwaysConfirm ? "confirm" : "ask";
+  const prev = C.state.askMode === "never" ? "never" : C.state.askMode === "auto" ? "auto" : C.state.alwaysConfirm ? "confirm" : "ask";
   const r = await post("/api/settings", body);
   if (!r.ok) {
     sysLine(r.data.error ?? "设置失败", "err");
@@ -369,7 +379,7 @@ $("#effortSelect").addEventListener("change", async (e) => {
     e.target.value = prev;
   }
 });
-// 沙箱模式按当前对话记录：受约束模式在无后端时 fail-closed（命令返回 SANDBOX_UNAVAILABLE）
+// 沙箱模式按当前对话记录：受约束模式在无后端时 fail-closed（命令返回 SANDBOX_UNAVAILABLE）；运行中也可切换（docs/30，工具 live 读下一命令即生效）
 $("#sandboxSelect").addEventListener("change", async (e) => {
   const prev = C.state.sandboxMode;
   const r = await post("/api/settings", { sandboxMode: e.target.value });

@@ -7,10 +7,12 @@ import { COMPACTION_PRESSURE } from "../config.ts";
 import type { CompactOutcome } from "../compaction.ts";
 import type { ChatImage, ChatMessage } from "../llm/provider.ts";
 import { createWorkspace, readAgentsMd } from "../workspace.ts";
+import { normalizeAskMode } from "../approval/types.ts";
+import { normalizeSandboxMode } from "../sandbox/types.ts";
 import { rememberWorkspace } from "./workspaces.ts";
 import { AUTO_DELIVERY_PREFIXES, SSE_EVENTS } from "../core/events.ts";
 import type { SessionData } from "./sessions.ts";
-import type { SessionsPayload, SessionRuntime } from "../core/host.ts";
+import type { SessionHost, SessionsPayload, SessionRuntime } from "../core/host.ts";
 import {
   applyMcpInBackground,
   busyIds,
@@ -58,6 +60,29 @@ export function persistSession(sh: SessionShell, rt: SessionRuntime | undefined)
   if (!firstUser || !firstUser.content) return;
   sh.sessions.save(toSessionData(rt, firstUser.content.slice(0, SESSION_TITLE_MAX), msgs));
   sh.broadcast(SSE_EVENTS.sessions, sessionsPayload(sh));
+}
+
+/**
+ * 权限三键补丁的唯一应用口（docs/30）：审批卡「允许并不再询问 / 解除沙箱并放行」的
+ * apply 补丁与 /api/settings 的权限键共用。白名单 askMode / alwaysConfirm / sandboxMode，
+ * 值逐键归一化（野值忽略该键，不整包拒绝——审批卡流不因脏键失败）；沙箱键随
+ * rt.agent.setSandboxMode 热更（pwsh/文件工具 live 读 deps，下一命令即生效，同轮内也算）。
+ * busy 时跳过落盘：轮结束的自动存档会带上（运行中落盘可能捕到悬空 tool_calls 的半截
+ * 历史）；空闲时立即落盘。收尾广播 state——顶栏下拉与审批卡按钮显隐随新值同步。
+ */
+export function applyPermissionPatch(host: SessionHost, rt: SessionRuntime, patch: unknown): void {
+  const p = (typeof patch === "object" && patch !== null ? patch : {}) as Record<string, unknown>;
+  if (p.askMode === "ask" || p.askMode === "auto" || p.askMode === "never") {
+    rt.settings.askMode = normalizeAskMode(p.askMode);
+  }
+  if (typeof p.alwaysConfirm === "boolean") rt.settings.alwaysConfirm = p.alwaysConfirm;
+  const sandboxMode = normalizeSandboxMode(p.sandboxMode);
+  if (sandboxMode === p.sandboxMode) {
+    rt.settings.sandboxMode = sandboxMode;
+    rt.agent.setSandboxMode(sandboxMode);
+  }
+  if (!rt.busy) host.persistSession(rt);
+  host.broadcast(SSE_EVENTS.state, host.currentState(rt));
 }
 
 export function sessionsPayload(sh: SessionShell): SessionsPayload {

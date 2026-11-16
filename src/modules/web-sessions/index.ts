@@ -7,11 +7,9 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { COMPACTION_MANUAL_KEEP_TOKENS, IMAGE_RULES } from "../../config.ts";
 import { normalizeEffort } from "../../providers/store.ts";
-import { normalizeAskMode } from "../../approval/types.ts";
-import { normalizeSandboxMode } from "../../sandbox/types.ts";
 import { rememberWorkspace, sameDir, workspacesFilePath } from "../../web/workspaces.ts";
 import { applySubagentControl } from "../../web/subagents.ts";
-import { takeCoordinatorTurnText } from "../../web/session-lifecycle.ts";
+import { applyPermissionPatch, takeCoordinatorTurnText } from "../../web/session-lifecycle.ts";
 import type { HarnessModule } from "../../core/module.ts";
 import type { ChatImage } from "../../llm/provider.ts";
 
@@ -210,28 +208,23 @@ export const webSessions: HarnessModule = {
       async handler(r) {
         const body = await r.body();
         const rt = host.viewRt();
-        if (rt.busy) {
+        // docs/30：权限三键（askMode/alwaysConfirm/sandboxMode）运行中也放行——工具 live 读
+        // deps，下一命令即生效；busy 时补丁不落盘（轮末自动存档兜底）。其余键（effort）维持
+        // 运行中 409（请求在飞，改档位口径不清）；busy 下混发权限键+effort 整体拒绝（fail-closed）。
+        const touchesPermission =
+          body.askMode !== undefined || body.alwaysConfirm !== undefined || body.sandboxMode !== undefined;
+        if (rt.busy && (!touchesPermission || body.effort !== undefined)) {
           r.json(409, { error: "该对话任务运行中无法更改设置" });
           return;
         }
-        if (typeof body.alwaysConfirm === "boolean") rt.settings.alwaysConfirm = body.alwaysConfirm;
+        // 白名单校验在 applyPermissionPatch 内逐键归一化（野值忽略该键，不整包拒绝）
+        if (touchesPermission) applyPermissionPatch(host, rt, body);
         const nextEffort = normalizeEffort(body.effort);
         if (nextEffort) {
           rt.settings.effort = nextEffort;
           host.persistSession(rt); // 思考档位按对话记录，立即写入存档
         }
-        if (body.askMode === "ask" || body.askMode === "never") {
-          rt.settings.askMode = normalizeAskMode(body.askMode);
-          host.persistSession(rt); // 审批策略按对话记录
-        }
-        // 白名单校验＝归一化结果与原值一致（野值归一化后必不等于原值）
-        const sandboxMode = normalizeSandboxMode(body.sandboxMode);
-        if (sandboxMode === body.sandboxMode) {
-          rt.settings.sandboxMode = sandboxMode;
-          rt.agent.setSandboxMode(rt.settings.sandboxMode);
-          host.persistSession(rt); // 沙箱模式按对话记录
-        }
-        host.broadcast("state", host.currentState(rt));
+        if (!touchesPermission) host.broadcast("state", host.currentState(rt)); // 补丁路径已随 applyPermissionPatch 广播
         r.json(200, host.currentState(rt));
       },
     });

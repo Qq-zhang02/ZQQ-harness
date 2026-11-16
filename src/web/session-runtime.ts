@@ -306,10 +306,18 @@ export function requestApprovalFor(
   return (req) => {
     // 生效信号：worker 的合并信号（已含轮信号）优先；前台 agent 用 ask 时刻的当前轮信号
     const live = opts?.signal ?? rt.abortCtl?.signal ?? undefined;
-    const askOnce = (): Promise<ApprovalDecision> =>
-      live?.aborted
-        ? Promise.resolve("cancelled" satisfies ApprovalDecision)
-        : askWithMode(rt.settings.askMode, req, (r) => doAsk(sh, rt, r, live));
+    const askOnce = (): Promise<ApprovalDecision> => {
+      if (live?.aborted) return Promise.resolve("cancelled" satisfies ApprovalDecision);
+      const mode = rt.settings.askMode; // live 读（docs/30）：运行中改审批策略，下一次 ask 即生效
+      // auto（docs/30）：普通拦截卡不弹直接放行——审计照写 asked+decided 对（auto:true 标注
+      // 区分人工卡）；justification 提权卡不短路：模型自我升权仍走人工，+1/-1 额度门不拆。
+      if (mode === "auto" && !req.justification) {
+        rt.auditEvents.push(auditAsked(rt.auditEvents, req));
+        rt.auditEvents.push(auditDecided(rt.auditEvents, req, "allowed-once", new Date().toISOString(), { auto: true }));
+        return Promise.resolve("allowed-once" satisfies ApprovalDecision);
+      }
+      return askWithMode(mode, req, (r) => doAsk(sh, rt, r, live));
+    };
     const p = (rt.approvalChain ?? Promise.resolve()).then(askOnce, askOnce);
     rt.approvalChain = p.catch(() => {}); // 链条不断：前一个被拒/取消/异常也继续下一个
     return p;

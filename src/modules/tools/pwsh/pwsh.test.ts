@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { createPwshTool, runPwsh } from "./pwsh.ts";
 import { createWorkspace } from "../../../workspace.ts";
 import type { ToolContext } from "../../../tools/registry.ts";
+import type { SystemToolDeps } from "../../../core/types.ts";
 import type { ApprovalDecision, ApprovalRequest } from "../../../approval/types.ts";
-import { getSandboxRunner, setSandboxRunner, noBackend } from "../../../sandbox/runner.ts";
+import type { SandboxMode } from "../../../sandbox/types.ts";
+import { getSandboxRunner, setSandboxRunner, noBackend, type SandboxRunner } from "../../../sandbox/runner.ts";
 
 const WS = createWorkspace(process.cwd());
 
@@ -316,4 +318,132 @@ test("W1 卡 B 实弹：python here-string 源码不再触发 scope 强制弹卡
   assert.equal(asks.length, 1);
   assert.ok(asks[0].reasons.some((r) => r.includes("工作区外")), "解释器绝对路径的既有守卫照常（不动守卫，提示词引导用 PATH 短名）");
   assert.ok(!asks[0].reasons.some((r) => r.includes("scope")), "scope 命中集不含 here-string 源码");
+});
+
+// ---------- docs/30：deps live 读——运行中改权限，下一命令（甚至卡批准后的本条）即用新值 ----------
+
+/** live deps 桩：sandboxMode/alwaysConfirm 可变闭包（模拟会话设置运行中被改）；其余成员不影响 pwsh，桩最小集断言转型 */
+function liveDeps(mut: { mode: SandboxMode; confirm: boolean }): SystemToolDeps {
+  return {
+    alwaysConfirm: () => mut.confirm,
+    sandboxMode: () => mut.mode,
+  } as unknown as SystemToolDeps;
+}
+
+test("docs/30 live 读：逐条确认运行中关掉后，下一命令不再弹卡（ctx 快照不动）", async () => {
+  const mut = { mode: "danger-full-access" as SandboxMode, confirm: true };
+  const tool = createPwshTool(liveDeps(mut));
+  const asks: ApprovalRequest[] = [];
+  const approve = async (req: ApprovalRequest) => {
+    asks.push(req);
+    return "allowed-once" as const;
+  };
+  const out1 = await tool.execute({ command: 'Write-Output "a1"', description: "逐条确认期间" }, makeCtx({ alwaysConfirm: true, requestApproval: approve }));
+  assert.equal(asks.length, 1, "逐条确认开着：弹卡");
+  assert.ok(out1.includes("a1"));
+  mut.confirm = false; // 运行中切换审批策略（审批卡「不再询问」或顶栏下拉）
+  const out2 = await tool.execute({ command: 'Write-Output "a2"', description: "切换后" }, makeCtx({ alwaysConfirm: true, requestApproval: approve }));
+  assert.equal(asks.length, 1, "切换后不再弹卡——deps live 读，ctx 里残留的 alwaysConfirm=true 被无视");
+  assert.ok(out2.includes("a2"));
+});
+
+test("docs/30 live 读：卡上「解除沙箱并放行」——批准后重读模式，本条命令即无约束执行（无需沙箱后端）", async () => {
+  const mut = { mode: "workspace-write" as SandboxMode, confirm: true };
+  const tool = createPwshTool(liveDeps(mut));
+  const out = await tool.execute(
+    { command: 'Write-Output "live-flip"', description: "卡上切全开放" },
+    makeCtx({
+      // ctx 快照故意停在 workspace-write：若实现误读 ctx，批准后会落 SANDBOX_UNAVAILABLE，断言即抓
+      alwaysConfirm: true,
+      sandboxMode: "workspace-write",
+      requestApproval: async () => {
+        mut.mode = "danger-full-access"; // 模拟决议前服务端已应用 apply 补丁（会话模式已切全开放）
+        return "allowed-once";
+      },
+    }),
+  );
+  assert.ok(out.includes("live-flip"), "批准后重读 live 模式 → 本条即无约束执行");
+  assert.ok(!out.includes("SANDBOX_UNAVAILABLE"));
+});
+
+// ---------- 真机回归（docs/30 §5）：exit 0 的非终止性拒绝也要识别 ----------
+// 真机实录：Remove-Item 的 Access denied 是非终止性错误，脚本后续语句照跑 → pwsh 整体
+// exit 0 → 旧口径（code!==0 且 stderr 命中）完全漏检：不打 [sandbox:] 标、不攒额度、
+// justification 被静默忽略——删除命令全军覆没却无一卡。修复：识别只看 stderr。
+
+const CLIXML_DENIED =
+  '#< CLIXML\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">' +
+  `<S S="Error">_x001B_[31;1mRemove-Item: _x001B_[31;1mAccess to the path 'F:\ws\区外.txt' is denied._x001B_[0m_x000D__x000A_</S></Objs>`;
+
+function fakeRunner(stderr: string, stdout = "文件还存在吗: True", code = 0): SandboxRunner {
+  return {
+    name: "fake",
+    available: () => true,
+    run: async () => ({ code, timedOut: false, interrupted: false, overLimit: false, stdout, stderr }),
+  };
+}
+
+test("真机回归：exit 0 的非终止性拒绝也识别——打 [sandbox:] 标并攒升级额度", async () => {
+  setSandboxRunner(fakeRunner(CLIXML_DENIED));
+  try {
+    const tool = createPwshTool(); // 独立实例：升级额度会话内隔离
+    const out = await tool.execute(
+      { command: "Remove-Item out.txt; Write-Output 'done'", description: "删除区外文件" },
+      makeCtx({ sandboxMode: "workspace-write" }),
+    );
+    assert.ok(out.includes("[sandbox: 工作区外写入/删除被拒绝"), "exit code 0 也必须识别为拒绝（旧口径漏检）");
+    assert.ok(out.includes("justification"), "带升级提示");
+  } finally {
+    setSandboxRunner(noBackend); // 还原全局接缝（win.test.ts 同款惯例）
+  }
+});
+
+test("真机回归完整链路：exit 0 拒绝攒额度 → justification 重试弹卡 → 批准后无约束执行", async () => {
+  setSandboxRunner(fakeRunner(CLIXML_DENIED));
+  try {
+    const tool = createPwshTool();
+    const asks: ApprovalRequest[] = [];
+    const count = async (req: ApprovalRequest) => {
+      asks.push(req);
+      return "allowed-once" as const;
+    };
+    const deny = await tool.execute(
+      { command: "Remove-Item out.txt", description: "删除区外文件" },
+      makeCtx({ sandboxMode: "workspace-write", requestApproval: count }),
+    );
+    assert.ok(deny.includes("[sandbox:"), "第一通：拒绝被识别");
+    assert.equal(asks.length, 0, "第一通无 justification：不弹卡");
+    const ok = await tool.execute(
+      { command: 'Write-Output "escalation-ok"', description: "带 justification 重试", justification: "需要删除上一条被拒的区外文件" },
+      makeCtx({ sandboxMode: "workspace-write", requestApproval: count }),
+    );
+    assert.equal(asks.length, 1, "第二通：额度已攒出，justification 弹卡转人工");
+    assert.equal(asks[0]!.justification, "需要删除上一条被拒的区外文件", "卡上带提权理由");
+    assert.ok(ok.includes("escalation-ok"), "批准后无约束执行（真跑 pwsh）");
+  } finally {
+    setSandboxRunner(noBackend);
+  }
+});
+
+test("真机回归：justification 带了但额度为 0 且未被拒 → 明示反馈而非静默忽略", async () => {
+  setSandboxRunner(fakeRunner("", "fine"));
+  try {
+    const tool = createPwshTool();
+    let asked = 0;
+    const out = await tool.execute(
+      { command: 'Write-Output "fine"', description: "带 justification 但没被拒过", justification: "想直接提权" },
+      makeCtx({
+        sandboxMode: "workspace-write",
+        requestApproval: async () => {
+          asked++;
+          return "allowed-once" as const;
+        },
+      }),
+    );
+    assert.equal(asked, 0, "额度为 0，不弹卡");
+    assert.ok(out.includes("justification 未生效"), "明示反馈（不再静默）");
+    assert.ok(out.includes("并未被沙箱拒绝"));
+  } finally {
+    setSandboxRunner(noBackend);
+  }
 });

@@ -58,8 +58,8 @@ const def: SystemToolDef = {
           inside,
           workspaceRoot: ctx.workspace.root,
           ...(ctx.writeScope ? { writeScope: ctx.writeScope } : {}),
-          sandboxMode: ctx.sandboxMode,
-          alwaysConfirm: ctx.alwaysConfirm,
+          sandboxMode: deps.sandboxMode(), // docs/30：live 读——运行中改沙箱模式，本次裁决即用新值
+          alwaysConfirm: deps.alwaysConfirm(),
           description: String(args.description ?? "") || undefined,
           requestApproval: ctx.requestApproval,
         });

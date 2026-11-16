@@ -553,3 +553,80 @@ test("/api/sessions/reorder：孤儿组可排序（有会话即合法）；完�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------- docs/30：/api/settings 权限三键运行中放行（busy bypass），effort 维持 409 ----------
+
+test("/api/settings：busy 放行权限三键（live 应用+广播+不落盘）；busy effort 仍 409；空闲立即落盘", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-websettings-"));
+  try {
+    const ctx = buildContext(
+      {
+        userDir: dir,
+        globalSkillsDir: join(dir, "skills"),
+        globalMcpFile: join(dir, "mcp.json"),
+        workspacesFile: join(dir, "workspaces.json"),
+        sessionsDir: join(dir, "sessions"),
+      },
+      loadConfig(),
+    );
+    const settings = { alwaysConfirm: false, effort: "high", askMode: "ask", sandboxMode: "workspace-write" };
+    const rt = {
+      id: "rt-stub",
+      busy: true,
+      workspace: { root: join(dir, "ws") },
+      settings,
+      agent: { setSandboxMode: (m: string) => (settings.sandboxMode = m) },
+    };
+    const persisted: number[] = [];
+    const broadcasts: string[] = [];
+    const host = {
+      viewRt: () => rt,
+      persistSession: () => persisted.push(1),
+      broadcast: (ev: string) => broadcasts.push(ev),
+      currentState: () => ({ ...settings, busy: rt.busy }),
+    } as unknown as SessionHost;
+    ctx.sessionHost = host;
+    webSessions.setup(ctx);
+    const route = ctx.routes.get("/api/settings");
+    const call = async (body: Record<string, unknown>) => {
+      const responses: Array<{ status: number; data: unknown }> = [];
+      const r: ServerRequest = {
+        req: {} as never,
+        res: {} as never,
+        url: new URL("http://localhost/api/settings"),
+        body: async () => body,
+        json: (status, data) => responses.push({ status, data }),
+      };
+      await route!.handler(r);
+      return responses[0]!;
+    };
+
+    // busy + 权限三键：放行、live 应用、广播 state、不落盘（轮末自动存档兜底）
+    const r1 = await call({ askMode: "auto" });
+    assert.equal(r1.status, 200);
+    assert.equal(settings.askMode, "auto");
+    assert.ok(broadcasts.includes("state"));
+    assert.equal(persisted.length, 0, "busy 补丁不落盘");
+    const r2 = await call({ sandboxMode: "danger-full-access" });
+    assert.equal(r2.status, 200);
+    assert.equal(settings.sandboxMode, "danger-full-access");
+
+    // busy + effort：仍 409；busy 下权限键混 effort：整体拒绝
+    assert.equal((await call({ effort: "low" })).status, 409);
+    assert.equal(settings.effort, "high", "档位未被改动");
+    assert.equal((await call({ askMode: "never", effort: "low" })).status, 409);
+    assert.equal(settings.askMode, "auto", "混发整体拒绝，权限键也不应用");
+
+    // 空闲：权限键立即落盘；effort 照旧落盘
+    rt.busy = false;
+    const r3 = await call({ alwaysConfirm: true });
+    assert.equal(r3.status, 200);
+    assert.equal(settings.alwaysConfirm, true);
+    assert.equal(persisted.length, 1, "空闲补丁立即落盘");
+    assert.equal((await call({ effort: "low" })).status, 200);
+    assert.equal(settings.effort, "low");
+    assert.equal(persisted.length, 2, "effort 空闲照旧落盘");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

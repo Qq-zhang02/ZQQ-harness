@@ -359,14 +359,13 @@ function applyState() {
   // 先填 option 再设值：首帧 effort/sandbox 才能选中真实档位而非落在「默认」（dev-docs/5 偏差 10）
   renderSettingOptions();
   const csel = $("#confirmSelect");
-  csel.value = C.state.askMode === "never" ? "never" : C.state.alwaysConfirm ? "confirm" : "ask";
-  csel.disabled = C.state.busy;
+  // docs/30：审批策略四档；权限两下拉运行中不再禁用（服务端 busy 放行权限三键，live 生效）
+  csel.value = C.state.askMode === "never" ? "never" : C.state.askMode === "auto" ? "auto" : C.state.alwaysConfirm ? "confirm" : "ask";
   const sel = $("#effortSelect");
   sel.value = C.state.effort;
-  sel.disabled = C.state.busy;
+  sel.disabled = C.state.busy; // 思考档位维持运行中禁用（服务端 409，口径不清）
   const ssel = $("#sandboxSelect");
   ssel.value = C.state.sandboxMode || "workspace-write";
-  ssel.disabled = C.state.busy;
   const noWs = !C.state.workspace;
   input.disabled = noWs;
   sendBtn.disabled = noWs;

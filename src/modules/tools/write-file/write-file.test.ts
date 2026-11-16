@@ -21,6 +21,7 @@ interface Harness {
   ledger: FileLedger;
   asks: ApprovalRequest[];
   setSandbox(m: SandboxMode): void;
+  setConfirm(b: boolean): void;
   decide(d: ApprovalDecision): void;
   toolCtx(): ToolContext;
 }
@@ -29,6 +30,7 @@ function makeHarness(wsRoot: string): Harness {
   const ledger: FileLedger = createFileLedger();
   const asks: ApprovalRequest[] = [];
   let sandbox: SandboxMode = "workspace-write";
+  let confirm = false;
   let decision: ApprovalDecision = "allowed-once";
   const ctx = buildContext(
     { userDir: wsRoot, globalSkillsDir: wsRoot, globalMcpFile: join(wsRoot, "mcp.json"), workspacesFile: join(wsRoot, "w.json"), sessionsDir: join(wsRoot, "s") },
@@ -43,7 +45,7 @@ function makeHarness(wsRoot: string): Harness {
     workspace: () => ({ root: wsRoot }),
     skills: () => [],
     requestApproval: ask,
-    alwaysConfirm: () => false,
+    alwaysConfirm: () => confirm, // docs/30：模块 live 读 deps——测试经 setSandbox/setConfirm 驱动
     sandboxMode: () => sandbox,
     spillDir: () => undefined,
     privateTempDir: () => undefined,
@@ -56,6 +58,7 @@ function makeHarness(wsRoot: string): Harness {
     ledger,
     asks,
     setSandbox: (m) => (sandbox = m),
+    setConfirm: (b) => (confirm = b),
     decide: (d) => (decision = d),
     toolCtx: () => ({ workspace: { root: wsRoot }, requestApproval: ask, sandboxMode: sandbox }),
   };
@@ -132,13 +135,15 @@ test("write_file：workspace-write 区外弹审批；danger-full-access + 逐条
   assert.equal(h.asks.length, 1);
   assert.ok(h.asks[0].reasons.some((r) => r.includes("工作区外")));
 
-  // danger-full-access：alwaysConfirm=false（默认）不问；描述透传审批卡
+  // danger-full-access：alwaysConfirm=false（默认）不问；描述透传审批卡（docs/30：经 deps live setters 驱动）
   h.decide("allowed-once");
-  await tool.execute({ path: "d1.txt", content: "1" }, { ...h.toolCtx(), sandboxMode: "danger-full-access" });
+  h.setSandbox("danger-full-access");
+  await tool.execute({ path: "d1.txt", content: "1" }, h.toolCtx());
   assert.equal(h.asks.length, 1); // 仍是区外那一次
+  h.setConfirm(true);
   await tool.execute(
     { path: "d2.txt", content: "2", description: "写冒烟文件" },
-    { ...h.toolCtx(), sandboxMode: "danger-full-access", alwaysConfirm: true },
+    h.toolCtx(),
   );
   assert.equal(h.asks.length, 2);
   assert.equal(h.asks[1].description, "写冒烟文件");

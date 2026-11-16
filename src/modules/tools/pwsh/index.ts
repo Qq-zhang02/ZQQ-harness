@@ -13,8 +13,8 @@ export const toolPwsh: HarnessModule = {
     ctx.tools.register({
       name: "run_pwsh",
       summary: "在本机 PowerShell 7 中执行命令，工作目录为工作区根目录",
-      create() {
-        return createPwshTool();
+      create(deps) {
+        return createPwshTool(deps); // docs/30：传 deps——沙箱模式/逐条确认 live 读会话设置
       },
     });
   },

@@ -36,11 +36,13 @@ test("normalizeDecision：野值/缺失/异常一律 unavailable（fail-closed�
   assert.equal(normalizeDecision(""), "unavailable");
 });
 
-test("normalizeAskMode：只有显式 never 生效，缺省回 ask", () => {
+test("normalizeAskMode：显式 never/auto 生效，缺省/野值回 ask", () => {
   assert.equal(normalizeAskMode("never"), "never");
+  assert.equal(normalizeAskMode("auto"), "auto"); // docs/30：自动放行档
   assert.equal(normalizeAskMode("ask"), "ask");
   assert.equal(normalizeAskMode(undefined), "ask");
   assert.equal(normalizeAskMode("NEVER"), "ask");
+  assert.equal(normalizeAskMode("AUTO"), "ask");
 });
 
 test("askWithMode：never 模式不弹卡直接 unavailable；ask 模式透传审批服务", async () => {
@@ -103,4 +105,14 @@ test("审计事件：subagent 来源字段随 asked/decided 自然携带（docs/
   // 普通会话请求不带该字段（可选，不出现而非 undefined 序列化）
   const plainAsked = auditAsked(events, req, "2026-11-12T10:00:02.000Z");
   assert.ok(!("subagent" in plainAsked));
+});
+
+test("审计事件：auto 自动放行带 auto:true 标注（docs/30），缺省不出现该字段", () => {
+  const events: AuditEvent[] = [];
+  events.push(auditAsked(events, req));
+  events.push(auditDecided(events, req, "allowed-once", "2026-11-17T10:00:00.000Z", { auto: true }));
+  assert.equal(events[1].auto, true);
+  assert.ok(!("auto" in auditDecided(events, req, "rejected"))); // 人工决议不带该字段（不出现而非 undefined）
+  // auto 放行计入 auditStats（形状与人工一致：asked + allowed）
+  assert.deepEqual(auditStats(events), { asked: 1, allowed: 1 });
 });
