@@ -231,8 +231,8 @@ try {
     const end = mainJs.indexOf("\n};", start);
     const hasKey = mainJs.slice(start, end).includes("\n  subagent(");
     record(
-      "前端三端：SSE_HANDLERS 含 subagent 键 + onSubagent 渲染函数 + /status 子代理行；server.ts 零改动（≤270 行，DT0 调整）",
-      hasKey && front.includes("function onSubagent") && front.includes("🎯 子代理 ") && serverLines <= 270, // docs/25 DT0：250→270（进程生命周期代码合法进壳）；F4 起 SSE 表在 main.js、渲染链跨 app/ 模块（front 全景扫）
+      "前端三端：SSE_HANDLERS 含 subagent 键 + onSubagent 渲染函数 + /status 子代理行；server.ts 零改动（≤278 行，DT0 调整）",
+      hasKey && front.includes("function onSubagent") && front.includes("🎯 子代理 ") && serverLines <= 278, // docs/25 DT0：250→270；2026-11-16 真机回归 270→278（WinNAT 端口回退属监听生命周期，与 contract.test.ts 哨兵同步——该次漏改此处）；F4 起 SSE 表在 main.js、渲染链跨 app/ 模块（front 全景扫）
       `handler=${hasKey}；server.ts=${serverLines} 行`,
     );
     // docs/22 §4.1：图片规则单一出处——前端校验/按钮 title 全走 meta.imageRules（imgRules()），
