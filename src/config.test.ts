@@ -152,7 +152,7 @@ test("resolveThresholds：缺省值正确；覆盖生效；pwsh 最大超时不�
   assert.equal(d.maxToolRounds, 15);
   assert.equal(d.pwshTimeoutMs, 60_000);
   assert.equal(d.pwshMaxTimeoutMs, 300_000);
-  assert.equal(d.toolResultMaxChars, 24_000);
+  assert.equal(d.toolResultMaxChars, 48_000);
   const o = resolveThresholds({ pwshTimeoutMs: 120_000, pwshMaxTimeoutMs: 60_000, compactionManualKeepTokens: 500 });
   assert.equal(o.compactionManualKeepTokens, 500);
   assert.equal(o.pwshTimeoutMs, 120_000);
@@ -188,12 +188,12 @@ test("parseHarnessConfig：旧拼写键的非法值走新键名校验（告警�
 
 // ---- 子代理阈值（docs/5 SA0：键名拼写即 API，测试锁缺省/覆盖/校验规则） ----
 
-test("resolveThresholds：子代理四阈值缺省 3/24/40/8000，覆盖生效", () => {
+test("resolveThresholds：子代理四阈值缺省 3/24/40/16000，覆盖生效", () => {
   const d = resolveThresholds({});
   assert.equal(d.subagentMaxConcurrent, 3);
   assert.equal(d.subagentMaxTotal, 24);
   assert.equal(d.subagentMaxToolRounds, 40);
-  assert.equal(d.subagentResultMaxChars, 8_000);
+  assert.equal(d.subagentResultMaxChars, 16_000);
   const o = resolveThresholds({
     subagentMaxConcurrent: 5,
     subagentMaxTotal: 10,
@@ -500,13 +500,13 @@ test("THRESHOLD_RULES 与 lenient 读语义一致：rangePass 等价旧谓词（
 
 // ---- 阶段 B 第二批（docs/21 §2.3 后 9 键）：缺省/覆盖/非法三态 + httpBody 地板值 ----
 
-test("阶段 B 第二批 9 键：缺省值（120s/20s/5MB/2000/100k/60s/300k/32MB/800）与 initConfig 重绑", () => {
+test("阶段 B 第二批 9 键：缺省值（120s/20s/5MB/4000/200k/60s/300k/32MB/800）与 initConfig 重绑", () => {
   const d = resolveThresholds({});
   assert.equal(d.visionTimeoutMs, 120_000);
   assert.equal(d.providerTestTimeoutMs, 20_000);
   assert.equal(d.textFileMaxBytes, 5 * 1024 * 1024);
-  assert.equal(d.readFileDefaultLines, 2_000);
-  assert.equal(d.readFileMaxChars, 100_000);
+  assert.equal(d.readFileDefaultLines, 4_000);
+  assert.equal(d.readFileMaxChars, 200_000);
   assert.equal(d.subagentTimeoutMinMs, 60_000);
   assert.equal(d.compactionSummaryMaxChars, 300_000);
   assert.equal(d.httpBodyMaxBytes, 32 * 1024 * 1024);

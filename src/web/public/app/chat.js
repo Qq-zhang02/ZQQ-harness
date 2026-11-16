@@ -4,8 +4,8 @@
 // 故随本模块而非发送管线）。竞态/切换决策在 replay.js、轮折叠决策在 turns.js（F1 纯逻辑层）。
 // 依赖方向：dom/state/autoreport/turns/drawer/sidebar；不 import modals/main（被两者消费）。
 import { $, el, esc, mdLite, nearBottom, autoscroll, fillOptions, post, renderToolBody } from "./dom.js";
-import { splitAutoText as splitAutoTextM, autoReportSummary as autoReportSummaryM, fmtTok, firstLine, prettyArgs } from "./autoreport.js";
-import { toolHeadline } from "./toolinfo.js";
+import { splitAutoText as splitAutoTextM, splitAutoTextSegments, autoReportSummary as autoReportSummaryM, fmtTok, firstLine, prettyArgs } from "./autoreport.js";
+import { toolHeadline, isToolResultError } from "./toolinfo.js";
 import { groupTurns, decideFold } from "./turns.js";
 import { CFG, C, V, cacheOf, chatStore, metaOf, ctxLimitOf, imgRules } from "./state.js";
 import { drawer, renderDrawer, openDrawer, refreshSubSum, updateDrwBtn, tickClock } from "./drawer.js";
@@ -25,6 +25,21 @@ const autoPrefixes = () => ({ reportPrefix: metaOf().autoReportPrefix, statusPre
 const splitAutoText = (t) => splitAutoTextM(t, autoPrefixes());
 function userBubble(text, imgs) {
   finishSegments();
+  // 服务端轮末把连续送达报告合并为一条 user 消息开轮（docs/16，省轮次）——界面拆回每份
+  // 一张独立 🤖 卡片（真机待办：合并消息此前挤一个气泡，一行摘要只见第一份）。实时
+  // maybeRenderAutoTurn 与历史快照重放都走本函数，拆卡行为一致。
+  const segs = splitAutoTextSegments(text, autoPrefixes());
+  if (segs) {
+    for (const seg of segs) {
+      const mm = el("div", "msg user");
+      const bb = el("div", "bubble");
+      renderAutoReportBubble(bb, seg);
+      mm.appendChild(bb);
+      chat.appendChild(mm);
+    }
+    autoscroll(chat);
+    return;
+  }
   const m = el("div", "msg user");
   const bubble = el("div", "bubble");
   // docs/16：自动送达的子代理报告/状态通知（作为用户消息开轮）加 🤖 徽标，与真实用户消息区分。
@@ -83,6 +98,20 @@ function renderAutoReportBubble(bubble, text) {
   });
   bubble.appendChild(exp);
   bubble.appendChild(full);
+}
+/** 真机待办（问题 6）修复：协调者送达轮的即时气泡。子代理报告/状态通知由服务端作为 user
+ *  消息开轮（deliverToCoordinator → startTurn），浏览器从未发送它——没有本地乐观渲染路径，
+ *  实时流里一直缺这个气泡，要切走再切回（快照重放）才出现。修复：startTurn 广播的 state
+ *  事件带 turn 锚点（{ml, userText}，先于消息入历史到达），此处判别 userText 是送达消息
+ *  （前缀匹配——用户插话已由 send() 本地渲染，不在此处理）即就地渲染（与 renderHistory
+ *  的送达气泡同款 userBubble 路径）；按 ml 幂等，同轮重复 state 事件不重画。 */
+export function maybeRenderAutoTurn(turn) {
+  if (!turn || typeof turn.userText !== "string") return;
+  if (splitAutoText(turn.userText) == null) return;
+  const c = cacheOf(V.viewId);
+  if (c.autoTurnMl === turn.ml) return;
+  c.autoTurnMl = turn.ml;
+  userBubble(turn.userText);
 }
 /** 新建（或复用）思考框；点击头部折叠/展开；内容区限高滚动，流式时贴底 */
 function onReasoningDelta(text) {
@@ -173,12 +202,16 @@ function addToolRes(output, meta, callId) {
     blk.classList.remove("live");
     const m = /exit code: (-?\d+|unknown)/.exec(text);
     const stat = blk.querySelector(".tstat");
+    // 失败即整块标红（真机待办）：pwsh 走 exit code 非 0（unknown 非"0"也算失败），其余工具
+    // 以「错误：」前缀判定（判定逻辑单一出处 toolinfo.isToolResultError，抽屉时间线同款）
+    const bad = isToolResultError(text) || (m !== null && m[1] !== "0");
     if (m) {
       stat.textContent = m[1] === "0" ? "✓ exit 0" : "✗ exit " + m[1];
-      stat.classList.toggle("bad", m[1] !== "0");
     } else {
-      stat.textContent = "✓";
+      stat.textContent = bad ? "✗" : "✓";
     }
+    stat.classList.toggle("bad", bad);
+    blk.classList.toggle("err", bad);
     const body = blk.querySelector(".tblock-b");
     if (meta && (meta.prunedChars > 0 || meta.spilled)) {
       let note = "✂ 入模型已修剪 " + meta.prunedChars.toLocaleString() + " 字符";
@@ -296,6 +329,7 @@ function renderHistory(messages) {
         const blk = addTool(tc.name, tc.arguments, tc.id, pending);
         if (unanswered && !pending) {
           blk.classList.add("collapsed");
+          blk.classList.add("err"); // 中断的调用=失败形态：与结果错误同款红色标记
           blk.querySelector(".tblock-b").appendChild(el("div", "tres-cap", "无返回结果（本轮被中断或调用未完成）"));
         }
       }

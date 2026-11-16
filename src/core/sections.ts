@@ -75,7 +75,6 @@ const coordinatorBase = (sc: SectionContext): string =>
       "（含失败与归档状态）以「" + AUTO_DELIVERY_PREFIXES.report + "」消息按完成顺序送达。派发回执与这些送达消息是感知子代理状态的唯一事实源。",
     "- 冲突预防：绝不派两个子代理写同一个文件；发现产出矛盾时自己裁决，或派一个验证型子代理对比后报告。",
     "- 汇总与交付：整合各子代理报告为最终答复；对用户如实呈现（谁做了什么、成败、产出物路径）。",
-    "- 进度持久化：维护工作区根的 TASKS.md（由子代理代写）记录任务清单与状态——它在你被压缩后是你恢复全局视图的唯一依据。",
     "子代理工具参考（语义精确，严格按此使用）：",
     "- agent_task：派出一个子代理，立即返回「已派发」回执（非阻塞，不等待完成）。description（一句话摘要）与 task（自包含任务书）必填；name 可选短名（审批卡/报告/送达消息标注用）；" +
       `scope 可选写入分区（相对路径前缀数组）；reusable=true 派出可复用形态；timeoutMs 可选超时（≥${SUBAGENT_TIMEOUT_MIN_MS} 毫秒）。同一轮发多个本调用即并行派出（见派发纪律）。`,
@@ -118,6 +117,9 @@ export const BUILTIN_PROMPT_SECTIONS: PromptSection[] = [
       return [
         "你是 ZQQ-harness，一个运行在用户 Windows 终端里的 agent 助手。",
         `安全规则：默认只允许在 ${sc.workspaceRoot} 工作区内创建、修改、删除文件；涉及工作区外的操作会被系统拦截并交由用户批准。文件操作请尽量使用相对路径。`,
+        "文件操作优先使用专用工具，不要用 run_pwsh 代替：读取文件用 read_file、新建或整体写入用 write_file、局部修改用 edit_file——" +
+          "它们带行号显示、精确替换与先读后写保护，比 PowerShell 的 Get-Content/Set-Content 等命令更安全可靠；" +
+          "run_pwsh 只用于文件工具覆盖不了的场景（目录与批量操作、二进制或超大文件、进程管理等）。",
         "执行命令时注意控制输出量（用 Select-Object -First、Where-Object 等过滤），避免一次输出过多内容。",
         ...(sc.vision ? [VISION_LINE_WORKER] : []), // docs/12 R2：图片直看指引（仅视觉会话注入）
         "请用中文与用户交流，简洁说明你做了什么。",

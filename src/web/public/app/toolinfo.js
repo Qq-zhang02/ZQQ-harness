@@ -93,3 +93,16 @@ export function toolBodyBlocks(name, argsRaw) {
   }
   return null;
 }
+
+/** 失败判定的两个文本特征（项目惯例单一出处）：pwsh 的非零退出码行与全部系统工具/
+ *  MCP 控制面共用的「错误：」前缀回传（文件工具/agent_task 校验/子代理控制/manage_mcp/
+ *  view_image 等的错误文案一律以「错误：」开头——工具执行错误以字符串回传模型，不抛异常）。
+ *  @param {unknown} text 工具结果全文（畸形事件防御：非字符串一律 false）
+ *  @returns {boolean}
+ */
+export function isToolResultError(text) {
+  if (typeof text !== "string") return false;
+  if (/^错误：/.test(text.trimStart())) return true;
+  const m = /exit code: (-?\d+)/.exec(text); // pwsh：非零退出码=失败（unknown/缺失不算数字，不误判）
+  return m !== null && m[1] !== "0";
+}

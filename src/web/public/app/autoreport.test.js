@@ -1,7 +1,7 @@
 /** autoreport.js 测试（docs/26 F1）：送达前缀参数化拆解 / 摘要提取 / 通用格式化函数。 */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { splitAutoText, autoReportSummary, firstLine, prettyArgs, fmtTok, fmtDur } from "./autoreport.js";
+import { splitAutoText, splitAutoTextSegments, autoReportSummary, firstLine, prettyArgs, fmtTok, fmtDur } from "./autoreport.js";
 
 const P = { reportPrefix: "[子代理任务报告 · 自动送达]", statusPrefix: "[子代理状态 · 自动送达]" };
 
@@ -29,6 +29,40 @@ test("splitAutoText：不匹配任何前缀 → null；报告前缀优先于状�
   assert.equal(splitAutoText("普通用户消息", P), null);
   const both = { reportPrefix: "A", statusPrefix: "AB" };
   assert.deepEqual(splitAutoText("ABx", both), { status: false, body: "Bx" });
+});
+
+// ---------- splitAutoTextSegments：轮末合并送达的拆卡（真机待办） ----------
+
+test("splitAutoTextSegments：多份合并送达拆段（报告+状态混排），段尾分隔线与空白清理", () => {
+  // 服务端 takeCoordinatorTurnText 的合并形态：parts.join("\n\n――――\n\n")
+  const merged = [
+    P.reportPrefix + "\n[子代理 A 完成] 用量 1.2k\n做了事情。",
+    "\n\n――――\n\n" + P.reportPrefix + "\n[子代理 B 失败] 超时\n出错了。",
+    "\n\n――――\n\n" + P.statusPrefix + "\n子代理 C 已被界面打断。",
+  ].join("");
+  const segs = splitAutoTextSegments(merged, P);
+  assert.ok(Array.isArray(segs) && segs.length === 3, `应拆成 3 段，实际 ${Array.isArray(segs) ? segs.length : segs}`);
+  assert.ok(segs[0].startsWith(P.reportPrefix) && segs[0].includes("[子代理 A 完成]"));
+  assert.ok(!segs[0].includes("――――"), "段尾合并分隔线被清理");
+  assert.ok(segs[1].startsWith(P.reportPrefix) && segs[1].includes("[子代理 B 失败]"));
+  assert.ok(!segs[1].includes("――――"));
+  assert.ok(segs[2].startsWith(P.statusPrefix));
+  assert.ok(segs[2].endsWith("打断。"), "段尾空白清理");
+});
+
+test("splitAutoTextSegments：单条/非送达/前缀缺失 → null（调用方按单卡或普通文本渲染）", () => {
+  assert.equal(splitAutoTextSegments(P.reportPrefix + "\n单份报告。", P), null);
+  assert.equal(splitAutoTextSegments("普通用户消息", P), null);
+  assert.equal(splitAutoTextSegments(P.reportPrefix + "x", { reportPrefix: null, statusPrefix: null }), null);
+  assert.equal(splitAutoTextSegments(undefined, P), null);
+});
+
+test("splitAutoTextSegments：只有行首前缀才是切段锚点（正文行中出现的字样不拆）", () => {
+  const tricky = P.reportPrefix + "\n正文里引用了 " + P.statusPrefix + " 字样但不在行首。\n\n――――\n\n" + P.reportPrefix + "\n第二份。";
+  const segs = splitAutoTextSegments(tricky, P);
+  assert.ok(Array.isArray(segs) && segs.length === 2, "仅行首前缀算切段点");
+  assert.ok(segs[0].includes("正文里引用了"), "行中前缀字样留在第一段正文里");
+  assert.ok(segs[1].startsWith(P.reportPrefix) && segs[1].includes("第二份"));
 });
 
 // ---------- autoReportSummary：摘要行 ----------

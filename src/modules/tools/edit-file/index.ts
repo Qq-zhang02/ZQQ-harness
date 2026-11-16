@@ -16,16 +16,17 @@ const def: SystemToolDef = {
     return {
       name: "edit_file",
       description:
-        "编辑文本文件：把 old_string（必须与文件内容逐字符一致）替换为 new_string。" +
-        "编辑前必须先 read_file 该文件；old_string 在文件中多次出现时会报错——优先纳入更多上下文使其唯一，" +
+        "编辑文本文件：每次调用必须同时提供 path（目标文件路径）、old_string 与 new_string 三个必填参数。" +
+        "old_string 必须与文件内容逐字符一致；编辑前必须先 read_file 该文件。" +
+        "old_string 在文件中多次出现时会报错——优先纳入更多上下文使其唯一，" +
         "内容相同只是位置不同时用 occurrence 指定第几处（1 起始），或设 replace_all=true 全部替换。" +
         "区外路径或 read-only 沙箱模式下会弹审批。",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "文件路径（相对工作区根，或绝对路径）" },
-          old_string: { type: "string", description: "要被替换的原文（逐字符精确匹配；不可为空）" },
-          new_string: { type: "string", description: "替换后的新文本（与 old_string 相同则无意义，会报错）" },
+          path: { type: "string", description: "必填，目标文件路径（相对工作区根，或绝对路径）——每次调用都不能省略" },
+          old_string: { type: "string", description: "必填，要被替换的原文（逐字符精确匹配；不可为空）" },
+          new_string: { type: "string", description: "必填，替换后的新文本（与 old_string 相同则无意义，会报错）" },
           occurrence: {
             type: "integer",
             description:
@@ -38,6 +39,9 @@ const def: SystemToolDef = {
         required: ["path", "old_string", "new_string"],
       },
       async execute(args, ctx) {
+        if (!String(args.path ?? "").trim()) {
+          return "错误：缺少必填参数 path（要编辑的目标文件路径，相对工作区根或绝对路径）——把它与 old_string/new_string 一起提供后重新调用。";
+        }
         let abs: string;
         let inside: boolean;
         try {

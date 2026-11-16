@@ -331,7 +331,7 @@ test("runWorker：报告超 subagentResultMaxChars 预算被修剪（含省略�
   const h = makeHarness([{ content: long, toolCalls: [], usage: null }]);
   const r = await runWorker(h.sh, h.rt, { task: "t" }, { seq: 1 });
   assert.ok(r.ok);
-  assert.ok(r.text.length < 9_000, `修剪后应 ≤ 预算量级，实际 ${r.text.length}`);
+  assert.ok(r.text.length < 17_000, `修剪后应 ≤ 预算量级（缺省 16k，真机待办上调），实际 ${r.text.length}`);
   assert.ok(r.text.includes("省略"), "应带省略标记");
 });
 
@@ -1380,7 +1380,7 @@ test("docs/10 R1：上下文 > 归档线（50%）→ 任务完成后强制归档
 
 test("docs/10 R1：followup 对上下文 ≥35% 的待命实例拒绝（含指引与过程档案链接）", async () => {
   // 校准：contextLength=2000，任务书拉长使占比落进 [35,50]（不触发强制归档但过 followup 门槛）
-  const longTask = "背景：" + "detail ".repeat(520) + "目标：完成校准任务并报告。";
+  const longTask = "背景：" + "detail ".repeat(460) + "目标：完成校准任务并报告。";
   const h = makeHarness([{ content: "报告", toolCalls: [], usage: null }], { contextLength: 2_000 });
   const svc = subagentServiceFor(h.sh, h.rt);
   assert.ok(svc.dispatch({ task: longTask, description: "d", reusable: true, name: "ctx-mid" }).ok);
@@ -1413,7 +1413,7 @@ test("docs/10 R1：一次性子代理也带 contextPct（纯观测；done 事件
 
 test("docs/10 R1 修订：占用落 (30,35) 待命正常且 followup 照常受理（预警不拒收）", async () => {
   // 校准：contextLength=2000、任务书 repeat(390) 使占比落 ~32%（>30 预警、<35 不拒）
-  const task = "背景：" + "detail ".repeat(200) + "目标：完成并报告。";
+  const task = "背景：" + "detail ".repeat(150) + "目标：完成并报告。";
   const h = makeHarness([{ content: "报告", toolCalls: [], usage: null }, { content: "第二次报告", toolCalls: [], usage: null }], { contextLength: 2_000 });
   const svc = subagentServiceFor(h.sh, h.rt);
   assert.ok(svc.dispatch({ task, description: "d", reusable: true, name: "ctx-warn" }).ok);
@@ -1500,7 +1500,7 @@ test("docs/16：一次性 worker 的真实报告经收件箱送达（含已归�
 test("docs/14：自动送达报告自带上下文用量与 >25% 预警（治理说明只随报告走，协调者系统提示不再预先描述）", async () => {
   // 校准（参照 docs/10 R1 组 followup 门槛测试的 [35,50] 手法，任务书缩短使占比落 (25,35)：
   // 过预警线、未到拒收线 → 待命提示 + ⚠ 预警并存）
-  const longTask = "背景：" + "detail ".repeat(200) + "目标：完成并报告。";
+  const longTask = "背景：" + "detail ".repeat(135) + "目标：完成并报告。";
   const llm = new ScriptProvider([{ content: "最终报告：完成", toolCalls: [], usage: null }]);
   const h = makeHarness([], { llm, contextLength: 2_000 });
   const svc = subagentServiceFor(h.sh, h.rt);

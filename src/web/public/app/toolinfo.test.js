@@ -3,7 +3,7 @@
 // 注记、其他/降级=null）。全部纯函数（哨兵锁定禁 DOM）。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { toolHeadline, toolBodyBlocks } from "./toolinfo.js";
+import { toolHeadline, toolBodyBlocks, isToolResultError } from "./toolinfo.js";
 
 /** @param {unknown} o */
 const j = (o) => JSON.stringify(o);
@@ -65,4 +65,23 @@ test("toolBodyBlocks：其他工具/参数不可解析 → null（调用方走�
   assert.equal(toolBodyBlocks("write_file", '{"content": "被截断的 JSON…'), null);
   assert.equal(toolBodyBlocks("edit_file", undefined), null);
   assert.equal(toolBodyBlocks("write_file", j([1, 2])), null, "数组形态参数 → null");
+});
+
+test("isToolResultError：「错误：」前缀与 pwsh 非零 exit 判失败；成功/普通输出不误判", () => {
+  // 「错误：」前缀 = 全部系统工具/MCP 控制面的错误回传统一形态（文件工具/agent_task 校验/控制工具等）
+  assert.equal(isToolResultError("错误：文件不存在：F:/x/y.ts（编辑前先确认路径）"), true);
+  assert.equal(isToolResultError("  错误：缺少必填参数 path——提供后重新调用。"), true, "允许前导空白");
+  assert.equal(isToolResultError("已写入 F:/x/y.ts（3 行，120 字符，新建）"), false, "成功写入不误判");
+  // pwsh exit code：非 0 = 失败（含负数）；0 = 成功；unknown/缺失不按数字判
+  assert.equal(isToolResultError("命令输出……\nexit code: 1"), true);
+  assert.equal(isToolResultError("exit code: -1073741510"), true, "负数退出码（如 Ctrl+C 中断）= 失败");
+  assert.equal(isToolResultError("输出\nexit code: 0"), false);
+  assert.equal(isToolResultError("exit code: unknown"), false, "unknown 不是非零数字，不判失败");
+  assert.equal(isToolResultError("正常文本提到 exit code: 0 即可"), false);
+  // 边界形态
+  assert.equal(isToolResultError(""), false);
+  assert.equal(isToolResultError(undefined), false);
+  assert.equal(isToolResultError(null), false);
+  // 修剪注记在头部不影响判定（pruneToolResult 头部保留省略标记时错误行仍在开头附近的情况由前缀/exit 行覆盖）
+  assert.equal(isToolResultError("[输出超过 48000 字符已截断……]\nexit code: 2"), true);
 });

@@ -17,20 +17,25 @@ const def: SystemToolDef = {
     return {
       name: "write_file",
       description:
-        "把完整内容写入文件：新文件直接创建（自动建父目录）；覆写已存在的文件必须先用 read_file 读过，" +
+        '把完整内容写入文件。调用示例：{"path": "docs/notes.md", "content": "完整的文件内容"}——' +
+        "path 与 content 是必填参数，每次调用都必须同时提供（漏 path 会被拒绝，需带全参数重试）。" +
+        "新文件直接创建（自动建父目录）；覆写已存在的文件必须先用 read_file 读过，" +
         "否则会被拒绝（防止误毁已有内容）。只支持文本（UTF-8）；局部修改请改用 edit_file 而不是整文件重写。" +
         "区外路径或 read-only 沙箱模式下会弹审批。",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "文件路径（相对工作区根，或绝对路径）" },
-          content: { type: "string", description: "要写入的完整内容（整体覆写，不做合并）" },
+          path: { type: "string", description: "必填，目标文件路径（相对工作区根，或绝对路径）——每次调用都不能省略" },
+          content: { type: "string", description: "必填，要写入的完整内容（整体覆写，不做合并）" },
           description: { type: "string", description: "可选，一句话说明这次写入的目的（审批卡展示用）" },
         },
         required: ["path", "content"],
       },
       async execute(args, ctx) {
         const content = String(args.content ?? "");
+        if (!String(args.path ?? "").trim()) {
+          return "错误：缺少必填参数 path（要写入的目标文件路径，相对工作区根或绝对路径）——把它与 content 一起提供后重新调用。";
+        }
         let abs: string;
         let inside: boolean;
         try {

@@ -489,16 +489,16 @@ export function resolveThresholds(t: ThresholdOverrides): EffectiveThresholds {
     maxToolRounds: t.maxToolRounds ?? 15,
     pwshTimeoutMs: t.pwshTimeoutMs ?? 60_000,
     pwshMaxTimeoutMs: t.pwshMaxTimeoutMs ?? 300_000,
-    toolResultMaxChars: t.toolResultMaxChars ?? 24_000,
+    toolResultMaxChars: t.toolResultMaxChars ?? 48_000,
     subagentMaxConcurrent: t.subagentMaxConcurrent ?? 3,
     subagentMaxTotal: t.subagentMaxTotal ?? 24,
     subagentMaxToolRounds: t.subagentMaxToolRounds ?? 40,
-    subagentResultMaxChars: t.subagentResultMaxChars ?? 8_000,
+    subagentResultMaxChars: t.subagentResultMaxChars ?? 16_000,
     subagentMaxTasks: t.subagentMaxTasks ?? 12,
     subagentFollowupContextPct: t.subagentFollowupContextPct ?? 35,
     subagentWarnContextPct: t.subagentWarnContextPct ?? 25,
     subagentArchiveContextPct: t.subagentArchiveContextPct ?? 50,
-    archiveRenderMaxChars: t.archiveRenderMaxChars ?? 80_000,
+    archiveRenderMaxChars: t.archiveRenderMaxChars ?? 160_000,
     escalationMax: t.escalationMax ?? 8,
     agentsMdMaxChars: t.agentsMdMaxChars ?? 16_000,
     mcpHandshakeTimeoutMs: t.mcpHandshakeTimeoutMs ?? 20_000,
@@ -510,8 +510,8 @@ export function resolveThresholds(t: ThresholdOverrides): EffectiveThresholds {
     visionTimeoutMs: t.visionTimeoutMs ?? 120_000,
     providerTestTimeoutMs: t.providerTestTimeoutMs ?? 20_000,
     textFileMaxBytes: t.textFileMaxBytes ?? 5 * 1024 * 1024,
-    readFileDefaultLines: t.readFileDefaultLines ?? 2_000,
-    readFileMaxChars: t.readFileMaxChars ?? 100_000,
+    readFileDefaultLines: t.readFileDefaultLines ?? 4_000,
+    readFileMaxChars: t.readFileMaxChars ?? 200_000,
     subagentTimeoutMinMs: t.subagentTimeoutMinMs ?? 60_000,
     compactionSummaryMaxChars: t.compactionSummaryMaxChars ?? 300_000,
     httpBodyMaxBytes: t.httpBodyMaxBytes ?? 32 * 1024 * 1024,
@@ -653,7 +653,7 @@ export let SUBAGENT_WARN_CONTEXT_PCT = DEFAULT_EFFECTIVE.subagentWarnContextPct;
  *  待命、直接归档（继续驻留只会诱导协调者向高幻觉风险实例追加任务）。 */
 export let SUBAGENT_ARCHIVE_CONTEXT_PCT = DEFAULT_EFFECTIVE.subagentArchiveContextPct;
 
-/** read_archive 存档渲染字符预算（docs/17，默认 80k）：JSON→可读文本超出截为头部 + 省略标记
+/** read_archive 存档渲染字符预算（docs/17，默认 160k）：JSON→可读文本超出截为头部 + 省略标记
  *  （pruneToolResult 同款），防整份多任务存档一次性灌满接收方上下文。 */
 export let ARCHIVE_RENDER_MAX_CHARS = DEFAULT_EFFECTIVE.archiveRenderMaxChars;
 
@@ -694,10 +694,10 @@ export let PROVIDER_TEST_TIMEOUT_MS = DEFAULT_EFFECTIVE.providerTestTimeoutMs;
 /** 文件三工具（read/write/edit）的适用文件大小边界（默认 5MB；file-tools 消费并 re-export）。 */
 export let TEXT_FILE_MAX_BYTES = DEFAULT_EFFECTIVE.textFileMaxBytes;
 
-/** read_file 缺省读取行数（默认 2000）。 */
+/** read_file 缺省读取行数（默认 4000）。 */
 export let READ_FILE_DEFAULT_LINES = DEFAULT_EFFECTIVE.readFileDefaultLines;
 
-/** read_file 单次返回字符上限（默认 100k——注册表修剪前先自行收口）。 */
+/** read_file 单次返回字符上限（默认 200k——注册表修剪前先自行收口）。 */
 export let READ_FILE_MAX_CHARS = DEFAULT_EFFECTIVE.readFileMaxChars;
 
 /** 压缩摘要输入预算（默认 300k 字符；超出截头部，备份里仍有全文）。 */

@@ -21,6 +21,41 @@ export function splitAutoText(t, p) {
   return null;
 }
 
+/** 正则元字符转义（送达前缀含 `[` `]` 等，行首匹配构造用）。 @param {string} s @returns {string} */
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 服务端轮末合并的多份送达消息拆段（docs/16：协调者忙碌期间积压的报告在轮末把连续的
+ * 自动送达消息合并为一条 user 消息开一轮——界面渲染层把合并文本拆回每份一张独立卡片，
+ * 真机待办：合并消息此前挤在一个气泡里，一行摘要只见第一份）。
+ * 切段锚点 = 「行首的送达前缀」（报告/状态任一；段正文不含行首前缀，行中出现的字样不拆）；
+ * 段尾的合并分隔线（U+2015 横线行）与空白一并清理。单条（无后续行首前缀）、非送达文本、
+ * 前缀缺失（meta 未到）返回 null——调用方按单卡/普通文本渲染，行为不变。
+ * @param {unknown} text 消息全文（畸形输入防御：非字符串经 splitAutoText 一律 null）
+ * @param {AutoPrefixes} p 前缀对
+ * @returns {string[] | null} ≥2 段的送达消息数组（每段仍以送达前缀开头）
+ */
+export function splitAutoTextSegments(text, p) {
+  if (typeof text !== "string") return null;
+  const rp = p && typeof p.reportPrefix === "string" ? p.reportPrefix : null;
+  const sp = p && typeof p.statusPrefix === "string" ? p.statusPrefix : null;
+  if (rp == null || sp == null || splitAutoText(text, p) == null) return null;
+  const re = new RegExp("\\n(?:" + escapeRegExp(rp) + "|" + escapeRegExp(sp) + ")", "g");
+  const cuts = [];
+  let m;
+  while ((m = re.exec(text)) !== null) cuts.push(m.index + 1); // 越过 \n → 段起点
+  if (cuts.length === 0) return null;
+  const bounds = [0, ...cuts, text.length];
+  const segs = [];
+  for (let i = 0; i + 1 < bounds.length; i++) {
+    const seg = text.slice(bounds[i], bounds[i + 1]).replace(/\u2015{2,}\s*$/, "").replace(/\s+$/, "");
+    if (seg) segs.push(seg);
+  }
+  return segs.length >= 2 ? segs : null;
+}
+
 /**
  * 自动送达消息的一行摘要（docs/18 W2）：任务报告取正文首行（[子代理 X 完成/失败] 行本身
  * 就是自带统计的一行摘要）；状态通知（单长行）截到首个句读为止，超 60 字加省略号。

@@ -57,7 +57,7 @@ const C = chatStore.get();
 // V.viewId=正在查看的会话；后台会话的事件先进入各自缓冲，切换查看时取快照渲染再从当前位置继续实时显示。
 const viewStore = createStore({
   viewId: "",
-  sessCache: new Map(), // id -> { buf: [], loading: false, approval: false, needsRefresh: false, turn: null }
+  sessCache: new Map(), // id -> { buf: [], loading: false, approval: false, needsRefresh: false, turn: null, autoTurnMl? }（autoTurnMl=已即时渲染送达气泡的轮锚点，chat.js maybeRenderAutoTurn 幂等键）
   switchingTo: null,    // 正在进行的客户端主动切换（抑制 sessions 跟随，防止乒乓循环）
   pendingFollow: null,  // 切换进行中错过的服务端视图变更：切换完成后补跟随
   viewSeqSeen: 0,       // 已见过的最大服务端视图序号（小于它的 sessions 事件是排队中的过期事件，忽略跟随）
@@ -66,7 +66,7 @@ const viewStore = createStore({
 const V = viewStore.get();
 function cacheOf(id) {
   let c = V.sessCache.get(id);
-  if (!c) { c = { buf: [], loading: false, approval: false, needsRefresh: false, turn: null }; V.sessCache.set(id, c); }
+  if (!c) { c = { buf: [], loading: false, approval: false, needsRefresh: false, turn: null, autoTurnMl: undefined }; V.sessCache.set(id, c); }
   return c;
 }
 function viewIs(id) { return id === V.viewId && !cacheOf(id).loading; }

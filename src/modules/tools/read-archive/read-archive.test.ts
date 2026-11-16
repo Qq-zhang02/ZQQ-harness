@@ -103,12 +103,14 @@ test("read_archive：参数二选一与校验（接缝裁定、工具透传）�
 });
 
 test("read_archive：超 archiveRenderMaxChars 预算截为头部 + 省略标记（不 spill——存档全文在盘上）", async () => {
-  const big = "x".repeat(120_000);
+  // 缺省 archiveRenderMaxChars 已上调 80k→160k（真机待办：截断类阈值先调大再实测），
+  // 构造量随预算翻倍保持「超预算截断」语义（不依赖旧数字）
+  const big = "x".repeat(200_000);
   const deps = depsWith(() => ({ ok: true, label: "过程存档 · 子代理 big#1", messages: [{ role: "user", content: big }] as ChatMessage[] }));
   const tool = createReadArchiveTool(deps);
   const out = await tool.execute({ subId: 1 }, tctx);
-  assert.ok(out.length < 120_000, "输出被截断到预算内");
+  assert.ok(out.length < 200_000, "输出被截断到预算内");
   assert.ok(out.includes("[后文已省略"), "带省略标记");
   assert.ok(out.startsWith("存档注入 · 过程存档 · 子代理 big#1"), "头部标签保留");
-  assert.ok((await tool.execute({ subId: 1 }, tctx)).length < 120_000, "重复调用结果稳定（无状态）");
+  assert.ok((await tool.execute({ subId: 1 }, tctx)).length < 200_000, "重复调用结果稳定（无状态）");
 });

@@ -15,18 +15,22 @@ export function createReadFileTool(deps: SystemToolDeps): Tool {
     name: "read_file",
     description:
       "读取一个文本文件的内容（UTF-8），输出带行号，可用 offset/limit 分段读取大文件。" +
+      "每次调用必须提供 path（目标文件路径）参数。" +
       "成功读取会记入本会话的已读台账——覆写已有文件（write_file）或精确编辑（edit_file）前必须先读。" +
       `不支持目录、二进制文件与超过 ${TEXT_FILE_MAX_BYTES / 1024 / 1024}MB 的文件（那些用 run_pwsh）。`,
     parameters: {
       type: "object",
       properties: {
-        path: { type: "string", description: "文件路径（相对工作区根，或绝对路径）" },
+        path: { type: "string", description: "必填，目标文件路径（相对工作区根，或绝对路径）——每次调用都不能省略" },
         offset: { type: "integer", description: "可选，起始行号（1 起，默认 1）" },
         limit: { type: "integer", description: `可选，读取行数（默认 ${DEFAULT_LIMIT}）` },
       },
       required: ["path"],
     },
     async execute(args) {
+      if (!String(args.path ?? "").trim()) {
+        return "错误：缺少必填参数 path（要读取的目标文件路径，相对工作区根或绝对路径）——提供后重新调用。";
+      }
       let abs: string;
       try {
         abs = resolveTarget(deps.workspace().root, String(args.path ?? "")).abs;

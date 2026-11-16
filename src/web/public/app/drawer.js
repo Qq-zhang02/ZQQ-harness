@@ -4,7 +4,7 @@
 // 对外只暴露 render*/sync/reset/onSubagent/tickClock/refreshSubSum 与 drawer 稳定别名）。
 import { $, el, esc, mdLite, nearBottom, autoscroll, scrollStateOf, rebuildKeepScroll, keepOpenOf, sysLine, post, reconcileKeyed, renderToolBody } from "./dom.js";
 import { fmtTok, fmtDur, firstLine, prettyArgs } from "./autoreport.js";
-import { toolHeadline } from "./toolinfo.js";
+import { toolHeadline, isToolResultError } from "./toolinfo.js";
 import { createStore } from "./store.js";
 import { CFG, TRACE, C, V } from "./state.js";
 
@@ -798,6 +798,8 @@ function makeTimeline(container, expand, keepOpen) {
     const blk = toolCallId ? callBlks.get(toolCallId) : undefined;
     if (blk) {
       if (toolCallId) callBlks.delete(toolCallId);
+      // 失败即整块标红（与主对话 addToolRes 同款；判定单一出处 toolinfo.isToolResultError）
+      if (isToolResultError(text)) blk.classList.add("err");
       const pre = el("pre", "tres");
       pre.textContent = text.length > CFG.TRUNC_TOOL_FULL ? text.slice(0, CFG.TRUNC_TOOL_FULL) + "\n…（已截断）" : text;
       blk.querySelector(".tblock-b").appendChild(pre);

@@ -9,7 +9,7 @@ import { $, el, esc, sysLine, post, autoscroll, normWs } from "./dom.js";
 import { decideRoute, filterByMl, decideFollow } from "./replay.js";
 import { fmtTok, fmtDur } from "./autoreport.js";
 import { CFG, C, V, chatStore, cacheOf, viewIs, ctxLimitOf, sandboxLabel, imgRules } from "./state.js";
-import { onReasoningDelta, onContentDelta, addTool, addToolRes, finishSegments, userBubble, foldTurns, renderHistory, refreshSnapshot, renderImgBar, cacheRatePct, fmtPct } from "./chat.js";
+import { onReasoningDelta, onContentDelta, addTool, addToolRes, finishSegments, userBubble, foldTurns, renderHistory, refreshSnapshot, renderImgBar, cacheRatePct, fmtPct, maybeRenderAutoTurn } from "./chat.js";
 import { drawer, syncDrawer, resetDrawer, onSubagent, tickClock, setDrawerMax } from "./drawer.js";
 import { renderTree, renderRecycle, saveExpanded, T, bindSessionSwitch } from "./sidebar.js";
 import "./modals.js";
@@ -77,7 +77,7 @@ const SSE_HANDLERS = {
     if (d.state && d.state.workspace) { T.wsExpanded.add(normWs(d.state.workspace)); saveExpanded(); }
     if (viewIs(d.sessionId)) { chatStore.set({ state: d.state }); renderHistory(d.messages); syncDrawer(d.state); }
   },
-  state(d) { route("state", d, (s) => { chatStore.set({ state: s }); cacheOf(V.viewId).turn = s.turn ?? null; syncDrawer(s); }); },
+  state(d) { route("state", d, (s) => { chatStore.set({ state: s }); cacheOf(V.viewId).turn = s.turn ?? null; syncDrawer(s); maybeRenderAutoTurn(s.turn); }); },
   delta(d) { route("delta", d, () => { if (d.kind === "reasoning") onReasoningDelta(d.text); else onContentDelta(d.text); }); },
   tool(d) { route("tool", d, () => addTool(d.name, d.args ?? d.preview, d.id)); }, // docs/28 P2-2：args=完整参数（缺省退 preview）
   toolResult(d) { route("toolResult", d, () => addToolRes(d.output, d.meta, d.id)); },
@@ -93,6 +93,7 @@ const SSE_HANDLERS = {
       document.querySelectorAll("#chat .tblock.live").forEach((b) => {
         b.classList.remove("live");
         b.classList.add("collapsed");
+        b.classList.add("err"); // 中断的调用=失败形态：与结果错误同款红色标记
         const body = b.querySelector(".tblock-b");
         if (body && !body.querySelector(".tres")) body.appendChild(el("div", "tres-cap", "无返回结果（本轮被中断或调用未完成）"));
       });

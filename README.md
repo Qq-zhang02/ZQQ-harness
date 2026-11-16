@@ -9,7 +9,7 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **8 个系统�
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
 - **前端与桌面统一路线（已全部收官）**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）**。①地基（DT0+F1）②桌面形态（DT1 薄壳 + DT2 打包）③质量渐进（F2 store 化；F3 keyed 收官）④F4 大分区拆文件（index.html 2,906→473 行，视图七模块无环分层）⑤**DT3 桌面增强已完成**（审批通知/开机自启/托盘常驻/休眠恢复，四项独立 commit，详见 [docs/25](docs/25_开发文档-桌面端版本方案.md) 头部实施记录）。前端「运行阈值」设置入口见 [docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)。路线内无遗留开发项；后续新工作另立文档。
-- **最新一轮**（[docs/28](docs/28_开发文档-会话切换性能与子代理过程流实时化.md)，随 v0.3.0 发布）：**切换/新建对话性能**（会话元数据内存缓存 + MCP 连接后台装配 + 空占位就地换绑）与**子代理过程流实时化**（worker 思考/文字 ~120ms 合并流 + 工具块折叠行摘要〔pwsh=description、读写编辑=文件名〕与展开体〔write 只显示内容、edit 红绿 diff〕，主对话与抽屉同款）。
+- **最新一轮**（[docs/29](docs/29_交接文档-真机待办六项修复.md)，真机待办六项）：**系统提示加「文件操作优先用文件工具」行**（治 agent 爱用 pwsh 读写文件）+ **协调者 TASKS.md 提示词条退役** + **截断类阈值缺省值翻倍**（toolResult/report/archive 渲染/read_file 五键，真实场景实测前先放宽）+ **文件三工具缺 path 指引强化**（description 点名必填 + 缺参指引性报错）+ **协调者送达气泡即时渲染**（报告送达即弹 🤖 气泡，不再要切走切回）；token 用量 MCP 分类经复查不复现（探针验证分类正确）。上一轮：[docs/28](docs/28_开发文档-会话切换性能与子代理过程流实时化.md)（切换/新建对话性能 + 子代理过程流实时化，随 v0.3.0 发布）。
 - **打包与冒烟速查**：[docs/27](docs/27_操作手册-桌面端打包与冒烟.md)——给自己看的操作手册（照抄命令即可）：预检三件套（typecheck + test + smoke:sa4）→ 双镜像 electron-builder 打包 → 打包版验收清单与常见坑速查。改版本号发版走这条线（v0.3.1 即按此流程）。
 
 ## 快速开始
@@ -78,7 +78,7 @@ npm run desktop           # 桌面版（Electron 薄壳，docs/25 DT1）：独�
 | `load_skill` | 加载某技能的 SKILL.md 全文 | 清单在系统提示，按需加载 |
 | `manage_mcp` | 管理 MCP 服务器配置（list/add/remove） | 校验+原子写+损坏文件拒改；写入后自动重连，**装完即用** |
 | `view_image` | 分析一张本地图片文件，返回文字描述（docs/10；docs/12 R2 修订） | PNG/JPEG/GIF/WEBP ≤8MB；**优先用当前会话模型自身视觉**（勾了视觉即免配视觉模型），无自身视觉才借用配置的视觉模型（未配置返回指引）；只用于磁盘图片文件——消息携带的图模型已直看；用量计入会话合计 |
-| `read_archive` | 存档注入（docs/17）：读取子代理过程存档或主对话记录，把 JSON 转成**可读文本**注入上下文 | `subId`（本会话子代理存档）/`sessionId`（主对话档）二选一，缺参返回可用清单；新旧存档格式都兼容；超 `archiveRenderMaxChars`（默认 80k）头部截断；协调者不注册（接续上下文由新 worker 自己读，协调者只写任务书指引） |
+| `read_archive` | 存档注入（docs/17）：读取子代理过程存档或主对话记录，把 JSON 转成**可读文本**注入上下文 | `subId`（本会话子代理存档）/`sessionId`（主对话档）二选一，缺参返回可用清单；新旧存档格式都兼容；超 `archiveRenderMaxChars`（默认 160k）头部截断；协调者不注册（接续上下文由新 worker 自己读，协调者只写任务书指引） |
 
 **文件三工具的关键语义**：
 
@@ -107,11 +107,11 @@ npm run desktop           # 桌面版（Electron 薄壳，docs/25 DT1）：独�
 - **子代理上下文治理**（docs/10 R1，三档；docs/14 修订说明载体）：计算该子代理的**上下文占用百分比**（与主对话同口径：上下文总量优先锚定最近一次 API 实测 usage、其后新增内容本地估算补足，无实测数据时回退纯本地估算 ÷ 提供方上下文长度）——**一直显示**：运行中实时估算（抽屉行每 2s 轮询刷新、详情页头部随轮询与事件流、state 快照随发），任务收尾定格进报告 stats 行、idle/archived/done 事件与审计记录——**治理说明只随报告文本走**（docs/14：协调者系统提示不注入治理条目——占用是宿主侧计算的，子代理模型并不知道自己的占用，预先描述只会诱导协调者向子代理索要数据；协调者从报告自带的用量行/预警/拒收/归档说明获知并按指引行事）；**三档处置**：占用 > `subagentWarnContextPct`（默认 25%）→ 报告附「⚠ 上下文过长」预警（仍可追加，建议尽快归档重派）；≥ `subagentFollowupContextPct`（默认 35%）→ `agent_followup` 被**服务端直接拒收**（文案附归档重派与过程存档接续指引）；任务完成时 > `subagentArchiveContextPct`（默认 50%）→ **强制归档**（不转待命，报告说明原因——继续驻留只会诱导向高幻觉风险实例追加任务）
 - **并行与配额**（docs/15/16 修订）：并行派发 = 协调者**同一轮发多个 `agent_task` 调用**（工具循环对同轮多调用并行执行；历史会话存档中的 `agent_tasks` 块仍可渲染，工具已退役不再可调）；**派发非阻塞**（docs/16）——每笔调用立即返回「[子代理 X#N 已派发]」回执（回执附指引：报告自动送达、到齐前不要编造或提前汇总），任务在后台执行；超出**并发上限**（subagentMaxConcurrent，默认 3）或**累计上限**（subagentMaxTotal，默认 24/会话，重启按存档记录续期）的派发在同步段**立即拒绝不排队**；每 worker 轮次上限 subagentMaxToolRounds（默认 40，达上限自动收尾交报告）；可选 `timeoutMs`（≥60s）
 - **打断即终结**（docs/18，取代 docs/7 W2-S 的暂停/恢复）：**没有暂停挂起、没有恢复**——打断（stop）= 立即中止进行中的 LLM 请求与工具执行（含 pwsh 进程；已完成的进度保留在历史、半截内容作废），任务随即结算：**一次性子代理随之归档；可复用子代理转空闲待命**（保留全部上下文，继续该方向的工作只能用 `agent_followup` 发新任务书，被打断的任务不会自动续跑）。双入口：协调者的 `stop_subagent` 工具（按 name 或 subId 匹配；**任务运行中的插话即时应答同样能真正执行两件控制工具**，见上）与前端抽屉行的 ⏹ 按钮（`POST /api/subagent/control`，同一路由也承载归档 action；**界面打断是协调者看不见的变动，会自动送达「[子代理状态 · 自动送达]」通知**——工具路径的返回文案已抵达协调者，不重复送）；打断结算的失败报告**不重复送达**（通知/工具文案已覆盖同一信息）；失败归因「任务被用户停止」，并发槽随结算立即释放（不再站着空位）
-- **完成即时送达，协调者随时收信**（docs/16，取代 docs/11 W1 的「暂停先行返回」）：**派发本就不阻塞**（即时回执），每个子代理任务的每次结算——完成/失败（含空回复、超时、中止）/归档——都以「[子代理任务报告 · 自动送达]」开头的消息进入协调者收件箱（与用户运行中插话同一队列）：**空闲立即开轮处理，忙碌时排队、轮末排空时把紧随其后的连续报告合并为一条只开一轮**（用户消息不合并，顺序不变）——像用户消息一样随时到达，多份报告按完成顺序送达，一次性子代理的报告注明"已自动归档"；归档请求中止的结果带「已按归档请求归档」说明（不再误报"已保留待命"）；界面归档/打断子代理同样送达「[子代理状态 · 自动送达]」通知。协调者收到部分报告时只向用户简报进度或按需干预（追派/打断/归档），全部到齐后再汇总交付
+- **完成即时送达，协调者随时收信**（docs/16，取代 docs/11 W1 的「暂停先行返回」）：**派发本就不阻塞**（即时回执），每个子代理任务的每次结算——完成/失败（含空回复、超时、中止）/归档——都以「[子代理任务报告 · 自动送达]」开头的消息进入协调者收件箱（与用户运行中插话同一队列）：**空闲立即开轮处理，忙碌时排队、轮末排空时把紧随其后的连续报告合并为一条只开一轮**（用户消息不合并，顺序不变；**界面把合并消息拆回每份一张独立 🤖 卡片**——按行首送达前缀切段，摘要各归各的报告，真机待办；切回/刷新同路径）——像用户消息一样随时到达，多份报告按完成顺序送达，一次性子代理的报告注明"已自动归档"；归档请求中止的结果带「已按归档请求归档」说明（不再误报"已保留待命"）；界面归档/打断子代理同样送达「[子代理状态 · 自动送达]」通知。协调者收到部分报告时只向用户简报进度或按需干预（追派/打断/归档），全部到齐后再汇总交付
 - **子代理运行计时**：每个 worker 计**本次任务用时**（运行中本地 1s 滴答实时显示）与**累计用时**（可复用跨任务累计、一次性=单任务）；任务收尾定格进报告 stats 行（「用时 3m12s」）、抽屉行 meta、详情页头部、idle/archived/done/error 事件与审计记录（随会话存档恢复）；`/status` 可见子代理累计用时
 - **冲突治理**（多子代理并行是硬性需求，docs/5 §5）：**文件 hash 乐观锁**（写入校验"本 reader 上次所见"快照，读取后被并行子代理/外部进程改过即拒、重读后可自愈；审批通过后落盘前终检）；**scope 写入分区**（任务书声明允许写入的相对路径前缀——文件工具硬拒；pwsh 守卫强制弹卡由用户裁决，**只读命令豁免**：管道段首 token 全在只读 cmdlet 白名单且无写形态（重定向/写 cmdlet/执行器）时不弹，docs/7 W1-A'；守卫提取也做了精度修正——正则 Pattern 与源码文本不再被当路径，docs/7 W1-A）；**审批串行队列**（一次一卡按序决议，卡带「🤖 来自子代理」来源标注）；中止信号级联到全部在跑子代理
 - **可观测性**（SA4 + docs/6 P3 + docs/8 + docs/10-13 + docs/28）：SSE `subagent` 事件驱动（phase：spawned / **delta（docs/28：思考/文字增量流，~120ms 合并批，带 ml 锚点）** / tool（附完整参数 args，docs/28）/ toolResult / task / idle / archived / done / error（docs/18 起 paused/resumed 退役；error 含打断结算）；idle/archived/done/error 载荷带 contextPct 与用时）；顶栏 🤖 开关**子代理侧栏抽屉**（仅协调者会话且有 worker 记录时显示，普通会话零感知）——**列表页**每个 worker 一行：运行中置顶 + live 指示 + 状态图标（▶/💤 待命/📦 已归档/✓/✗）+ 任务摘要/轮数/用量/**上下文占比/用时**（运行中每 2s **就地刷新**（不重渲染详情页、阅读位置不跳，docs/11 W2）、用时本地 1s 滴答；>25% 附 ⚠较长、≥35% 附 ⚠不宜再派，档位随 /api/meta 下发，docs/10）+ ⏹ 打断与 📦 归档按钮；**详情页**三态管线：完成后拉取**全程 transcript 存档**（任务书/思考/正文/工具与结果），**运行中实时直播**（docs/28：worker 的思考与文字增量以 ~120ms 合并批流式穿透——与主对话同款打字机/思考框体验，工具调用即时呈现〔折叠头一行摘要与展开体 diff 同主对话〕；4s 轮询服务端实时历史兜底校正，与普通会话同构的全量过程**跨刷新/切会话不丢**，docs/8 第三棒），存档读取失败时由 `tool`/`toolResult` 事件步骤流保底（输出截断 500 字符）；**折叠块完成即收起**——与普通对话同款：工具块结果一到达即折、思考块随消息产出定型折，任意时刻默认展开的只有进行中的块（三种视图同规则，docs/13）；**新增内容不打扰回看**——非贴底时保持阅读位置、展开态冻结（正在读的块不因完成塌掉，重渲染不清屏不闪空，docs/11 W2），贴底自动跟随最新；**⛶ 放大 / ⤡ 缩小**——抽屉占满整页阅读（列表/时间线居中限宽 1000px，内容零重建、阅读位置保留；列表页同样可放大），Esc / 出现审批卡自动回到侧边抽屉（docs/12 A）。主列 agent_task 块只留一行子代理动态摘要 + 🤖 快捷入口（docs/16 起块内折叠体是派发回执，完成报告以 🤖 徽标的「自动送达」气泡进主列）；「📄 过程」入口与报告尾的过程档案标记（`[[过程档案#N]]`）统一进详情页（自动送达气泡同样渲染）——**刷新/重启后仍可点开**；**worker 全程 transcript 落盘**（思考/工具调用与结果/报告，存 spill 私有目录，随会话删除清理；可复用 worker 跨任务累积重写同一存档，运行中拉取以内存活历史优先）；worker 用量一次汇总计入会话合计（token 面板/`/status` 可见：🎯 子代理 N 次·成败·累计输入输出·累计用时）；已完成子代理的审计记录（名字/成败/轮数/用量/上下文占比/用时/时间）随会话存档恢复。过程只在用户点开时进 UI，**不进前台历史/上下文**（两层架构不破）
-- 报告超 `subagentResultMaxChars`（默认 8,000 字符）自动修剪，剪掉量超阈值时全文落 worker 私有 spill 目录；进度清单约定工作区根 `TASKS.md`（由子代理代写，协调者压缩后重读恢复全局视图）
+- 报告超 `subagentResultMaxChars`（默认 16,000 字符）自动修剪，剪掉量超阈值时全文落 worker 私有 spill 目录
 
 ## 命令审核（approval）
 
@@ -127,7 +127,7 @@ npm run desktop           # 桌面版（Electron 薄壳，docs/25 DT1）：独�
 ## 上下文管理
 
 - **token 度量缓存与实测锚定**：历史消息按对象身份缓存计数（历史是只追加的，新消息才真正分词），上下文估算不再每轮全量重算；**上下文总量优先锚定 API 实测**（usageAnchor：run 内每次请求返回 usage 即记录实测 promptTokens 与请求时刻形状，`contextEstimate` = 实测 + 其后新增的本地估算；压缩/恢复/清空/换提供方后锚点失效回退纯估算，下次请求重建）；思考文本的计数口径与回传条件严格同源（发了才计、计了必发），守住"六类合计=总量"不变量
-- **工具结果统一修剪**（docs/10 简化）：在工具注册表层对 run_pwsh、文件工具与所有 MCP 工具统一生效——超过 `toolResultMaxChars`（默认 24,000 字符）**只保留预算内头部** + 省略标记（不再保留尾部；不劈开代理对）；UI 始终展示完整输出，修剪只影响入模型的内容
+- **工具结果统一修剪**（docs/10 简化）：在工具注册表层对 run_pwsh、文件工具与所有 MCP 工具统一生效——超过 `toolResultMaxChars`（默认 48,000 字符）**只保留预算内头部** + 省略标记（不再保留尾部；不劈开代理对）；UI 始终展示完整输出，修剪只影响入模型的内容
 - **超长输出落盘（spill）**：**触发修剪即全文落盘**（无门槛，docs/10——已剪就存，磁盘成本远小于信息损失），全文存到 `~/.ZQQ-harness/spill/<会话>/`，入模型的文本附 `[完整输出已存盘：<路径>]`——模型有文件工具和 pwsh，需要时自己读；彻底删除/删除会话时连带清理
 - **压缩（compaction）**：三个触发入口——
   1. **自动**：每轮开始前上下文占用 ≥ 阈值（默认 80%，服务端下发前端）→ 先压缩再跑轮；
@@ -218,16 +218,16 @@ description: 为本项目生成规范的 git 提交信息
     "maxToolRounds": 15,
     "pwshTimeoutMs": 60000,
     "pwshMaxTimeoutMs": 300000,
-    "toolResultMaxChars": 24000,
+    "toolResultMaxChars": 48000,
     "subagentMaxConcurrent": 3,
     "subagentMaxTotal": 24,
     "subagentMaxToolRounds": 40,
-    "subagentResultMaxChars": 8000,
+    "subagentResultMaxChars": 16000,
     "subagentMaxTasks": 12,
     "subagentWarnContextPct": 25,
     "subagentFollowupContextPct": 35,
     "subagentArchiveContextPct": 50,
-    "archiveRenderMaxChars": 80000,
+    "archiveRenderMaxChars": 160000,
     "escalationMax": 8,
     "agentsMdMaxChars": 16000,
     "mcpHandshakeTimeoutMs": 20000,
@@ -239,8 +239,8 @@ description: 为本项目生成规范的 git 提交信息
     "visionTimeoutMs": 120000,
     "providerTestTimeoutMs": 20000,
     "textFileMaxBytes": 5242880,
-    "readFileDefaultLines": 2000,
-    "readFileMaxChars": 100000,
+    "readFileDefaultLines": 4000,
+    "readFileMaxChars": 200000,
     "subagentTimeoutMinMs": 60000,
     "compactionSummaryMaxChars": 300000,
     "httpBodyMaxBytes": 33554432,
@@ -250,7 +250,7 @@ description: 为本项目生成规范的 git 提交信息
 ```
 
 - **disabledModules（模块启停）**：按模块名从组合清单过滤（内置与外部模块一视同仁）。禁用不存在的名字会在启动日志提醒（防打字错误）；被保留模块 `dependsOn` 被禁模块 → 启动失败并指名（装配器 fail-fast）。禁用 UI 模块（如 `web.workspaces`）对应功能即消失——请知道自己在做什么。
-- **thresholds（阈值覆盖）**：三十四个运行阈值——子代理九个（并发/累计/轮次上限、报告预算、可复用任务数上限、上下文预警线/followup 门槛/强制归档线，docs/10；存档注入渲染预算 `archiveRenderMaxChars` 默认 80k，docs/17）+ **阶段 B 第一批八个**（docs/21 §2.3 / docs/22 §4.2）：`escalationMax` 审批升级额度（默认 8）、`agentsMdMaxChars` AGENTS.md 注入截断（16k）、`mcpHandshakeTimeoutMs`/`mcpCallTimeoutMs` MCP 握手/调用超时（20s/60s——慢 MCP 服务器或首次下载依赖时可放宽）、`pwshCaptureMaxBytes` 输出采集软上限（1MB）、`precompactKeep` 压缩备份保留份数（3，环形覆写）、`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 启动清扫年龄（168h/24h）+ **阶段 B 第二批九个**（docs/21 §2.3 后段）：`visionTimeoutMs` 视觉分析超时（120s）、`providerTestTimeoutMs` 提供方测试连接超时（20s）、`textFileMaxBytes` 文件三工具大小边界（5MB）、`readFileDefaultLines`/`readFileMaxChars` read_file 缺省行数/单次字符上限（2000/100k）、`subagentTimeoutMinMs` 子代理任务可申请超时下限（60s）、`compactionSummaryMaxChars` 压缩摘要输入预算（300k）、`httpBodyMaxBytes` 请求体上限（32MB，**校验强制 ≥ 图片消息 base64 地板值**）、`imageTokenEst` 每图 token 估算（800，换视觉模型可校准）。键省略即用缺省；非法值（越界/类型错）逐项忽略并告警；未知键告警（检查拼写）。生效值经 `config.ts` 导出常量下发——所有消费方（压缩触发/保留预算、工具轮次、pwsh 超时、修剪预算、默认上下文、子代理配额与上下文治理、文件工具边界、请求体上限）零改动即被覆盖，`/api/meta` 同步反映。（`spillThreshold` 已废弃——docs/10 起修剪触发即落盘无门槛；已配置的旧键静默忽略不告警。docs/21 阶段 A 起三个压缩键更名为 `compaction*`（历史拼写错误修正），**旧拼写 `compection*` 三键双读兼容**——读到即映射到新键并告警更名提示，建议改用新键。）**可视化编辑（docs/24）**：Web UI 顶栏 ⚙ 打开「运行阈值」面板——分组/说明/范围/默认值全部由服务端 schema 下发（`thresholdSchema()` 单一出处，前端零硬编码），保存走严格校验（任一键非法整体 400 拒绝指名该键）→ 原子写回纯 JSON（注释会丢，值不变）→ `initConfig()` 热应用（各运行时读取点立即生效、`/api/meta` 随之反映，**包括运行中会话的工具轮次上限**；`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 清扫与 `disabledModules` 装配标「重启后生效」；子代理轮次上限按后续派发生效）。`disabledModules` 面板内只读展示。
+- **thresholds（阈值覆盖）**：三十四个运行阈值——子代理九个（并发/累计/轮次上限、报告预算、可复用任务数上限、上下文预警线/followup 门槛/强制归档线，docs/10；存档注入渲染预算 `archiveRenderMaxChars` 默认 160k，docs/17）+ **阶段 B 第一批八个**（docs/21 §2.3 / docs/22 §4.2）：`escalationMax` 审批升级额度（默认 8）、`agentsMdMaxChars` AGENTS.md 注入截断（16k）、`mcpHandshakeTimeoutMs`/`mcpCallTimeoutMs` MCP 握手/调用超时（20s/60s——慢 MCP 服务器或首次下载依赖时可放宽）、`pwshCaptureMaxBytes` 输出采集软上限（1MB）、`precompactKeep` 压缩备份保留份数（3，环形覆写）、`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 启动清扫年龄（168h/24h）+ **阶段 B 第二批九个**（docs/21 §2.3 后段）：`visionTimeoutMs` 视觉分析超时（120s）、`providerTestTimeoutMs` 提供方测试连接超时（20s）、`textFileMaxBytes` 文件三工具大小边界（5MB）、`readFileDefaultLines`/`readFileMaxChars` read_file 缺省行数/单次字符上限（4000/200k）、`subagentTimeoutMinMs` 子代理任务可申请超时下限（60s）、`compactionSummaryMaxChars` 压缩摘要输入预算（300k）、`httpBodyMaxBytes` 请求体上限（32MB，**校验强制 ≥ 图片消息 base64 地板值**）、`imageTokenEst` 每图 token 估算（800，换视觉模型可校准）。键省略即用缺省；非法值（越界/类型错）逐项忽略并告警；未知键告警（检查拼写）。生效值经 `config.ts` 导出常量下发——所有消费方（压缩触发/保留预算、工具轮次、pwsh 超时、修剪预算、默认上下文、子代理配额与上下文治理、文件工具边界、请求体上限）零改动即被覆盖，`/api/meta` 同步反映。（`spillThreshold` 已废弃——docs/10 起修剪触发即落盘无门槛；已配置的旧键静默忽略不告警。docs/21 阶段 A 起三个压缩键更名为 `compaction*`（历史拼写错误修正），**旧拼写 `compection*` 三键双读兼容**——读到即映射到新键并告警更名提示，建议改用新键。）**可视化编辑（docs/24）**：Web UI 顶栏 ⚙ 打开「运行阈值」面板——分组/说明/范围/默认值全部由服务端 schema 下发（`thresholdSchema()` 单一出处，前端零硬编码），保存走严格校验（任一键非法整体 400 拒绝指名该键）→ 原子写回纯 JSON（注释会丢，值不变）→ `initConfig()` 热应用（各运行时读取点立即生效、`/api/meta` 随之反映，**包括运行中会话的工具轮次上限**；`spillMaxAgeHours`/`sandboxTmpMaxAgeHours` 清扫与 `disabledModules` 装配标「重启后生效」；子代理轮次上限按后续派发生效）。`disabledModules` 面板内只读展示。
 - **外部模块目录 `~/.ZQQ-harness/modules/*.ts`**：每个文件 `export default` 一个模块对象（`{ name, dependsOn?, setup(ctx) }`），在内置模块之后按文件名序装载。模块体可以**零 import**——`setup(ctx)` 收到的 `ctx` 上就是各扩展点注册表（`ctx.tools` / `ctx.routes` / `ctx.promptSections` / `ctx.skillSources` …），直接 `register` 即可；需要类型提示时用 `import type` 从本项目 `src/core/*` 引入（`import type` 在类型擦除后零运行时开销，不会产生真实依赖）。**宽松装载**：导入失败 / 缺合法 default 导出 / 与已有模块重名 / `dependsOn` 不在已装配清单 → 打印错误并跳过该文件，不影响其余模块与应用启动；`setup` 抛错仍 fail-fast 退出（错误信息带模块名）。`*.test.ts` 不装载；多个外部模块按文件名序可互相依赖（先装载者可为后者的依赖）。
 
 ## 斜杠命令
@@ -432,6 +432,7 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `26_开发文档-前端架构优化与桌面端统一路线.md`——前端优化与桌面端**统一总路线**（**实施顺序以此为准；F1–F4 已全部实施**，头部含实施记录）：前端五痛点诊断（竞态不可测/状态无封装/整列表重灌/单文件无边界/哨兵联动）+ 核心决策「无构建 ≠ 单文件」（原生 ES Modules + node:test 直测 + checkJs）+ F1 纯逻辑抽离（replay/turns/autoreport 三模块与 web-static 模块）→ F2 store 化（app/store.js 手写状态仓 + ~22 顶层变量五区迁仓 + applyState 订阅化）→ F3 渲染 keyed 收官（抽屉列表/回收站/提供方列表三点 + renderHistory/makeTimeline 豁免及其依据）→ F4 大分区拆文件（视图七模块无环分层 + index.html 骨架化 ≤500 行 + 不变量正式修订）+ 否决记录（不引框架/CDN）+ 与 DT 线的四梯队编排、依赖图、共享基建与统一维护纪律
 - `27_操作手册-桌面端打包与冒烟.md`——**给自己看的速查手册**（照抄命令即可，原理看 25/26）：dist/ 里每个产物是什么/怎么用（Setup/portable/win-unpacked/blockmap）、重建安装包完整命令（PS 与 Git Bash 双写法+双镜像原因）、三层冒烟法（自动测试→开发模式人工看→打包版实测清单）、静默装/卸、常见坑速查表（exit 3/卡下载/哨兵红/新模块 404）
 - `28_开发文档-会话切换性能与子代理过程流实时化.md`——切换/新建对话性能（会话元数据内存缓存、MCP 连接后台装配、空占位就地换绑）+ 子代理过程流实时化（worker 思考/文字增量 ~120ms 合并流、工具块折叠行摘要与展开体分流〔write 只显内容 / edit 红绿 diff〕，主对话与抽屉同款）+ v0.2.0 真机回归修复记录
+- `29_交接文档-真机待办六项修复.md`——真机待办六项处置记录（2026-11-16 已实施）：文件工具优先提示词 / TASKS.md 退役 / 截断阈值上调（含受影响测试校准记录）/ write_file 缺参指引 / 送达气泡即时渲染（turn 锚点复用，服务端零改动）/ token 分类复查结论
 
 ## 已知限制
 
