@@ -22,7 +22,11 @@ test("toolHeadline：读/写/编辑折叠行=动词+文件名（read 带 offset 
   assert.equal(toolHeadline("read_file", j({ path: "src/web/server.ts" }), ""), "读取 src/web/server.ts");
   assert.equal(toolHeadline("read_file", j({ path: "big.log", offset: 100, limit: 50 }), ""), "读取 big.log · 第 100 行起");
   assert.equal(toolHeadline("write_file", j({ path: "docs/28 x.md", content: "…" }), ""), "写入 docs/28 x.md");
-  assert.equal(toolHeadline("edit_file", j({ path: "a.ts", old_string: "x", new_string: "y" }), ""), "编辑 a.ts");
+  assert.equal(toolHeadline("edit_file", j({ path: "a.ts", old_string: "x", new_string: "y" }), ""), "编辑 a.ts · +1 -1 行",
+    "真机待办：折叠头附 diff 规模标注（行内小改 = +1 -1 行）");
+  assert.equal(toolHeadline("edit_file", j({ path: "a.ts", old_string: "l1\nl2", new_string: "n1\nn2\nn3" }), ""), "编辑 a.ts · +3 -2 行");
+  assert.equal(toolHeadline("edit_file", j({ path: "a.ts" }), "无 old/new preview"), "编辑 a.ts",
+    "畸形 args（缺 old/new）仍显示路径——路径是最重要信息，不退 fallback");
   assert.equal(toolHeadline("read_file", j({ offset: 5 }), "no-path-preview"), "no-path-preview",
     "缺 path（非法形态）→ 退 fallback");
 });
@@ -59,9 +63,30 @@ test("toolBodyBlocks：edit_file 展开体=diff（old/new 全文）+ 消歧注�
   assert.equal(toolBodyBlocks("edit_file", j({ path: "a.ts", old_string: "x" })), null, "缺 new_string → null");
 });
 
+test("toolBodyBlocks：run_pwsh 展开体=描述注记+命令本体（不再显示参数 JSON）", () => {
+  assert.deepEqual(
+    toolBodyBlocks("run_pwsh", j({ description: "列出目录", command: "Get-ChildItem -Recurse" })),
+    [
+      { type: "note", text: "列出目录" },
+      { type: "content", text: "Get-ChildItem -Recurse", cap: "命令" },
+    ],
+  );
+  assert.deepEqual(
+    toolBodyBlocks("run_pwsh", j({ command: "npm test" })),
+    [{ type: "content", text: "npm test", cap: "命令" }],
+    "无 description 时只有命令块",
+  );
+  assert.equal(toolBodyBlocks("run_pwsh", j({ description: "只给了描述" })), null, "缺命令（畸形）→ null 降级参数块");
+  assert.equal(toolBodyBlocks("run_pwsh", j({ command: "   " })), null, "空白命令 → null");
+});
+
+test("toolBodyBlocks：read_file 展开体=[]（空数组——只留结果 tres，读取内容就在结果里）", () => {
+  assert.deepEqual(toolBodyBlocks("read_file", j({ path: "a.ts" })), []);
+  assert.deepEqual(toolBodyBlocks("read_file", j({ path: "big.log", offset: 100, limit: 50 })), []);
+});
+
 test("toolBodyBlocks：其他工具/参数不可解析 → null（调用方走参数 JSON 展示）", () => {
-  assert.equal(toolBodyBlocks("read_file", j({ path: "a.ts" })), null);
-  assert.equal(toolBodyBlocks("run_pwsh", j({ command: "ls" })), null);
+  assert.equal(toolBodyBlocks("load_skill", j({ name: "x" })), null);
   assert.equal(toolBodyBlocks("write_file", '{"content": "被截断的 JSON…'), null);
   assert.equal(toolBodyBlocks("edit_file", undefined), null);
   assert.equal(toolBodyBlocks("write_file", j([1, 2])), null, "数组形态参数 → null");

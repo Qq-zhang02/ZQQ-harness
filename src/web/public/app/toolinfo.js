@@ -43,6 +43,13 @@ export function toolHeadline(name, argsRaw, fallbackPreview) {
     } else if (name === "write_file" && p) {
       return "写入 " + p;
     } else if (name === "edit_file" && p) {
+      // 折叠头附 diff 规模标注（真机待办：展开前就能看出"少了几行、多了几行"）——
+      // 行数取 old/new 的换行段数（不逐行 diff，规模感足够；replace_all 多处命中时是总行数）
+      if (typeof a.old_string === "string" && typeof a.new_string === "string") {
+        const rm = a.old_string.split("\n").length;
+        const add = a.new_string.split("\n").length;
+        return "编辑 " + p + " · +" + add + " -" + rm + " 行";
+      }
       return "编辑 " + p;
     }
   }
@@ -53,16 +60,19 @@ export function toolHeadline(name, argsRaw, fallbackPreview) {
 /**
  * @typedef {{ type: "args", text: string }} ArgsBlock 参数 JSON 块（其他工具/降级路径）
  * @typedef {{ type: "note", text: string }} NoteBlock 一行注记（description 等）
- * @typedef {{ type: "content", text: string }} ContentBlock 写入内容块（write_file）
+ * @typedef {{ type: "content", text: string, cap?: string }} ContentBlock 内容块（write_file 的写入内容 / run_pwsh 的命令本体；cap=块头说明文字，缺省「写入内容」）
  * @typedef {{ type: "diff", oldText: string, newText: string, note?: string }} DiffBlock 红绿 diff 块（edit_file；note=occurrence/replace_all 注记）
  * @typedef {ArgsBlock | NoteBlock | ContentBlock | DiffBlock} ToolBodyBlock
  */
 
 /**
- * 工具块展开体片段（docs/28 需求：展开才见具体内容）。
- * write_file → [note?, content]（只显示写入内容，不显示参数 JSON）；edit_file → [note?,
- * diff]（old_string 各行红-/new_string 各行绿+，附消歧注记）；其余 → null（调用方按现状
- * 渲染 prettyArgs 参数块）。参数不可解析 → null（降级：argsRaw 可能是截断的 preview）。
+ * 工具块展开体片段（docs/28 需求 + 真机待办「展示理念统一」：只显示内容/描述/结果这些
+ * 重要部分，不显示参数 JSON 格式块）。
+ * write_file → [note?, content(cap=写入内容)]；edit_file → [note?, diff]（old_string 各行
+ * 红-/new_string 各行绿+，附消歧注记）；run_pwsh → [note?(description), content(cap=命令)]——
+ * 展开体=描述+命令本体，不再显示 prettyArgs JSON；read_file → []（空数组=有定义无参数块，
+ * 展开体只留结果 tres——读取的内容就在结果里，路径/起始行折叠头已有）；其余 → null
+ * （调用方按现状渲染 prettyArgs 参数块）。参数不可解析 → null（降级：argsRaw 可能是截断的 preview）。
  * @param {string} name 工具名
  * @param {string | undefined} argsRaw 完整参数 JSON
  * @returns {ToolBodyBlock[] | null}
@@ -73,9 +83,19 @@ export function toolBodyBlocks(name, argsRaw) {
   /** @type {ToolBodyBlock[]} */
   const blocks = [];
   const d = typeof a.description === "string" ? a.description.trim() : "";
+  if (name === "run_pwsh") {
+    const c = typeof a.command === "string" ? a.command : "";
+    if (!c.trim()) return null; // 缺命令（畸形/截断）→ 降级参数块
+    if (d) blocks.push({ type: "note", text: d });
+    blocks.push({ type: "content", text: c, cap: "命令" });
+    return blocks;
+  }
+  if (name === "read_file") {
+    return []; // 展开体只留结果（读取的文件内容在 tres 里）——不显示参数 JSON
+  }
   if (name === "write_file" && typeof a.content === "string") {
     if (d) blocks.push({ type: "note", text: d });
-    blocks.push({ type: "content", text: a.content });
+    blocks.push({ type: "content", text: a.content }); // cap 缺省「写入内容」（renderToolBody 兜底）
     return blocks;
   }
   if (name === "edit_file" && typeof a.old_string === "string" && typeof a.new_string === "string") {

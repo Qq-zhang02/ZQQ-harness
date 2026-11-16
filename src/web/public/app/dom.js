@@ -110,7 +110,7 @@ function renderToolBody(container, name, argsRaw, trunc) {
     if (b.type === "note") {
       container.appendChild(el("div", "tres-cap", "📌 " + b.text));
     } else if (b.type === "content") {
-      const cap = el("div", "tres-cap", "写入内容");
+      const cap = el("div", "tres-cap", b.cap || "写入内容"); // cap：write=写入内容 / pwsh=命令（toolinfo 定制）
       const pre = el("pre", "tres wbody");
       pre.textContent = b.text.length > trunc ? b.text.slice(0, trunc) + "\n…（显示已截断）" : b.text;
       container.appendChild(cap);
