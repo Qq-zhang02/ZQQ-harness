@@ -65,6 +65,8 @@ export interface EffectiveThresholds {
   /** 可复用子代理的强制归档线（(0,100] 整数百分比；任务完成时上下文占用 > 该值则不转
    *  待命直接归档，docs/10 R1） */
   subagentArchiveContextPct: number;
+  /** subagent_status 状态表附带的历史记录条数上限（≥1 整数；all=true 附最近 N 条，docs/32） */
+  subagentStatusHistoryMax: number;
   /** read_archive 存档渲染字符预算（>0 整数；渲染文本超出截为头部 + 省略标记，docs/17） */
   archiveRenderMaxChars: number;
   // ---- 阶段 B 第一批（docs/21 §2.3 前 8 键，docs/22 §4.2）----
@@ -308,6 +310,10 @@ export const THRESHOLD_RULES: Readonly<Record<keyof EffectiveThresholds, Thresho
     hint: "≥1000 的毫秒数", desc: "agent_task/followup 可申请超时（timeoutMs）的最小值——schema/校验/提示词三处同源", group: "subagent",
     range: { min: 1_000 },
   },
+  subagentStatusHistoryMax: {
+    hint: "≥1 的整数条数", desc: "subagent_status 状态表 all=true 附带的历史记录条数上限（取最近 N 条；工具描述与提示词文案同源插值）", group: "subagent",
+    range: { integer: true, min: 1 },
+  },
   mcpHandshakeTimeoutMs: {
     hint: "≥1000 的毫秒数", desc: "MCP stdio 握手超时——首次运行要下载依赖/模型的服务器可调大", group: "mcp",
     range: { min: 1_000 },
@@ -513,6 +519,7 @@ export function resolveThresholds(t: ThresholdOverrides): EffectiveThresholds {
     readFileDefaultLines: t.readFileDefaultLines ?? 4_000,
     readFileMaxChars: t.readFileMaxChars ?? 200_000,
     subagentTimeoutMinMs: t.subagentTimeoutMinMs ?? 60_000,
+    subagentStatusHistoryMax: t.subagentStatusHistoryMax ?? 20,
     compactionSummaryMaxChars: t.compactionSummaryMaxChars ?? 300_000,
     httpBodyMaxBytes: t.httpBodyMaxBytes ?? 32 * 1024 * 1024,
     imageTokenEst: t.imageTokenEst ?? 800,
@@ -753,6 +760,7 @@ export function initConfig(cfg: HarnessConfig = loadHarnessConfig()): HarnessCon
   READ_FILE_DEFAULT_LINES = eff.readFileDefaultLines;
   READ_FILE_MAX_CHARS = eff.readFileMaxChars;
   SUBAGENT_TIMEOUT_MIN_MS = eff.subagentTimeoutMinMs;
+  SUBAGENT_STATUS_HISTORY_MAX = eff.subagentStatusHistoryMax;
   COMPACTION_SUMMARY_MAX_CHARS = eff.compactionSummaryMaxChars;
   HTTP_BODY_MAX_BYTES = eff.httpBodyMaxBytes;
   IMAGE_TOKEN_EST = eff.imageTokenEst;
@@ -764,6 +772,10 @@ export function initConfig(cfg: HarnessConfig = loadHarnessConfig()): HarnessCon
 /** 子代理任务 timeoutMs 的最小值（agent-task schema/校验/提示词三处共用同一出处；
  *  阶段 B 第二批已配置化——阈值键 subagentTimeoutMinMs，initConfig 重绑） */
 export let SUBAGENT_TIMEOUT_MIN_MS = DEFAULT_EFFECTIVE.subagentTimeoutMinMs;
+
+/** subagent_status 状态表 all=true 附带的历史记录条数上限（最近 N 条；docs/32，
+ *  阈值键 subagentStatusHistoryMax——工具描述/提示词文案同源插值，initConfig 重绑热生效） */
+export let SUBAGENT_STATUS_HISTORY_MAX = DEFAULT_EFFECTIVE.subagentStatusHistoryMax;
 
 /**
  * 前端设置项唯一出处（模块化架构重构 §4.11/§5）：随 /api/meta 下发，

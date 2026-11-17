@@ -65,6 +65,7 @@
 2. 派长任务后运行中插话「现在进度如何」→ 应见 `subagent_status` 工具块真实执行并转述状态表。
 3. 协调者或普通会话让模型「向我确认一下用哪个方案」→ 弹询问卡：点选项回流「用户选择了：…」；「其它」输入文字回流「用户没有选给定选项，自行输入：…」；停止会话 → 模型收到未回答提示。
 4. 协调者让它列工作区根目录 → `list_files` 返回文件名清单（无内容）。
+5. 顶栏 ⚙ 运行阈值设置 → 子代理组应出现「subagentStatusHistoryMax（状态表历史记录条数上限，缺省 20）」——改成 5 保存后，再问「查看子代理状态表（带历史）」应只列最近 5 条（热生效）。
 
 ## §5 真机回归修复记录（2026-11-17，随 v0.3.5 发布）
 
@@ -74,3 +75,11 @@
 2. **工具块展示带参数 JSON 格式**：ask_user / subagent_status / list_files / stop_subagent / archive_subagent 五个工具没有 toolinfo 定制，折叠头与展开体都落到「参数 JSON」兜底（如 `{}`、`{"all":true}`），与 write/edit/pwsh 的「只显内容」理念不一致。修复（toolinfo.js）：ask_user 折叠头=`提问 <问题>`、展开体=问题+编号选项两块（回答在结果 tres）；subagent_status / list_files / stop / archive 折叠头=`动词+对象`（查看子代理状态表 / 列目录 <path> / 打断·归档子代理 #N（name））、展开体只留结果（read_file 同款空数组语义）。
 
 v0.3.4 未打包即被 v0.3.5 取代（发版提交仅版本号，无产物）。
+
+## §6 运行参数化：subagentStatusHistoryMax（2026-11-17，随 v0.3.6 发布）
+
+subagent_status 状态表 all=true 的「最近 20 条」由写死改为**阈值键** `subagentStatusHistoryMax`（缺省 20，≥1 整数，subagent 组）——用户需求：「这是个参数，要写入运行参数的阈值里面，可在前端设置里面热修改」。
+
+- **config.ts 四件套**：`EffectiveThresholds` 字段 / `THRESHOLD_RULES` 规则（进前端 ⚙ 设置页 schema——保存即热应用：web-settings POST → initConfig 重绑）/ `resolveThresholds` 缺省 / `export let SUBAGENT_STATUS_HISTORY_MAX` + initConfig 重绑。消费方（subagent-status.ts 切片）每次调用 live 读绑定——**下一次 subagent_status 查询即用新值**。
+- **文案同源插值**（docs/21 §2.2-③ 规则）：工具 description、schema 参数说明、协调者提示词「直用工具参考」行全部插值该常量不写死 20——缺省下渲染文本不变，golden 快照零改动。
+- **计数哨兵 34→35**（contract.test / config.test / web-settings.test 三处）；README harness.json 示例补键；subagents.test 加 25 条→最近 20 条切片窗口用例。

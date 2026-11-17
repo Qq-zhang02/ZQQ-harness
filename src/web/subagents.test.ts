@@ -25,7 +25,7 @@ import type { McpTransportDef, SystemToolDef } from "../core/types.ts";
 import type { ChatParams, ChatResult, LLMProvider } from "../llm/provider.ts";
 import type { SessionRuntime } from "../core/host.ts";
 import { SessionStore } from "./sessions.ts";
-import { runWorker, subagentServiceFor, applySubagentControl, archiveSourceOf, WORKER_ROLE_SECTION } from "./subagents.ts";
+import { runWorker, subagentServiceFor, applySubagentControl, archiveSourceOf, subagentStatusText, WORKER_ROLE_SECTION } from "./subagents.ts";
 import { makeWorkerUi } from "./subagent-worker.ts";
 import { TOOL_EVENT_ARGS_MAX_CHARS } from "../config.ts";
 import type { WorkerSession } from "./subagent-records.ts";
@@ -1743,4 +1743,23 @@ test("makeWorkerUi（docs/28 P2-1/P2-2）：delta 节流批 + ml 锚点 + 工具
   ui.printToolCall("zz_echo", "{}", "call-3");
   const t3 = broadcasts[broadcasts.length - 1]!.data as { args?: string };
   assert.equal(t3.args, undefined, "未传 args 不带字段");
+});
+
+// ---------- docs/32：subagent_status 历史记录条数上限（阈值键 subagentStatusHistoryMax，默认 20） ----------
+
+test("subagentStatusText：all=true 只附最近 SUBAGENT_STATUS_HISTORY_MAX 条（默认 20），表头带总数、all=false 提示可传", () => {
+  const h = makeHarness([], {});
+  for (let i = 1; i <= 25; i++) {
+    h.rt.subagents.push({ subId: i, name: `s${i}`, ok: true, state: "archived", at: `2026-11-17T20:${String(i % 60).padStart(2, "0")}:00` });
+  }
+  h.rt.subagentTotal = 25; // 与记录条数一致（空态文案按累计数分流）
+  const all = subagentStatusText(h.rt, { all: true });
+  assert.ok(all.includes("当前没有活动子代理"), all);
+  assert.ok(all.includes("历史记录（最近 20 条 / 共 25 条）"), "表头 = 生效上限与总数（docs/32 阈值键 subagentStatusHistoryMax）");
+  assert.ok(all.includes("#25 s25"), "含最新一条");
+  assert.ok(all.includes("#6 s6"), "第 20 新 = #6（切片窗口对齐）");
+  assert.ok(!all.includes("#5 s5"), "更早的不出现");
+  const none = subagentStatusText(h.rt);
+  assert.ok(none.includes("需要查看可传 all=true"), "all 缺省时给指引");
+  assert.ok(!none.includes("历史记录（最近"), "all 缺省不带历史记录明细段（只在提示句里出现总数）");
 });

@@ -417,9 +417,9 @@ test("parseHarnessConfig/resolveThresholds：阶段 B 8 键覆盖生效、非法
 
 // ---- docs/24：thresholdSchema（前端设置页单一出处）与严格写校验 ----
 
-test("thresholdSchema：34 活跃键全覆盖（无废弃键）、七组不重不漏、def 与 resolveThresholds({}) 同源、清扫两键标 restart", () => {
+test("thresholdSchema：35 活跃键全覆盖（无废弃键）、七组不重不漏、def 与 resolveThresholds({}) 同源、清扫两键标 restart", () => {
   const s = thresholdSchema();
-  assert.equal(s.entries.length, 34, "活跃键 = 34（25 + 阶段 B 第二批 9；spillThreshold 废弃不入表）");
+  assert.equal(s.entries.length, 35, "活跃键 = 35（25 + 阶段 B 第二批 9 + docs/32 subagentStatusHistoryMax；spillThreshold 废弃不入表）");
   assert.ok(s.entries.every((e) => e.key !== "spillThreshold"), "废弃键不下发");
   assert.deepEqual(s.groups.map((g) => g.key), ["general", "compaction", "pwsh", "subagent", "mcp", "vision", "sweep"]);
   const d = resolveThresholds({});

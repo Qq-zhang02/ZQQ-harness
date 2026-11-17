@@ -3,7 +3,10 @@
  * subagent_status 工具（协调者第六件，直用只读）的接缝实现——活动子代理（run/idle）
  * 与历史记录的只读快照，供协调者主动核对（用户追问进度、控制工具寻址前确认 name/subId）。
  * 只读同步、不打扰子代理；结算结果仍只经自动送达消息（回执与送达是事实源）。
+ * 历史记录条数上限走 config.SUBAGENT_STATUS_HISTORY_MAX（阈值键 subagentStatusHistoryMax，
+ * 前端设置页/initConfig 热改后下一次查询即生效——live binding 每次调用读新值）。
  */
+import { SUBAGENT_STATUS_HISTORY_MAX } from "../config.ts";
 import type { SessionRuntime } from "../core/host.ts";
 
 /** 毫秒 → 人类可读时长（与 agent-task 工具层的 fmtDur 同口径；web 层不 import modules，本地实现） */
@@ -43,7 +46,7 @@ export function subagentStatusText(rt: SessionRuntime, opts?: { all?: boolean })
     }
   }
   if (opts?.all && rt.subagents.length > 0) {
-    const recs = rt.subagents.slice(-20);
+    const recs = rt.subagents.slice(-SUBAGENT_STATUS_HISTORY_MAX); // 条数上限 = 阈值键热生效值
     lines.push(`历史记录（最近 ${recs.length} 条 / 共 ${rt.subagents.length} 条）：`);
     for (const r of recs) {
       const bits: string[] = [];

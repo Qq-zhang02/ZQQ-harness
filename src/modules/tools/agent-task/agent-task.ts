@@ -10,7 +10,7 @@ import type { SystemToolDeps } from "../../../core/types.ts";
 import type { SubagentRequest, SubagentResult } from "../../../core/types.ts";
 import { normalizeEffort } from "../../../providers/store.ts";
 // docs/21 §2.2-③：timeoutMs 下限单一出处（schema/校验/提示词三处曾各自写死 60000）
-import { SUBAGENT_TIMEOUT_MIN_MS } from "../../../config.ts";
+import { SUBAGENT_STATUS_HISTORY_MAX, SUBAGENT_TIMEOUT_MIN_MS } from "../../../config.ts";
 import { AUTO_DELIVERY_PREFIXES } from "../../../core/events.ts";
 
 /** 单个任务项的参数 schema（agent_task 平铺；agent_tasks 包一层 tasks 数组）。 */
@@ -270,13 +270,13 @@ export function createSubagentStatusTool(deps: SystemToolDeps): Tool {
   return {
     name: "subagent_status",
     description:
-      "查看当前子代理状态表：活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 可附带最近 20 条历史记录摘要。" +
+      "查看当前子代理状态表：活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 可附带最近 " + SUBAGENT_STATUS_HISTORY_MAX + " 条历史记录摘要。" +
       "只读快照、立即返回，不打扰子代理也不等待任务完成。用户追问进度、或调用控制工具前核对 name/subId 时使用。" +
       "注意：任务的最终结果仍以「" + AUTO_DELIVERY_PREFIXES.report + "」送达消息为准，本工具不能代替报告。",
     parameters: {
       type: "object",
       properties: {
-        all: { type: "boolean", description: "可选，附带历史记录摘要（最近 20 条已结算/待命记录）；缺省只看当前活动子代理" },
+        all: { type: "boolean", description: `可选，附带历史记录摘要（最近 ${SUBAGENT_STATUS_HISTORY_MAX} 条已结算/待命记录）；缺省只看当前活动子代理` },
       },
     },
     async execute(args) {

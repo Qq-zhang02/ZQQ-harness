@@ -226,6 +226,7 @@ description: 为本项目生成规范的 git 提交信息
     "subagentMaxToolRounds": 40,
     "subagentResultMaxChars": 16000,
     "subagentMaxTasks": 12,
+    "subagentStatusHistoryMax": 20,
     "subagentWarnContextPct": 25,
     "subagentFollowupContextPct": 35,
     "subagentArchiveContextPct": 50,

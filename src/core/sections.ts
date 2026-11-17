@@ -10,7 +10,7 @@ import type { ToolRegistry } from "../tools/registry.ts";
 import type { PromptSection, SectionContext } from "./types.ts";
 // docs/21 §2.2-③：提示词里的阈值一律插值生效常量，不写死缺省数字（harness.json 覆盖后文案不失真）。
 // core → config.ts 是显式接受的例外：config 是全项目运行参数唯一出处（非 modules，不受模块禁令约束）。
-import { SUBAGENT_MAX_CONCURRENT, SUBAGENT_TIMEOUT_MIN_MS } from "../config.ts";
+import { SUBAGENT_MAX_CONCURRENT, SUBAGENT_STATUS_HISTORY_MAX, SUBAGENT_TIMEOUT_MIN_MS } from "../config.ts";
 // docs/21 §2.4 协议解耦：送达前缀常量插值（渲染文本不变，golden 零改动）
 import { AUTO_DELIVERY_PREFIXES } from "./events.ts";
 
@@ -92,7 +92,7 @@ const coordinatorBase = (sc: SectionContext): string =>
     "- archive_subagent：归档一个可复用子代理——归档后仅可查看过程存档、不可再派任务。空闲待命时立即归档；" +
       "执行中归档会先中止其当前任务。一次性子代理任务结束即自动归档，无需（也不支持）本工具。",
     "直用工具参考（只读查询与提问，严格按此使用）：",
-    "- subagent_status：查看当前子代理状态表——活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 附最近 20 条历史记录摘要。" +
+    "- subagent_status：查看当前子代理状态表——活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 附最近 " + SUBAGENT_STATUS_HISTORY_MAX + " 条历史记录摘要。" +
       "只读快照、立即返回、不打扰子代理；用户追问进度、控制工具寻址前核对 name/subId 时用。任务的最终结果仍以送达消息为准，本表不能代替报告。",
     "- list_files：列出工作区内某个目录的文件与子目录名（只读，不含内容，不递归）。用于了解工作区/模块结构、验收前核对产出文件是否真实落盘；要看某个子目录就对它再调用一次。",
     "- ask_user：向用户发起选择题询问并阻塞等待回答。仅用于会改变做法的方向性不确定（需求歧义/方案取舍/破坏性操作确认）且无法从上下文合理推断时：" +
