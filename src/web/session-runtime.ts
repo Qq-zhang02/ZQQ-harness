@@ -33,7 +33,7 @@ import { AUTO_DELIVERY_PREFIXES, SSE_EVENTS, type SseEventName } from "../core/e
 import type { HarnessContext } from "../core/context.ts";
 import { createFileLedger } from "../core/file-tools.ts";
 import { Registry } from "../core/registry.ts";
-import type { PromptSection, SystemToolDeps } from "../core/types.ts";
+import type { AskUserAnswer, PromptSection, SystemToolDeps } from "../core/types.ts";
 import type { RuntimeSettings, SessionRuntime } from "../core/host.ts";
 
 /**
@@ -269,6 +269,29 @@ function makeUi(sh: SessionShell, rt: SessionRuntime): AgentUi {
   };
 }
 
+/**
+ * ask_user 询问服务（docs/32）：前台会话（普通+协调者）的工具接缝实现——广播 askUser
+ * 事件弹卡（问题 + 选项，前端附「其它」自由输入），挂 rt.pendingAskUsers 等待 /api/ask-user
+ * 决议。Map 按 askId 存槽（对比审批的单槽 pendingApproval）：协调者同轮并行多问不互相覆盖。
+ * 中止信号随挂随监听（/api/stop、轮中止）→ cancelled 收场；决议幂等（迟到触发是空操作）。
+ */
+export function askUserFor(
+  sh: SessionShell,
+  rt: SessionRuntime,
+): (q: { question: string; options: string[]; signal?: AbortSignal }) => Promise<AskUserAnswer> {
+  return (q) =>
+    new Promise<AskUserAnswer>((resolveP) => {
+      const id = crypto.randomUUID();
+      const settle = (a: AskUserAnswer): void => {
+        if (!rt.pendingAskUsers.delete(id)) return; // 已回答/已取消：迟到触发空操作
+        resolveP(a);
+      };
+      rt.pendingAskUsers.set(id, settle);
+      q.signal?.addEventListener("abort", () => settle({ cancelled: true }), { once: true });
+      sh.broadcast(SSE_EVENTS.askUser, { sessionId: rt.id, id, question: q.question, options: q.options });
+    });
+}
+
 /** 单次用量计入会话合计并广播 usage 事件（makeUi 与子代理 worker 汇总共用）。 */
 export function reportUsage(sh: SessionShell, rt: SessionRuntime, u: UsageInfo): void {
   rt.totals.prompt += u.promptTokens;
@@ -383,7 +406,7 @@ export function compactionDepsOf(sh: SessionShell, rt: SessionRuntime, opts?: { 
 // 子代理服务装配（v2 worker 运行机制）在 web/subagents.ts；re-export 保持 server.ts 装配路径不变
 export { subagentServiceFor } from "./subagents.ts";
 // W2-S：协调者工具的子代理控制实现（pause/resume ↔ rt.activeSubagents）
-import { applySubagentControl, commonWorkerPromptSectionText, workerMcpToolsOf } from "./subagents.ts";
+import { applySubagentControl, commonWorkerPromptSectionText, subagentStatusText, workerMcpToolsOf } from "./subagents.ts";
 // docs/17：read_archive 的存档解析实现（主会话 toolDeps 与 worker 的 workerDeps 同一闭包）
 import { archiveSourceOf } from "./subagents.ts";
 
@@ -422,6 +445,7 @@ export async function createRuntime(
     busy: false,
     abortCtl: null,
     pendingApproval: null,
+    pendingAskUsers: new Map(), // ask_user 待答槽（docs/32；/api/ask-user 按 id 决议，瞬态不入档）
     turnInfo: null,
     workers: new Set(),
     subagentTotal: 0, // C7 累计闸：会话生命周期内单调递增；从存档恢复时按 subagents 记录条数续期（见下）
@@ -431,8 +455,9 @@ export async function createRuntime(
   };
 
   // 系统工具：组合清单注册的 SystemToolDef 逐会话实例化（升级额度/技能清单等会话私有）。
-  // 按 kind 分流（docs/5 D1）：normal 装 audience!=="coordinator"（字节等价现状）；
-  // coordinator 仅装 audience==="coordinator"——协调者结构性无直用工具，幻觉调用只收「未知工具」。
+  // 按 kind×受众分流（docs/5 D1；docs/32 三值受众）：normal 装 worker+front；
+  // coordinator 装 coordinator+front（front=前台会话共同工具，如 ask_user）——协调者自身的
+  // 实质工具结构性缺位，幻觉调用 run_pwsh 等只收「未知工具」。
   const effectiveWorkspace = workspace ?? createWorkspace(process.cwd()); // 引导占位：选中真实工作区前禁止对话
   const toolDeps: SystemToolDeps = {
     ctx: sh.ctx,
@@ -464,14 +489,22 @@ export async function createRuntime(
     // docs/17：read_archive 的存档解析（本会话子代理过程存档 + 任意主对话记录——同一闭包
     // 也注入全部 worker，见 subagents.ts mountWorkerAgent）
     archiveSource: archiveSourceOf(sh, rt),
+    // docs/32：ask_user 的询问接缝（front 受众——普通+协调者都注册本工具；worker 的
+    // workerDeps 不注入此缝，工具层对子代理报「不能直接向用户提问」）
+    askUser: askUserFor(sh, rt),
     ...(kind === "coordinator" && sh.ctx.subagent ? { subagent: sh.ctx.subagent(rt) } : {}),
     // W2-S：协调者的 stop_subagent 工具经此触达 rt.activeSubagents（普通会话不注入）；
     // docs/9：archive_subagent 工具与 /api/subagent/control 的归档动作共用本缝（action 联合扩 "archive"）
     ...(kind === "coordinator" ? { subagentControl: (target: { name?: string; subId?: number }, action: "stop" | "archive") => applySubagentControl(rt, target, action) } : {}),
+    // docs/32：subagent_status 工具的状态表文案接缝（闭包读 rt——活动句柄与历史记录实时取值）
+    ...(kind === "coordinator" ? { subagentStatus: (opts?: { all?: boolean }) => subagentStatusText(rt, opts) } : {}),
   };
   for (const def of sh.ctx.tools.all()) {
     const audience = def.audience ?? "worker";
-    if ((kind === "coordinator") !== (audience === "coordinator")) continue;
+    // docs/32 三值受众：front 两类前台会话都装；其余受众与 kind 精确匹配
+    // （coordinator↔coordinator、worker↔normal）
+    const wanted = audience === "front" || (audience === "coordinator") === (kind === "coordinator");
+    if (!wanted) continue;
     rt.registry.register({ ...def.create(toolDeps), summary: def.summary });
   }
   // 协调者不接 MCP（docs/5 D3/§2：registry 仅 agent_task(s)；mcp__ 工具不注册，
@@ -549,10 +582,16 @@ export async function createRuntime(
   if (wantMcp) applyMcpInBackground(sh, rt, workspace?.root ?? null);
   // docs/20 修订（真机反馈）：协调者创建即预热 worker MCP——「子代理系统提示词说明」段
   // 需要 MCP 说明书，但连接原是首个 worker 派发才触发：新会话/重启恢复后的首轮协调者对
-  // 子代理 MCP 能力一无所知。fire-and-forget（握手最长 20s，不阻塞会话创建），连接成功后
-  // workerMcpToolsOf 内部 refreshSystemPrompt 补上说明段。引导会话（未绑工作区）不在此
-  // 预热——此刻只有全局配置，缓存住会让 bindWorkspace 后的工作区级配置丢失（那边会补）。
-  if (kind === "coordinator" && workspace) void workerMcpToolsOf(sh, rt).catch(() => {});
+  // 子代理 MCP 能力一无所知。
+  // docs/32 修订：预热升级为**首轮闸门**——promise 挂 rt.mcpReady，startTurn 既有的
+  // await 对协调者生效（首条消息发出时 MCP 说明必已就位，与普通会话 applyMcpInBackground
+  // 同语义；真机实证：协调者原为 no-op，ref_database 秒连能赶上、godot 冷启动赶不上首轮
+  // 请求 → 表现为「godot/blender 未注入」）。最坏等待 = 握手超时 + 重试宽限 + 重试握手
+  // （约 20s+10s+20s）；无配置/快连近瞬时。引导会话（未绑工作区）不在此预热——此刻只有
+  // 全局配置，缓存住会让 bindWorkspace 后的工作区级配置丢失（那边会补）。
+  if (kind === "coordinator" && workspace) {
+    rt.mcpReady = workerMcpToolsOf(sh, rt).then((): void => {}).catch(() => {});
+  }
 
   sh.runtimes.set(id, rt);
   return rt;

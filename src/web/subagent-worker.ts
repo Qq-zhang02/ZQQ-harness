@@ -27,10 +27,13 @@ import { archiveSourceOf, requestArchiveWorker } from "./subagent-archive.ts";
 import { contextPctOf, deliverToCoordinator } from "./subagent-report.ts";
 import type { WorkerSession } from "./subagent-records.ts";
 
-/** worker 系统提示的 order 5 子代理职责段（docs/5 §8；协调者唯一能看到的是最终报告）。 */
+/** worker 系统提示的 order 5 子代理职责段（docs/5 §8；协调者唯一能看到的是最终报告）。
+ *  docs/32：补「不可直问用户」——ask_user 受众为 front，不进 worker（结构性禁），不确定
+ *  之处写进报告的「未决问题」由协调者裁决或转询。 */
 export const WORKER_ROLE_SECTION = [
   "你是被协调者派出的子代理，独立完成一项具体任务。约束：",
   "- 专注任务书目标，不做任务书之外的事；写入尽量限定在任务书指明的范围内。",
+  "- 你无法直接向用户提问：不确定之处写进报告的「未决问题」，由协调者裁决或转询用户；不要替用户假设意图后自行推进方向性变更。",
   "- 遇到写入被拒（文件已被他人修改/超出范围）时：重新读取最新内容再操作，不要盲目重试。",
   "- 调用解释器与外部程序用 PATH 短名（python、node、pwsh 等），不要写绝对路径——引用工作区外的绝对路径会触发用户审批卡，拖慢任务。",
   "- 完成后输出报告（这是协调者唯一能看到的内容）：①结论（完成/部分完成/失败及原因）" +
@@ -73,27 +76,45 @@ const SUBAGENT_DELTA_FLUSH_MS = 120;
  * bindWorkspace 会 fire-and-forget 预热本函数（「子代理系统提示词说明」段需要说明书；
  * 真机反馈：未预热时新会话首轮协调者对子代理 MCP 能力一无所知）。
  */
+/** 失败重试前的宽限延迟（docs/32）：冷启动型服务器（如 godot-ai attach 先拉起后端再应答
+ *  握手，健康检查上限可超过单次握手超时）首轮必超时——宽限一程后整体重连一次（stopAll
+ *  幂等：已成功的服务器进程已在、秒连；失败者赶上后端就绪窗口）。仍失败才对本会话定局。 */
+const WORKER_MCP_RETRY_DELAY_MS = 10_000;
+
 export async function workerMcpToolsOf(sh: SessionShell, rt: SessionRuntime): Promise<readonly Tool[] | null> {
   rt.workerMcp ??= (async (): Promise<readonly Tool[] | null> => {
-    const globalCfg = await loadMcpConfig([sh.globalMcpFile]);
-    const wsCfg = rt.workspace ? await loadMcpConfig([join(rt.workspace.root, "mcp.json")]) : { mcpServers: {} };
-    if (Object.keys(globalCfg.mcpServers).length === 0 && Object.keys(wsCfg.mcpServers).length === 0) return null;
-    const template = new ToolRegistry();
     try {
-      await rt.mcp.apply(globalCfg, wsCfg, template);
+      const globalCfg = await loadMcpConfig([sh.globalMcpFile]);
+      const wsCfg = rt.workspace ? await loadMcpConfig([join(rt.workspace.root, "mcp.json")]) : { mcpServers: {} };
+      if (Object.keys(globalCfg.mcpServers).length === 0 && Object.keys(wsCfg.mcpServers).length === 0) return null;
+      const template = new ToolRegistry();
+      try {
+        await rt.mcp.apply(globalCfg, wsCfg, template);
+        // docs/32：失败服务器不判死刑（真机实证：godot 冷启动 > 20s 握手超时被记入 failures
+        // 永不重试，而 1 分钟后的普通对话因后端已被拉起而秒连——表现为「只有普通对话注入了」）
+        if (rt.mcp.failedServers().length > 0) {
+          await new Promise((r) => setTimeout(r, WORKER_MCP_RETRY_DELAY_MS));
+          await rt.mcp.apply(globalCfg, wsCfg, template);
+        }
+      } catch (e) {
+        console.warn(`[subagent] worker MCP 装配失败（降级为不带 mcp__ 工具）：${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      }
+      // docs/20：MCP 说明书随协调者的「子代理系统提示词说明」段注入——连接收尾（含重试）
+      // 后重建一次协调者系统提示（本 promise 缓存保证只触发一次；协调者 rt.agent 在任何
+      // 派发发生前已装配就位）。独立 try：刷新异常绝不影响 worker 拿工具（测试桩 agent 可能缺该方法）。
+      try {
+        rt.agent?.refreshSystemPrompt();
+      } catch {
+        /* 刷新失败不阻断 worker 装配 */
+      }
+      return template.list();
     } catch (e) {
+      // docs/32：整体意外拒绝也降级 null——??= 缓存 rejected promise 一旦发生，后续全部
+      // worker 装配（await 处）都会失败且无重试入口。
       console.warn(`[subagent] worker MCP 装配失败（降级为不带 mcp__ 工具）：${e instanceof Error ? e.message : String(e)}`);
       return null;
     }
-    // docs/20：MCP 说明书随协调者的「子代理系统提示词说明」段注入——首次连接成功后重建
-    // 一次协调者系统提示（本 promise 缓存保证只触发一次；协调者 rt.agent 在任何派发发生前
-    // 已装配就位）。独立 try：刷新异常绝不影响 worker 拿工具（测试桩 agent 可能缺该方法）。
-    try {
-      rt.agent?.refreshSystemPrompt();
-    } catch {
-      /* 刷新失败不阻断 worker 装配 */
-    }
-    return template.list();
   })();
   return rt.workerMcp;
 }
@@ -323,7 +344,10 @@ export async function mountWorkerAgent(sh: SessionShell, rt: SessionRuntime, ws:
   };
   const registry = new ToolRegistry();
   for (const def of sh.ctx.tools.all()) {
-    if ((def.audience ?? "worker") === "coordinator") continue;
+    const audience = def.audience ?? "worker";
+    // docs/32 三值受众：coordinator 与 front（ask_user 等）都不进 worker——子代理不确定时
+    // 自行向协调者报告（结构性禁直问用户），仅装 worker 受众（无 agent_task 同款禁嵌套 D6）
+    if (audience !== "worker") continue;
     registry.register({ ...def.create(workerDeps), summary: def.summary });
   }
   // worker 带真 MCP 工具（docs/6 P2 路线 A，修订偏差 19）：与普通会话同一信任模型

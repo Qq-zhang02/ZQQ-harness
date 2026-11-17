@@ -51,8 +51,10 @@ export interface SystemToolDef {
   name: string;
   /** 系统提示工具段的一句话（生成"可用工具"行的来源） */
   summary: string;
-  /** 工具面向的会话形态：worker=普通/子代理会话（缺省，现状不变）；coordinator=仅协调者会话注册 */
-  audience?: "worker" | "coordinator";
+  /** 工具面向的会话形态：worker=普通/子代理会话（缺省，现状不变）；coordinator=仅协调者会话注册；
+   *  front=前台会话（普通+协调者，**不含子代理**，docs/32）——ask_user 用：子代理不确定时
+   *  自行向协调者报告（写进报告的未决问题），不直接向用户提问。 */
+  audience?: "worker" | "coordinator" | "front";
   /** 每会话实例化：load_skill 需要会话技能清单；pwsh 需要会话级升级额度 */
   create(deps: SystemToolDeps): Tool;
 }
@@ -80,6 +82,10 @@ export interface SystemToolDeps {
    *  工具与 /api/subagent/control 路由经此施控（W2-S，docs/7 §2.3 轮边界挂起）；
    *  archive（docs/9）= 归档可复用子代理（空闲立即归档；执行/暂停中中止当前任务后归档） */
   subagentControl?: (target: { name?: string; subId?: number }, action: "stop" | "archive") => string;
+  /** 子代理状态表（协调者会话装配时注入；普通会话为 undefined，docs/32）：subagent_status
+   *  工具经此取活动子代理（run/idle）实时状态与可选历史记录的只读快照文案
+   *  （web/subagents.ts subagentStatusText 装配）。 */
+  subagentStatus?: (opts?: { all?: boolean }) => string;
   /** 视觉模型配置（docs/10 R3）：解析 providers.json 的 visionProvider 指向的提供方；
    *  未配置/指向的提供方已删 → null（view_image 据此报错指引配置）。 */
   vision?(): ProviderConfig | null;
@@ -96,6 +102,19 @@ export interface SystemToolDeps {
    *  与原始 messages（JSON→可读文本的渲染在工具层）；失败附可用清单供自纠错。
    *  实现由 web/subagents.ts archiveSourceOf 提供（主会话与全部 worker 同一闭包）。 */
   archiveSource?(q: { subId?: number; sessionId?: string }): { ok: true; label: string; messages: ChatMessage[] } | { ok: false; error: string };
+  /** 询问用户（前台会话装配；worker 不注入——docs/32 双层防线之二）：ask_user 工具经此
+   *  弹卡并阻塞等待用户回答（点选选项或「其它」自由输入）。实现由 web/session-runtime.ts
+   *  askUserFor 提供（SSE askUser 事件 + rt.pendingAskUsers 槽 + /api/ask-user 决议）；
+   *  中止信号触发时以 {cancelled:true} 收场（工具层据此告知模型「未回答，勿假设答案」）。 */
+  askUser?(q: { question: string; options: string[]; signal?: AbortSignal }): Promise<AskUserAnswer>;
+}
+
+/** ask_user 的一条用户回答（docs/32）：choice=点选的选项下标（0 起，工具层回读选项文本）；
+ *  text=「其它」自由输入原文。二者互斥到达；cancelled=请求已中止/会话已停止（未回答）。 */
+export interface AskUserAnswer {
+  choice?: number;
+  text?: string;
+  cancelled?: true;
 }
 
 // ---------- 提供方格式（§4.6，P4 落地消费） ----------

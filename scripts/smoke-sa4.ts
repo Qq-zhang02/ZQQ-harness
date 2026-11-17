@@ -280,12 +280,14 @@ try {
     const coordNames = rt2.registry.list().map((t) => t.name);
     const [mcpReport] = await waitReports(rt2, 1); // docs/16：等结算报告送达（收尾定型后再断言存档与事件）
     record(
-      "P2 worker MCP：worker 直调 mcp__demo__add 全链路不弹审批；协调者 registry 仍五件、系统提示仍无 MCP 段（红线）；完成报告自动送达",
+      "P2 worker MCP：worker 直调 mcp__demo__add 全链路不弹审批；协调者 registry 七件无 mcp__（docs/32：六系统工具+ask_user；系统提示仍无 MCP 段红线）；完成报告自动送达",
       out.includes("已派发") &&
         mcpReport.includes("[子代理 mcp-user 完成]") &&
         broadcasts.filter((b) => b.event === "approval").length === approvalsBefore &&
-        coordNames.join(",") === "agent_followup,agent_task,archive_subagent,stop_subagent" &&
-        !String(rt2.agent.messages[0]?.content ?? "").includes("mcp__demo"),
+        coordNames.slice().sort().join(",") === "agent_followup,agent_task,archive_subagent,ask_user,list_files,stop_subagent,subagent_status" &&
+        // docs/32 红线口径：协调者不装配 mcp__ 工具（registry 断言已覆盖）、不注入「MCP 服务器
+        // 使用说明」段；子代理说明段允许出现 mcp__ 工具**清单**（toolInventoryText 兜底，只读参考）
+        !String(rt2.agent.messages[0]?.content ?? "").includes("# MCP 服务器使用说明"),
       `结果=${mcpReport.split("\n")[1]?.slice(0, 40)}；registry=${coordNames.join("、")}`,
     );
     rt2.mcp.stop(); // 回收 worker 共享连接（demo 服务器进程）；下一段直接读盘上 transcript

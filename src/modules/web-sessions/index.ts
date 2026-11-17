@@ -109,6 +109,33 @@ export const webSessions: HarnessModule = {
       },
     });
 
+    // docs/32：ask_user 决议端点（镜像 /api/approval 的 fail-closed 风格）——按 id 配对
+    // rt.pendingAskUsers 槽；choice（选项下标）与 text（「其它」自由输入）互斥到达。
+    // 野值 400（卡片留在屏上可重试，不毒化模型上下文）；无待答提问 409。
+    ctx.routes.register({
+      method: "POST",
+      path: "/api/ask-user",
+      async handler(r) {
+        const body = await r.body();
+        const rt = host.runtimes().get(String(body.sessionId ?? "")) ?? host.viewRt();
+        const id = String(body.id ?? "");
+        const settle = id ? rt.pendingAskUsers.get(id) : undefined;
+        if (!settle) {
+          r.json(409, { error: "当前没有待回答的提问" });
+          return;
+        }
+        const text = typeof body.text === "string" ? body.text.trim() : "";
+        const choice = Number(body.choice);
+        if (!text && (!Number.isInteger(choice) || choice < 0)) {
+          r.json(400, { error: "需要 choice（选项下标）或 text（其它说明）之一" });
+          return;
+        }
+        rt.pendingAskUsers.delete(id);
+        settle(text ? { text } : { choice });
+        r.json(202, { ok: true });
+      },
+    });
+
     // W2-S（docs/7 §2.3）：手动暂停/恢复运行中的子代理（前端抽屉行的 ⏸/▶ 按钮）。
     // docs/9：增 archive（前端抽屉行「归档」按钮/协调者工具共用）——空闲可复用立即归档，
     // 执行/暂停中=中止当前任务后归档。只操作内存运行态的活动登记——worker 运行实例不跨

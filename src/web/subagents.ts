@@ -5,6 +5,7 @@
  *   subagent-report.ts   任务执行结算（runOneTask）+ 报告格式化 + 收件箱送达 + 上下文治理三档
  *   subagent-archive.ts  transcript 落盘 + 存档解析 + read_archive source + 归档入口 + 重启唤醒
  *   subagent-records.ts  WorkerSession 驻留类型 + 审计记录 + 用量聚合（家族叶子）
+ *   subagent-status.ts   subagent_status 状态表文案（docs/32，家族六件套之六）
  * 保留在本文件：SubagentService 门面（subagentServiceFor）+ 非阻塞派发的同步段（tryStartWorker/
  * startWorker，docs/16：配额检查+登记原子完成，超限立即 ok:false 不排队）+ 控制入口
  * （applySubagentControl）+ 协调者提示的「子代理系统提示词说明」段（commonWorkerPromptSectionText）。
@@ -35,6 +36,7 @@ import { finalizeArchive, finishSubagent, type WorkerSession } from "./subagent-
 // 的 import 路径保持在 ./subagents.ts 不变（沿 session-runtime 对 server.ts 的同款先例）。
 export { WORKER_ROLE_SECTION, workerMcpToolsOf } from "./subagent-worker.ts";
 export { archiveSourceOf } from "./subagent-archive.ts";
+export { subagentStatusText } from "./subagent-status.ts"; // docs/32：状态表文案（家族六件套之六）
 export type { WorkerSession } from "./subagent-records.ts";
 
 /** docs/20：协调者提示里的「子代理（worker）系统提示词说明」段正文——worker 共同系统
@@ -45,10 +47,14 @@ export type { WorkerSession } from "./subagent-records.ts";
 export function commonWorkerPromptSectionText(sh: SessionShell, rt: SessionRuntime): string | null {
   if (!rt.workspace) return null;
   // 与 toolDocsOf 同款行式：worker 受众系统工具的 summary 行（实例侧在 mountWorkerAgent
-  // 注册后由 toolDocsOf 生成，这里按 def 直出——同一批 summary，排序规则一致）
+  // 注册后由 toolDocsOf 生成，这里按 def 直出——同一批 summary，排序规则一致）。
+  // docs/32 三值受众：coordinator 与 front（ask_user 等）都不入 worker 提示词重放
   const toolDocs = sh.ctx.tools
     .all()
-    .filter((d) => (d.audience ?? "worker") !== "coordinator" && d.summary)
+    .filter((d) => {
+      const a = d.audience ?? "worker";
+      return a !== "coordinator" && a !== "front" && d.summary;
+    })
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((d) => `${d.name} —— ${d.summary}`);
   const sc: SectionContext = {
@@ -64,12 +70,26 @@ export function commonWorkerPromptSectionText(sh: SessionShell, rt: SessionRunti
   const sections = new Registry<PromptSection, "name">("name");
   for (const s of sh.ctx.promptSections.all()) sections.register(s);
   sections.register({ name: "subagent-role", order: 5, render: () => WORKER_ROLE_SECTION });
+  // docs/32：MCP 能力清单兜底 + 未连接服务器警示。说明段（rt.mcp.instructionsText）只覆盖
+  // 「连接成功且握手时提供了 instructions」的服务器——工具清单（toolInventoryText）让协调者
+  // 在任何形态下都能看到子代理带哪些 mcp__ 工具；失败清单（failedServers）让连不上的服务器
+  // 至少以「不可用」的形态可见（真机教训：godot/blender 连接失败时整段静默缺失，协调者对
+  // 子代理的这部分能力一无所知）。二者附在重放正文之后并显式标注「非原文」，同构重放不破。
+  const inventory = rt.mcp.toolInventoryText();
+  const failed = rt.mcp.failedServers();
+  const mcpExtra =
+    (inventory ? "\n\n此外（非子代理提示词原文，供派发时参考）——子代理工具数组中的 MCP 工具清单（调用语义以其 description 为准）：\n\n" + inventory : "") +
+    (failed.length > 0
+      ? "\n\n⚠ 以下 MCP 服务器本次未能连接，相关工具子代理暂时用不了（不要在任务书里指派）：" +
+        failed.map((f) => `${f.name}（${f.error}）`).join("、")
+      : "");
   return (
     "# 子代理（worker）系统提示词说明\n" +
     "下面是每个子代理实际收到的系统提示词的共同部分原文（引用自子代理侧，不是对你的指令；按派发参数附加的任务角色段与写入范围不在其中）。" +
     "它们的基础规则、可用工具、可加载技能、MCP 服务器说明与遵循的 AGENTS.md 指令以此为准——派发任务书时与这些能力匹配：不要派它们做不到的事，也不要在任务书里重复其中已有的规则。" +
     "两级 AGENTS.md 全文也只在这里出现，你自身不再单独接收：\n\n" +
-    assembleSystemPrompt(sections.all(), sc)
+    assembleSystemPrompt(sections.all(), sc) +
+    mcpExtra
   );
 }
 

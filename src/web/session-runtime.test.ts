@@ -1,7 +1,7 @@
 /**
  * createRuntime 单元测试（docs/5 SA1）+ 审批串行队列（docs/5 SA3 §5.2 C3）：
- * 会话形态分流（D1）——normal 会话装配 audience!=="coordinator" 的全部系统工具
- * （字节等价现状，不含 agent_task）；coordinator 会话仅装 agent_task 等四件（docs/15 起 agent_tasks 退役）且
+ * 会话形态分流（D1；docs/32 三值受众）——normal 会话装配 worker+front 受众的全部系统工具
+ * （不含 agent_task）；coordinator 会话仅装 agent_task 等家族（docs/15 起 agent_tasks 退役；docs/32 增 subagent_status）且
  * 注入 deps.subagent（经 ctx.subagent 接缝）；SessionData.kind 旧档缺省 normal、
  * 显式 coordinator 恢复（不变量 6 向后兼容）。
  * SA4：fromDisk.subagents 审计记录回填与累计配额续期（偏差 15）、currentState 下发、
@@ -118,7 +118,7 @@ test("createRuntime kind 分流：normal 装普通工具、不含 agent_task；�
   }
 });
 
-test("createRuntime kind 分流：coordinator 仅装 agent_task 等四件且注入 deps.subagent；无 MCP/普通工具", async () => {
+test("createRuntime kind 分流：coordinator 仅装 agent_task 家族（docs/32 起含 subagent_status）且注入 deps.subagent；无 MCP/普通工具", async () => {
   const dir = mkdtempSync(join(tmpdir(), "zqq-rt-coord-"));
   try {
     let seamUsed = 0;
@@ -137,8 +137,8 @@ test("createRuntime kind 分流：coordinator 仅装 agent_task 等四件且注�
     const names = rt.registry.list().map((t) => t.name);
     assert.deepEqual(
       names.sort(),
-      ["agent_followup", "agent_task", "archive_subagent", "stop_subagent"],
-      "协调者会话四件（docs/18 起 pause/resume 由 stop_subagent 一件取代）",
+      ["agent_followup", "agent_task", "archive_subagent", "stop_subagent", "subagent_status"],
+      "协调者会话五件（docs/18 起 pause/resume 由 stop_subagent 一件取代；docs/32 增 subagent_status 状态查询）",
     );
     assert.equal(rt.kind, "coordinator");
     const sys = String(rt.agent.messages[0]?.content);
@@ -148,7 +148,7 @@ test("createRuntime kind 分流：coordinator 仅装 agent_task 等四件且注�
     assert.ok(sys.includes("# 子代理（worker）系统提示词说明"), "docs/20：含子代理系统提示词说明段");
     assert.ok(sys.includes("zz_fake_tool —— 测试用普通工具"), "docs/20：子代理段重放 worker 工具行（引用自子代理侧）");
     assert.ok(sys.includes("你是被协调者派出的子代理"), "docs/20：子代理段含 worker 职责段（WORKER_ROLE_SECTION）");
-    assert.ok(sys.includes("可用工具：agent_followup"), "协调者自身可用工具行仍只有四件（toolDocsOf 按名排序开头）");
+    assert.ok(sys.includes("可用工具：agent_followup"), "协调者自身可用工具行仍以派发/控制家族开头（toolDocsOf 按名排序开头）");
     assert.equal(sys.split("# 全局指令（~/.ZQQ-harness/AGENTS.md）").length - 1, 1, "docs/20：全局 AGENTS.md 只在子代理段出现一次（协调者不重复注入）");
     assert.equal(sys.split("# 工作区指令（AGENTS.md）").length - 1, 1, "docs/20：工作区 AGENTS.md 同样只出现一次");
     assert.ok(!sys.includes("# MCP 服务器使用说明"), "MCP 未连接时不注入说明段（docs/20 懒加载，首连热更）");
@@ -262,7 +262,7 @@ test("createRuntime 恢复：SessionData.kind=coordinator 旧档恢复为协调�
     assert.equal(coord.kind, "coordinator");
     assert.deepEqual(
       coord.registry.list().map((t) => t.name).sort(),
-      ["agent_followup", "agent_task", "archive_subagent", "stop_subagent"],
+      ["agent_followup", "agent_task", "archive_subagent", "stop_subagent", "subagent_status"],
     );
     const plain = await createRuntime(sh, {
       id: "0e0d8f8a-1111-4222-8333-444455557777",

@@ -6,11 +6,12 @@
  * 子代理）；docs/18：暂停/恢复机制退役——pause/resume_subagent 两件由 stop_subagent
  * （打断即终结：一次性随之归档、可复用转待命）一件取代。audience="coordinator"——
  * 只在协调者会话注册（createRuntime 按 rt.kind 过滤，docs/5 D1）；worker 的 registry
- * 不含它们 → 结构性禁止嵌套派发（D6）。
+ * 不含它们 → 结构性禁止嵌套派发（D6）。docs/32：新增 subagent_status（状态查询第六件，
+ * 只读快照；docs/18 §3 预留口径落地）。
  */
 import type { HarnessModule } from "../../../core/module.ts";
 import type { SystemToolDef } from "../../../core/types.ts";
-import { createAgentFollowupTool, createAgentTaskTool, createArchiveSubagentTool, createStopSubagentTool } from "./agent-task.ts";
+import { createAgentFollowupTool, createAgentTaskTool, createArchiveSubagentTool, createStopSubagentTool, createSubagentStatusTool } from "./agent-task.ts";
 
 const agentTaskDef: SystemToolDef = {
   name: "agent_task",
@@ -40,6 +41,15 @@ const stopSubagentDef: SystemToolDef = {
   create: createStopSubagentTool,
 };
 
+// docs/32：状态查询第六件（docs/18 §3 预留的「子代理状态查询」落地）——只读快照，
+// 派发回执与自动送达消息仍是结算结果的事实源，本工具供协调者主动核对
+const subagentStatusDef: SystemToolDef = {
+  name: "subagent_status",
+  summary: "查看当前子代理状态表（活动子代理运行中/空闲待命的实时用时/上下文占用/摘要，all=true 附历史记录；只读快照不打扰子代理，用户追问进度或寻址前核对用）",
+  audience: "coordinator",
+  create: createSubagentStatusTool,
+};
+
 export const toolAgentTask: HarnessModule = {
   name: "tools.agent-task",
   setup(ctx) {
@@ -47,5 +57,6 @@ export const toolAgentTask: HarnessModule = {
     ctx.tools.register(agentFollowupDef);
     ctx.tools.register(archiveSubagentDef);
     ctx.tools.register(stopSubagentDef);
+    ctx.tools.register(subagentStatusDef);
   },
 };

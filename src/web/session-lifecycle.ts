@@ -113,8 +113,9 @@ export async function bindWorkspace(sh: SessionShell, rt: SessionRuntime, p: str
   } else if (!rt.workerMcp) {
     // docs/20 修订：协调者绑工作区后预热 worker MCP（「子代理系统提示词说明」段需要
     // 说明书；createRuntime 对未绑工作区的引导会话不预热，避免把全局-only 连接缓存住、
-    // 绑定后工作区级配置丢失）。fire-and-forget，成功后内部 refreshSystemPrompt 补上。
-    void workerMcpToolsOf(sh, rt).catch(() => {});
+    // 绑定后工作区级配置丢失）。docs/32 起升级为首轮闸门——挂 rt.mcpReady，startTurn
+    // await 收口（绑定后的首条消息必见工作区级 MCP 说明，含失败重试后的最终状态）。
+    rt.mcpReady = workerMcpToolsOf(sh, rt).then((): void => {}).catch(() => {});
   }
   // 系统提示立即装配（MCP 未连完时 instructions 为空——连接完成后 applyMcpInBackground 热更）
   rt.agent.setWorkspace(

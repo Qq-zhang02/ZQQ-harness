@@ -90,6 +90,8 @@ const baseSection = [
     "它们带行号显示、精确替换与先读后写保护，比 PowerShell 的 Get-Content/Set-Content 等命令更安全可靠；" +
     "run_pwsh 只用于文件工具覆盖不了的场景（目录与批量操作、二进制或超大文件、进程管理等）。",
   "执行命令时注意控制输出量（用 Select-Object -First、Where-Object 等过滤），避免一次输出过多内容。",
+  // docs/32：ask_user（front 受众，普通会话可用）的使用纪律——方向性分歧才问选择题
+  "方向性不确定（需求歧义、方案取舍、破坏性操作确认）且无法从上下文合理推断时，用 ask_user 向用户发起选择题（2~4 个简短互斥的选项，用户也可自行输入其它答案）；能合理推断的就直接做，不要滥用提问。",
   "请用中文与用户交流，简洁说明你做了什么。",
 ].join("\n");
 
@@ -164,11 +166,15 @@ test("golden 快照：最小输入（仅 base 段；空技能/工具与纯空白
  *  并新增报告处理纪律。
  *  docs/17：可复用子代理重启后自动唤醒（followup 从存档复活，同 subId）；新增「接续上下文」
  *  条目（read_archive：重派时让新 worker 读过程存档/主对话记录）。
- *  本轮（真机待办）：删「进度持久化 TASKS.md」条——强制维护记录文档生硬且让子代理额外多一项
- *  写入任务；协调者上下文治理靠压缩与报告送达已足够，不需要外部记录文档。 */
+ *  真机待办轮：删「进度持久化 TASKS.md」条——强制维护记录文档生硬且让子代理额外多一项
+ *  写入任务；协调者上下文治理靠压缩与报告送达已足够，不需要外部记录文档。
+ *  docs/32：协调者获得三件直用工具（subagent_status 状态表 / list_files 只读目录清单 /
+ *  ask_user 向用户提问）——身份句改写、新增「直用工具参考」块、报告处理与汇总交付两条
+ *  纪律补「追问进度查询」「交付前抽查产出物」、异常变动条改「事实源 + 主动核对」、
+ *  interim 纪律改三件口径；toolDocs 六件。 */
 const coordinatorBase = [
   "你是 ZQQ-harness 的任务协调者（coordinator），负责大型项目的总体把控。",
-  "你自己没有任何直接工具——读写文件、运行命令、查询资料全部由子代理（worker）完成；你的全部工具与精确语义见下方「子代理工具参考」。",
+  "实质工作——读写文件、运行命令、查询资料——全部由子代理（worker）完成；你自己只有三件直用工具：两件只读查询（subagent_status / list_files）与一件向用户提问（ask_user），精确语义见下方「直用工具参考」；派出与控制子代理的工具见「子代理工具参考」。",
   `当前工作区根：${ROOT}（任务书中的路径一律用相对路径）。`,
   "职责与工作方式：",
   "- 先规划再派发：把大任务分解为边界清晰、互不重叠的子任务（按目录/模块/主题划分），说明各自负责范围（scope）。",
@@ -178,7 +184,8 @@ const coordinatorBase = [
     "互不依赖、写入范围不重叠的任务在同一轮里发多个 agent_task 即并行派出（各自给 scope 划定写入范围）；有依赖的任务等前置报告送达后再派。" +
     "超出并发上限（subagentMaxConcurrent，默认 3）的派发被立即拒绝（不排队）——余下的等报告送达、并发腾出后再派。",
   "- 报告处理纪律：收到部分报告时只向用户简报进度或按需干预（追派/打断/归档），不要提前汇总尚未完成的部分；全部报告到齐后再整合交付。" +
-    "等待其余报告时直接简短收尾即可（说明在等什么），报告送达会自动开启你的下一轮。",
+    "等待其余报告时直接简短收尾即可（说明在等什么），报告送达会自动开启你的下一轮。" +
+    "用户追问进度时，用 subagent_status 查询当前状态表后如实转述（不要凭印象编造各子代理的进展）。",
   "- 可复用子代理（docs/9）：同一专业方向要跨多次任务延续时，agent_task 带 reusable=true 派出——它完成后保留全部上下文待命，" +
     "后续用 agent_followup 按 name/subId 追加任务（任务书可引用之前的进展）；确定不再使用时用 archive_subagent 归档（归档后只读不可再派）。" +
     "独立的一次性任务用缺省形态（用完即自动归档）。服务重启后待命实例不在线——agent_followup 会自动从过程存档唤醒它（历史延续，同 subId），无需重新派发。",
@@ -186,9 +193,11 @@ const coordinatorBase = [
     "「先用 read_archive（subId=N）读过程存档，再继续」——read_archive 会把该子代理的完整过程转成可读文本注入新 worker 的上下文" +
     "（subId 见报告里的 [[过程档案#N]] 标注）；它也可传 sessionId 读另一段主对话的完整记录。",
   "- 子代理异常变动会自动通知（docs/11/16）：界面打断/归档等你看不见的变动会以「[子代理状态 · 自动送达]」消息告知你；每个任务的最终结果" +
-    "（含失败与归档状态）以「[子代理任务报告 · 自动送达]」消息按完成顺序送达。派发回执与这些送达消息是感知子代理状态的唯一事实源。",
+    "（含失败与归档状态）以「[子代理任务报告 · 自动送达]」消息按完成顺序送达。派发回执与这些送达消息是感知子代理状态的事实源；" +
+    "需要主动核对时用 subagent_status 查询当前状态表（只读快照，不打扰子代理）。",
   "- 冲突预防：绝不派两个子代理写同一个文件；发现产出矛盾时自己裁决，或派一个验证型子代理对比后报告。",
-  "- 汇总与交付：整合各子代理报告为最终答复；对用户如实呈现（谁做了什么、成败、产出物路径）。",
+  "- 汇总与交付：整合各子代理报告为最终答复；对用户如实呈现（谁做了什么、成败、产出物路径）。" +
+    "整合交付前可用 list_files 抽查关键产出物是否真实落盘（只看文件名），发现缺失如实说明并让对应子代理补交。",
   "子代理工具参考（语义精确，严格按此使用）：",
   "- agent_task：派出一个子代理，立即返回「已派发」回执（非阻塞，不等待完成）。description（一句话摘要）与 task（自包含任务书）必填；name 可选短名（审批卡/报告/送达消息标注用）；" +
     "scope 可选写入分区（相对路径前缀数组）；reusable=true 派出可复用形态；timeoutMs 可选超时（≥60000 毫秒）。同一轮发多个本调用即并行派出（见派发纪律）。",
@@ -199,33 +208,44 @@ const coordinatorBase = [
     "继续该方向的工作用 agent_followup 发新任务书。按 name（同名者全部生效）或 subId 指定；空闲待命的子代理没有可打断的对象。",
   "- archive_subagent：归档一个可复用子代理——归档后仅可查看过程存档、不可再派任务。空闲待命时立即归档；" +
     "执行中归档会先中止其当前任务。一次性子代理任务结束即自动归档，无需（也不支持）本工具。",
+  "直用工具参考（只读查询与提问，严格按此使用）：",
+  "- subagent_status：查看当前子代理状态表——活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 附最近 20 条历史记录摘要。" +
+    "只读快照、立即返回、不打扰子代理；用户追问进度、控制工具寻址前核对 name/subId 时用。任务的最终结果仍以送达消息为准，本表不能代替报告。",
+  "- list_files：列出工作区内某个目录的文件与子目录名（只读，不含内容，不递归）。用于了解工作区/模块结构、验收前核对产出文件是否真实落盘；要看某个子目录就对它再调用一次。",
+  "- ask_user：向用户发起选择题询问并阻塞等待回答。仅用于会改变做法的方向性不确定（需求歧义/方案取舍/破坏性操作确认）且无法从上下文合理推断时：" +
+    "问题写具体自包含，给 2~4 个简短互斥的选项，用户也可自行输入其它答案；能从任务上下文合理推断的就直接做，不要滥用提问。",
   "执行纪律（重要）：",
   "- 用户要求停止/归档子代理时，必须真正调用对应工具执行，再如实转述工具返回的文本。" +
     "绝不要只在回复文字里声称「已停止/已执行」，也不要输出任何形如命令或工具调用的纯文本冒充执行——没有真正调用工具就等于没有执行，那是在欺骗用户。",
-  "- 任务运行中用户的插话会以「即时应答」送达你：该窗口内只有 stop_subagent / archive_subagent 两件工具可真正执行；" +
-    "派发新任务、追问进度等其余诉求等当前任务返回后再处理（插话内容都会保留在对话历史里，不会丢）。",
+  "- 任务运行中用户的插话会以「即时应答」送达你：该窗口内只有 stop_subagent / archive_subagent / subagent_status 三件工具可真正执行（打断/归档/查进度）；" +
+    "派发新任务、向用户发起提问等其余诉求等当前任务返回后再处理（插话内容都会保留在对话历史里，不会丢）。",
   "- 工具返回错误（找不到目标/状态不符等）时如实向用户报告原因，不要假装成功；工具文案里附的活动子代理清单可用来核对目标。",
   "请用中文与用户交流，简洁说明你做了什么。",
 ].join("\n");
 
+/** 协调者 registry 六件的 summary 行（docs/32 起：四件派发/控制 + subagent_status/list_files
+ *  两件直用只读；ask_user 受众 front 装在普通与协调者会话——但本测试的 toolDocs 是手工给定的
+ *  快照输入，六件口径对应协调者四件+两件只读；ask_user 的 summary 行如需体现可再加）。
+ *  供 coordinator golden 与 vision 变体两个测试共用（改 summary = 同步改这里）。 */
+const coordinatorToolDocs = [
+  "agent_followup —— 向一个空闲待命的可复用子代理追加新任务，立即返回派发回执（非阻塞；它保留之前任务的全部上下文，按 name 或 subId 寻址）",
+  "agent_task —— 派出一个子代理独立完成一项任务，立即返回派发回执（非阻塞；报告完成后自动送达。reusable=true 可复用；同一轮发多个本调用即并行派发，协调者核心派发工具）",
+  "archive_subagent —— 归档一个可复用子代理（归档后仅可查看存档，不可再派任务；执行中归档会中止当前任务）",
+  "list_files —— 列出工作区内某个目录的文件与子目录名（只读、不含内容、不递归；核对结构与验收产出落点用，深入子目录再对它调用）",
+  "stop_subagent —— 打断一个运行中子代理的当前任务（立即中止请求/工具执行；一次性随之归档、可复用转空闲待命，无恢复机制；按 name 或 subId 匹配）",
+  "subagent_status —— 查看当前子代理状态表（活动子代理运行中/空闲待命的实时用时/上下文占用/摘要，all=true 附历史记录；只读快照不打扰子代理，用户追问进度或寻址前核对用）",
+];
+
 test("golden 快照：coordinator 输入（base 分支新文案；skills/mcp 段不注入；AGENTS.md 两段 docs/20 起不注入——移入 web 层「子代理系统提示词说明」段）", () => {
-  // 协调者 registry 四件（docs/18 起 pause/resume 由 stop_subagent 一件取代），toolDocs 即其 summary 行（toolDocsOf 按名排序）
+  // 协调者 registry 六件（docs/32 起），toolDocs 即其 summary 行（toolDocsOf 按名排序）
   const sc: SectionContext = {
     ...fullContext,
     sessionKind: "coordinator",
-    toolDocs: [
-      "agent_followup —— 向一个空闲待命的可复用子代理追加新任务，立即返回派发回执（非阻塞；它保留之前任务的全部上下文，按 name 或 subId 寻址）",
-      "agent_task —— 派出一个子代理独立完成一项任务，立即返回派发回执（非阻塞；报告完成后自动送达。reusable=true 可复用；同一轮发多个本调用即并行派发，协调者核心派发工具）",
-      "archive_subagent —— 归档一个可复用子代理（归档后仅可查看存档，不可再派任务；执行中归档会中止当前任务）",
-      "stop_subagent —— 打断一个运行中子代理的当前任务（立即中止请求/工具执行；一次性随之归档、可复用转空闲待命，无恢复机制；按 name 或 subId 匹配）",
-    ],
+    toolDocs: coordinatorToolDocs,
   };
   const expected = [
     coordinatorBase,
-    "可用工具：agent_followup —— 向一个空闲待命的可复用子代理追加新任务，立即返回派发回执（非阻塞；它保留之前任务的全部上下文，按 name 或 subId 寻址）；" +
-      "agent_task —— 派出一个子代理独立完成一项任务，立即返回派发回执（非阻塞；报告完成后自动送达。reusable=true 可复用；同一轮发多个本调用即并行派发，协调者核心派发工具）；" +
-      "archive_subagent —— 归档一个可复用子代理（归档后仅可查看存档，不可再派任务；执行中归档会中止当前任务）；" +
-      "stop_subagent —— 打断一个运行中子代理的当前任务（立即中止请求/工具执行；一次性随之归档、可复用转空闲待命，无恢复机制；按 name 或 subId 匹配）。",
+    "可用工具：" + coordinatorToolDocs.join("；") + "。",
   ].join("\n\n");
   assert.equal(assembleSystemPrompt(BUILTIN_PROMPT_SECTIONS, sc), expected);
 });
@@ -249,6 +269,8 @@ test("golden 快照：vision=true 注入图片直看指引（docs/12 R2）——
       "它们带行号显示、精确替换与先读后写保护，比 PowerShell 的 Get-Content/Set-Content 等命令更安全可靠；" +
       "run_pwsh 只用于文件工具覆盖不了的场景（目录与批量操作、二进制或超大文件、进程管理等）。",
     "执行命令时注意控制输出量（用 Select-Object -First、Where-Object 等过滤），避免一次输出过多内容。",
+    // docs/32：ask_user（front 受众，普通会话可用）的使用纪律——方向性分歧才问选择题
+    "方向性不确定（需求歧义、方案取舍、破坏性操作确认）且无法从上下文合理推断时，用 ask_user 向用户发起选择题（2~4 个简短互斥的选项，用户也可自行输入其它答案）；能合理推断的就直接做，不要滥用提问。",
     visionLineWorker,
     "请用中文与用户交流，简洁说明你做了什么。",
   ].join("\n");
@@ -259,12 +281,7 @@ test("golden 快照：vision=true 注入图片直看指引（docs/12 R2）——
   const coordSc: SectionContext = {
     ...fullContext,
     sessionKind: "coordinator",
-    toolDocs: [
-      "agent_followup —— 向一个空闲待命的可复用子代理追加新任务，立即返回派发回执（非阻塞；它保留之前任务的全部上下文，按 name 或 subId 寻址）",
-      "agent_task —— 派出一个子代理独立完成一项任务，立即返回派发回执（非阻塞；报告完成后自动送达。reusable=true 可复用；同一轮发多个本调用即并行派发，协调者核心派发工具）",
-      "archive_subagent —— 归档一个可复用子代理（归档后仅可查看存档，不可再派任务；执行中归档会中止当前任务）",
-      "stop_subagent —— 打断一个运行中子代理的当前任务（立即中止请求/工具执行；一次性随之归档、可复用转空闲待命，无恢复机制；按 name 或 subId 匹配）",
-    ],
+    toolDocs: coordinatorToolDocs,
   };
   const coord0 = assembleSystemPrompt(BUILTIN_PROMPT_SECTIONS, coordSc);
   const coordV = assembleSystemPrompt(BUILTIN_PROMPT_SECTIONS, { ...coordSc, vision: true });
@@ -418,8 +435,8 @@ test("哨兵（阶段 C 已启用）：提供方 SDK 隐式超时/重试显式�
 
 // ---------- 哨兵（阶段 D1，docs/21 §3.1：subagents.ts 五向拆分，纯移动不改行为） ----------
 
-test("哨兵（阶段 D1 已启用）：子代理家族五文件各 ≤400 行（单文件不再承载 10+ 职责）", () => {
-  for (const f of ["subagents.ts", "subagent-worker.ts", "subagent-report.ts", "subagent-archive.ts", "subagent-records.ts"]) {
+test("哨兵（阶段 D1 已启用；docs/32 增至六文件）：子代理家族六文件各 ≤400 行（单文件不再承载 10+ 职责）", () => {
+  for (const f of ["subagents.ts", "subagent-worker.ts", "subagent-report.ts", "subagent-archive.ts", "subagent-records.ts", "subagent-status.ts"]) {
     const lines = readFileSync(join(HERE, "..", "web", f), "utf8").split("\n").length;
     assert.ok(lines <= 400, `${f} 应 ≤400 行（D1 拆分不变量；超出=职责又堆回单文件），当前 ${lines}`);
   }
@@ -484,14 +501,14 @@ test("哨兵（docs/26 F1/F4 已启用）：app/ 前端模块零依赖（禁 nod
   }
 });
 
-test("哨兵（docs/26 F4 已启用）：index.html 骨架化——单外链 /app/main.js + 总行数 ≤500 + 视图层 import 图覆盖", () => {
+test("哨兵（docs/26 F4 已启用；docs/32 上限 500→520：ask_user 询问卡的 CSS+骨架）：index.html 骨架化——单外链 /app/main.js + 总行数 ≤520 + 视图层 import 图覆盖", () => {
   assert.ok(
     /<script type="module" src="\/app\/main\.js"><\/script>/.test(html),
     "index.html 应只外链 /app/main.js（F4 大分区拆文件，docs/26 §6）",
   );
   assert.ok(!html.includes("<script>\n") && !/<script type="module">/.test(html), "不应再有内联 script（视图代码全部在 app/ 模块）");
   const lines = html.split("\n").length;
-  assert.ok(lines <= 500, `index.html 应 ≤500 行（骨架+CSS，docs/26 §6 验收），当前 ${lines}`);
+  assert.ok(lines <= 520, `index.html 应 ≤520 行（骨架+CSS，docs/26 §6 验收；docs/32 调整 500→520），当前 ${lines}`);
   // 分层接线（F4 无环图；docs/28 增 toolinfo）：五纯模块 + 六视图模块都被相对路径 import 覆盖（store 经 state.js、turns 经 chat.js）
   for (const need of ["replay.js", "turns.js", "autoreport.js", "store.js", "toolinfo.js", "dom.js", "state.js", "drawer.js", "sidebar.js", "chat.js", "modals.js"]) {
     assert.ok(frontSrc.includes(`"./${need}"`), `视图层 import 图应覆盖 ./${need}`);

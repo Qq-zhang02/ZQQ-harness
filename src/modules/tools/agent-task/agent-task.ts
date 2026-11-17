@@ -260,6 +260,32 @@ export function createAgentFollowupTool(deps: SystemToolDeps): Tool {
   };
 }
 
+/**
+ * subagent_status（docs/32）：查看当前子代理状态表——活动子代理（运行中/空闲待命）的
+ * 实时状态（subId/name/用时/上下文占用/任务摘要）与可选的历史记录摘要。只读快照、立即返回，
+ * 不打扰子代理也不等待任务；送达消息仍是结算结果的唯一来源，本工具用于主动核对
+ * （用户追问进度、控制工具寻址前确认 name/subId）。
+ */
+export function createSubagentStatusTool(deps: SystemToolDeps): Tool {
+  return {
+    name: "subagent_status",
+    description:
+      "查看当前子代理状态表：活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 可附带最近 20 条历史记录摘要。" +
+      "只读快照、立即返回，不打扰子代理也不等待任务完成。用户追问进度、或调用控制工具前核对 name/subId 时使用。" +
+      "注意：任务的最终结果仍以「" + AUTO_DELIVERY_PREFIXES.report + "」送达消息为准，本工具不能代替报告。",
+    parameters: {
+      type: "object",
+      properties: {
+        all: { type: "boolean", description: "可选，附带历史记录摘要（最近 20 条已结算/待命记录）；缺省只看当前活动子代理" },
+      },
+    },
+    async execute(args) {
+      if (!deps.subagentStatus) return "错误：子代理状态查询不可用（本会话不是协调者会话）。";
+      return deps.subagentStatus(args.all === true ? { all: true } : {});
+    },
+  };
+}
+
 /** archive_subagent（docs/9）：归档可复用子代理——空闲待命且确定不再使用时调用；执行中
  *  归档会中止其当前任务。归档后仅可查看过程存档，不可再派任务。一次性子代理无需归档。 */
 export function createArchiveSubagentTool(deps: SystemToolDeps): Tool {

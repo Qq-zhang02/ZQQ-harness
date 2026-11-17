@@ -22,9 +22,9 @@ test("decideRoute：后台会话的 state/usage/turnEnd 只更新缓存（不渲
   assert.equal(decideRoute("turnEnd", { sessionId: "b" }, v), "turnEnd");
 });
 
-test("decideRoute：后台会话的其余事件（delta/tool/toolResult/approval/info/error/subagent）进缓冲", () => {
+test("decideRoute：后台会话的其余事件（delta/tool/toolResult/approval/askUser/info/error/subagent）进缓冲", () => {
   const v = { viewId: "a", loading: false };
-  for (const ev of ["delta", "tool", "toolResult", "approval", "info", "error", "compaction", "subagent"]) {
+  for (const ev of ["delta", "tool", "toolResult", "approval", "askUser", "info", "error", "compaction", "subagent"]) {
     assert.equal(decideRoute(ev, { sessionId: "b" }, v), "buffer", ev);
   }
 });

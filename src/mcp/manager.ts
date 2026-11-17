@@ -119,6 +119,32 @@ export class McpManager {
     return parts.length > 0 ? parts.join("\n\n") : null;
   }
 
+  /** 启动失败的服务器清单（docs/32）：workerMcpToolsOf 的失败重试判据 + 协调者
+   *  「子代理系统提示词说明」段的未连接警示行。返回拷贝，调用方可安全持有。 */
+  failedServers(): { name: string; error: string }[] {
+    return this.failures.map((f) => ({ ...f }));
+  }
+
+  /**
+   * 已连接服务器的 MCP 工具能力清单（docs/32）：按服务器分组的「mcp__服务器__工具 —— 描述
+   * (截~120字)」行。供协调者的「子代理系统提示词说明」段兜底——服务器不提供 instructions
+   * 时协调者也能看到子代理有哪些 MCP 工具可派。没有任何已连接客户端时返回 null。
+   */
+  toolInventoryText(): string | null {
+    const parts: string[] = [];
+    for (const [name, { client, source }] of this.clients) {
+      const tools = client.listTools();
+      if (tools.length === 0) continue;
+      const lines = tools.map((t) => {
+        const desc = t.description.trim();
+        const clipped = desc.length > 120 ? desc.slice(0, 120) + "…" : desc;
+        return `- ${MCP_TOOL_PREFIX}${name}__${t.name}${clipped ? ` —— ${clipped}` : ""}`;
+      });
+      parts.push(`【${name}（${source === "global" ? "全局" : "工作区"}，${tools.length} 个工具）】\n${lines.join("\n")}`);
+    }
+    return parts.length > 0 ? parts.join("\n\n") : null;
+  }
+
   toolCount(): number {
     let n = 0;
     for (const { client } of this.clients.values()) n += client.listTools().length;

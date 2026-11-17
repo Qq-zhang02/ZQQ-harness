@@ -103,6 +103,8 @@ const SSE_HANDLERS = {
       // 轮结束：本轮的思考/工具/MCP 调用/中间文字统统收进"执行过程"折叠条目，只留最终回答展开
       foldTurns();
       $("#approval").classList.add("hidden");
+      $("#askUser").classList.add("hidden"); // docs/32：轮已结束，挂着的询问卡等不到回答（工具已被中止收场）
+      curAskId = null;
       // 运行中途切进来过的会话：轮结束后拉一次完整快照，补齐切换前丢失的实时片段
       if (cacheOf(V.viewId).needsRefresh) { cacheOf(V.viewId).needsRefresh = false; void refreshSnapshot(); }
     });
@@ -121,6 +123,9 @@ const SSE_HANDLERS = {
     renderRecycle(d.recycled);
   },
   subagent(d) { route("subagent", d, () => onSubagent(d)); },
+  // docs/32 ask_user：模型的选择题询问卡（点选选项或「其它」自由输入）。后台会话经
+  // decideRoute 进缓冲、切回重放重绘（route 同一入口）；turnEnd 清卡（与审批卡同款收尾）。
+  askUser(d) { route("askUser", d, () => showAskCard(d)); },
 };
 for (const [name, handler] of Object.entries(SSE_HANDLERS)) {
   es.addEventListener(name, (e) => { if (e.data == null) return; handler(JSON.parse(e.data)); });
@@ -337,6 +342,52 @@ input.addEventListener("keydown", (e) => {
 });
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, CFG.INPUT_MAX_H) + "px"; }
 input.addEventListener("input", autosize);
+
+// ---------- 询问卡（docs/32 ask_user） ----------
+// 模型经 ask_user 工具发起的选择题：卡上点选选项或「其它」自由输入 → POST /api/ask-user
+// （id 配对服务端 rt.pendingAskUsers 槽）。同一时刻一张卡（服务端 Map 支持并行多问，
+// 后到的卡覆盖显示——先答的那张仍可提交，它持有自己的 id）。
+let curAskId = null;
+function showAskCard(d) {
+  if (drawer.max) setDrawerMax(false); // 与审批卡同款：抽屉放大态盖卡会让会话卡在待回答
+  curAskId = d.id;
+  $("#auQ").textContent = d.question ?? "";
+  $("#auOpts").innerHTML = "";
+  (d.options ?? []).forEach((opt, i) => {
+    const b = el("button", "btn", esc(opt));
+    b.addEventListener("click", () => answerAsk({ choice: i }));
+    $("#auOpts").appendChild(b);
+  });
+  $("#auText").value = "";
+  $("#askUser").classList.remove("hidden");
+  autoscroll(chat);
+  notifyAsk(d);
+}
+/** docs/25 DT3-① 同款窗口失焦通知（审批卡先例）：提问也可能长时间挂起等输入。 */
+function notifyAsk(d) {
+  try {
+    if (typeof Notification === "undefined" || document.hasFocus()) return;
+    if (Notification.permission === "default") void Notification.requestPermission();
+    if (Notification.permission !== "granted") return;
+    const n = new Notification("ZQQ-harness 向你提问", { body: String(d.question ?? "").slice(0, 120), tag: "zqq-ask" });
+    n.onclick = () => { window.focus(); n.close(); };
+  } catch { /* 权限 API 异常等：静默（卡片本体已显示） */ }
+}
+function answerAsk(payload) {
+  const id = curAskId;
+  if (!id) return;
+  const text = $("#auText").value.trim();
+  if (!payload && !text) return; // 其它空输入不提交
+  $("#askUser").classList.add("hidden");
+  curAskId = null;
+  const c = cacheOf(V.viewId);
+  c.buf = c.buf.filter((x) => x.ev !== "askUser"); // 已回答的卡不再随缓冲重放（审批卡同款）
+  void post("/api/ask-user", { id, ...(text ? { text } : payload), sessionId: V.viewId });
+}
+$("#auOther").addEventListener("click", () => answerAsk(null));
+$("#auText").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); answerAsk(null); }
+});
 
 // ---------- 批准 ----------
 // docs/30：apply（可选）= 随决议原子应用的权限补丁——服务端在 settle 前应用（排队的

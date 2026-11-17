@@ -119,14 +119,19 @@ try {
   const rt = await createRuntime(sh, { workspaceRoot: wsDir, kind: "coordinator" });
   const toolNames = rt.registry.list().map((t) => t.name);
   record(
-    "协调者 registry 四件：agent_task + stop_subagent + agent_followup/archive_subagent（docs/18 起 pause/resume 退役）",
-    toolNames.join(",") === "agent_followup,agent_task,archive_subagent,stop_subagent",
+    "协调者 registry 七件（docs/32：四件派发控制+subagent_status、list_files、ask_user）：agent_task + stop_subagent + agent_followup/archive_subagent（docs/18 起 pause/resume 退役）",
+    toolNames.join(",") === "agent_followup,agent_task,archive_subagent,ask_user,list_files,stop_subagent,subagent_status",
     toolNames.join("、"),
   );
   const sys = String(rt.agent.messages[0]?.content ?? "");
+  // docs/20 起 worker 工具行只在「子代理系统提示词说明」段重放——协调者自身工具行（该段之前）不含它们
+  const replayIdx = sys.indexOf("# 子代理（worker）系统提示词说明");
   record(
-    "协调者系统提示含 agent_task、不含 run_pwsh/write_file",
-    sys.includes("agent_task") && !sys.includes("run_pwsh") && !sys.includes("write_file"),
+    "协调者系统提示含 agent_task；run_pwsh/write_file 只出现在 docs/20 子代理说明段内（协调者自身工具行不含）",
+    sys.includes("agent_task") &&
+      replayIdx >= 0 &&
+      !sys.slice(0, replayIdx).includes("run_pwsh") &&
+      sys.slice(replayIdx).includes("run_pwsh ——"),
   );
   record("协调者不注册 MCP 工具", rt.registry.list().every((t) => !t.name.startsWith("mcp__")));
 

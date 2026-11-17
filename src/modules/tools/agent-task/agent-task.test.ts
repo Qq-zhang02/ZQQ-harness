@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { createFileLedger } from "../../../core/file-tools.ts";
 import type { SubagentDispatch, SubagentFollowup, SubagentRequest, SystemToolDeps } from "../../../core/types.ts";
 import type { Tool, ToolContext } from "../../../tools/registry.ts";
-import { createAgentFollowupTool, createAgentTaskTool, createArchiveSubagentTool, createStopSubagentTool, formatWorkerResult, fmtDur, parseTaskItem } from "./agent-task.ts";
+import { createAgentFollowupTool, createAgentTaskTool, createArchiveSubagentTool, createStopSubagentTool, createSubagentStatusTool, formatWorkerResult, fmtDur, parseTaskItem } from "./agent-task.ts";
 
 function makeTool(capture?: { req?: SubagentRequest; signal?: AbortSignal }, dispatch?: SubagentDispatch): Tool {
   const deps = {
@@ -319,4 +319,24 @@ test("formatWorkerResult：archived=request → 归档请求中止说明（不�
   const ctxB = formatWorkerResult({ ok: true, text: "报告", reusable: true, subId: 8, contextPct: 61, forceArchived: true }, "c");
   assert.equal(ctxA, ctxB, "archived=context 与 forceArchived 输出一致（消费面统一）");
   assert.ok(ctxA.includes("已自动归档"), ctxA);
+});
+
+// ---------- docs/32：subagent_status 状态表（协调者第六件，直用只读） ----------
+
+test("subagent_status：状态表文案透传与 all 参数透传；接缝缺失（非协调者会话装配）防御", async () => {
+  let seen: { all?: boolean } | undefined;
+  const deps = {
+    ledger: createFileLedger(),
+    subagentStatus: (opts?: { all?: boolean }) => {
+      seen = opts;
+      return opts?.all ? "历史记录（最近 1 条）：- #1 s（完成 · 2026-11-17 20:13）" : "当前没有活动子代理（本会话尚未派出过子代理）。";
+    },
+  } as unknown as SystemToolDeps;
+  const t = createSubagentStatusTool(deps);
+  assert.equal(await t.execute({}, tctx), "当前没有活动子代理（本会话尚未派出过子代理）。");
+  assert.deepEqual(seen, {}, "缺省不带 all");
+  assert.ok((await t.execute({ all: true }, tctx)).includes("#1 s"));
+  assert.deepEqual(seen, { all: true });
+  const bare = createSubagentStatusTool({ ledger: createFileLedger() } as unknown as SystemToolDeps);
+  assert.ok((await bare.execute({}, tctx)).includes("不是协调者会话"));
 });

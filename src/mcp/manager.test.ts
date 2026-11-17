@@ -94,3 +94,40 @@ test("loadMcpConfig：读取与缺省", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------- docs/32：failedServers（失败重试判据）与 toolInventoryText（协调者能力清单兜底） ----------
+
+test("MCP 管理器：failedServers 列启动失败项；toolInventoryText 按服务器分组列工具与截断描述", async () => {
+  const registry = new ToolRegistry();
+  const mgr = new McpManager(transports());
+  try {
+    assert.equal(mgr.toolInventoryText(), null, "无连接时清单为 null");
+    assert.deepEqual(mgr.failedServers(), []);
+    await mgr.apply(
+      { mcpServers: {} },
+      { mcpServers: { bad: { command: "definitely-not-exist-cmd-xyz" }, demo: DEMO } },
+      registry,
+    );
+    const failed = mgr.failedServers();
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0]!.name, "bad");
+    assert.ok(failed[0]!.error.length > 0);
+    const inv = mgr.toolInventoryText();
+    assert.ok(inv, "有连接时清单非 null");
+    assert.ok(inv!.includes("【demo（工作区，2 个工具）】"), inv!);
+    assert.ok(inv!.includes("mcp__demo__add"), inv!);
+  } finally {
+    mgr.stop();
+  }
+  // 重连后失败清单随 stopAll 清空
+  const mgr2 = new McpManager(transports());
+  try {
+    await mgr2.apply({ mcpServers: {} }, { mcpServers: { bad: { command: "definitely-not-exist-cmd-xyz" } } }, new ToolRegistry());
+    assert.equal(mgr2.failedServers().length, 1);
+    await mgr2.apply({ mcpServers: {} }, { mcpServers: { demo: DEMO } }, new ToolRegistry());
+    assert.deepEqual(mgr2.failedServers(), [], "重连成功后失败清单清空");
+    assert.notEqual(mgr2.toolInventoryText(), null);
+  } finally {
+    mgr2.stop();
+  }
+});

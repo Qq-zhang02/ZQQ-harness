@@ -234,6 +234,13 @@
   .btn:hover { filter: brightness(1.15); }
   .hidden { display: none !important; }
 
+  /* docs/32 ask_user 询问卡：复用 .approval 卡底色系（同属「等用户输入」的驻留卡） */
+  #askUser .auq { color: var(--text); font-weight: 600; margin-bottom: 10px; white-space: pre-wrap; }
+  #askUser .auopts { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+  #askUser .auopts .btn { text-align: left; padding: 7px 12px; }
+  #askUser .auother { display: flex; gap: 8px; }
+  #askUser .auother input { flex: 1; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font: inherit; font-size: 13px; }
+
   /* ── 输入区 ── */
   footer { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 14px; background: var(--panel); border-top: 1px solid var(--border); }
   #input { flex: 1; resize: none; background: var(--bg); color: var(--text); border: 1px solid var(--border);
@@ -368,6 +375,17 @@
               <button class="btn hidden" id="aFull" title="放行本条并把本会话沙箱切到全开放（无约束）——区外命令从此真能执行">🔓 解除沙箱并放行</button>
               <button class="btn primary" id="aYes">允许一次</button>
               <button class="btn primary hidden" id="aAlways" title="放行本条并把本会话审批策略切到自动放行——后续拦截卡自动批准（提权卡仍会弹）">允许并不再询问</button>
+            </div>
+          </div>
+
+          <!-- docs/32 ask_user 询问卡：模型发起的选择题（点选或「其它」自由输入），/api/ask-user 决议 -->
+          <div class="approval hidden" id="askUser">
+            <div class="at">❓ 需要你确认一个问题</div>
+            <div class="auq" id="auQ"></div>
+            <div class="auopts" id="auOpts"></div>
+            <div class="auother">
+              <input type="text" id="auText" placeholder="其它：都不合适？在这里自行输入说明" />
+              <button class="btn" id="auOther">提交</button>
             </div>
           </div>
         </div>

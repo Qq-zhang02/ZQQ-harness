@@ -17,7 +17,7 @@ import type { SandboxMode } from "../sandbox/types.ts";
 import type { ChatImage, ChatMessage, EffortSetting, LLMProvider, UsageBreakdown } from "../llm/provider.ts";
 import type { SkillInfo } from "./skills.ts";
 import type { SseEventName } from "./events.ts";
-import type { SubagentResult } from "./types.ts";
+import type { AskUserAnswer, SubagentResult } from "./types.ts";
 import type { FileLedger } from "./file-tools.ts";
 
 /** 活动子代理的控制句柄（W2-S，docs/18 起暂停/恢复机制退役）：由 web/subagents.ts 的
@@ -104,6 +104,10 @@ export interface SessionRuntime {
   turnStartedAt: number | null;
   abortCtl: AbortController | null;
   pendingApproval: ((decision: ApprovalDecision) => void) | null;
+  /** ask_user 的待答槽（docs/32）：askId → 决议回调。Map 而非单槽——同轮并行多个提问
+   *  （协调者同轮多工具并行执行）不互相覆盖；/api/ask-user 按 id 决议，/api/stop 与
+   *  轮中止经信号触发 cancelled。瞬态不入档（与 pendingApproval 同口径）。 */
+  pendingAskUsers: Map<string, (answer: AskUserAnswer) => void>;
   /** 审批串行链（docs/5 §5.2 C3）：会话级共享——前台 agent 与每个 worker 的审批请求
    *  排同一条链，doAsk 单槽在互斥下同时至多一张卡在等（不能挂在 requestApprovalFor
    *  闭包里：每个 worker 会拿到自己的新链，互不排队） */

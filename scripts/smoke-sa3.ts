@@ -1,7 +1,7 @@
 /**
  * SA3 隔离冒烟（docs/5 §6 SA3，零 token：全程不发 LLM 网络请求）：并行派发 + 冲突治理——
  * A) 进程内真实装配（BUILTIN_MODULES + createRuntime(kind=coordinator) + 真实系统工具）：
- *   1) 协调者 registry 四件（docs/15 起 agent_tasks 退役，仅 agent_task 单发；docs/18 起 pause/resume→stop）；系统提示含派发纪律（docs/16）与 scope 用法；
+ *   1) 协调者 registry 七件（docs/32：四件派发控制+subagent_status、list_files、ask_user）（docs/15 起 agent_tasks 退役，仅 agent_task 单发；docs/18 起 pause/resume→stop）；系统提示含派发纪律（docs/16）与 scope 用法；
  *   2) 三个 agent_task 调用并行派 3 个 worker（docs/16 非阻塞：即时回执 + 报告自动送达收件箱；真实 write_file 各写不同目录）；
  *   3) 同文件冲突（§5.3）：B 先读 → A 写入 → B 写被拒（旧快照失效）→ B 重读后写入成功（一成一拒 + 自愈）；
  *   4) 并发上限（C7）：3 个挂起 worker 占满槽位 → 第 4 个派发同步拒绝（未启动，不排队）；
@@ -201,8 +201,8 @@ try {
     const sys = String(rt.agent.messages[0]?.content ?? "");
     record(
       "coordinator 装配：registry 四件（agent_task+stop_subagent+agent_followup/archive_subagent；docs/18 起 pause/resume 退役），提示词含派发纪律(docs/16)/scope/工具参考/执行纪律/可复用",
-      names.length === 4 &&
-        names.join(",") === "agent_followup,agent_task,archive_subagent,stop_subagent" &&
+      names.length === 7 &&
+        names.join(",") === "agent_followup,agent_task,archive_subagent,ask_user,list_files,stop_subagent,subagent_status" &&
         sys.includes("派发纪律") &&
         sys.includes("自动送达") &&
         sys.includes("scope") &&

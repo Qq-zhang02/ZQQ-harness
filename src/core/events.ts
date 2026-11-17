@@ -26,6 +26,9 @@ export const SSE_EVENTS = {
   error: "error",
   /** 审批卡：{ sessionId, ...ApprovalRequest } */
   approval: "approval",
+  /** 询问卡（docs/32 ask_user）：{ sessionId, id, question, options[] }——前端渲染选择题卡
+   *  （选项按钮 +「其它」自由输入），回答 POST /api/ask-user（id 配对 rt.pendingAskUsers 槽） */
+  askUser: "askUser",
   /** 一轮结束（前端收尾清扫运行中的工具块）：{ sessionId } */
   turnEnd: "turnEnd",
   /** 会话列表/视图变化：{ current, viewSeq, running, groups, recycled } */

@@ -101,13 +101,14 @@ function previewArgs(raw: string): string {
 const INTERIM_TASK_STATUS =
   "[子代理已派发、正在后台执行，报告完成后会自动送达（那才是最终结果）——这是运行期间的状态注入，不是最终结果；请勿重复派发同样的任务]";
 
-/** interim 即时应答可真实执行的工具白名单（协调者注册表才有的两件控制工具，docs/18 起
- *  暂停/恢复退役、打断即终结）：协调者在工具等待窗口内（docs/16 后窗口很窄——派发/控制
- *  类调用都立即返回）收到用户要求打断/归档时必须当场真正执行——否则模型只能在文字里
- *  "装作执行"骗用户。按注册表过滤：普通会话恒为空 → interim 不带工具，行为与历史版本
- *  逐字节一致。白名单外的调用（幻觉出的 agent_task 等）不执行、以错误文本回填——
- *  interim 不派发新任务。 */
-const INTERIM_CONTROL_TOOLS = new Set(["stop_subagent", "archive_subagent"]);
+/** interim 即时应答可真实执行的工具白名单（协调者注册表才有的工具，docs/18 起暂停/恢复
+ *  退役、打断即终结；docs/32 起补 subagent_status 只读查询——运行中插话追问进度可当场
+ *  真执行）：协调者在工具等待窗口内（docs/16 后窗口很窄——派发/控制类调用都立即返回）
+ *  收到用户要求打断/归档/报进度时必须当场真正执行——否则模型只能在文字里"装作执行"骗
+ *  用户。按注册表过滤：普通会话恒为空 → interim 不带工具，行为与历史版本逐字节一致。
+ *  白名单外的调用（幻觉出的 agent_task、阻塞型的 ask_user 等）不执行、以错误文本回填——
+ *  interim 不派发新任务、不发起阻塞提问。 */
+const INTERIM_CONTROL_TOOLS = new Set(["stop_subagent", "archive_subagent", "subagent_status"]);
 
 /**
  * Agent 循环：用户输入 → LLM →（有 tool_calls 则执行并回填）→ LLM → … → 最终回答。
@@ -418,7 +419,7 @@ export class Agent {
           ui.printToolCall(call.name, previewArgs(call.arguments), call.id, call.arguments);
           const res = INTERIM_CONTROL_TOOLS.has(call.name)
             ? await registry.executeWithMeta(call.name, call.arguments, ctx)
-            : { text: `错误：即时应答窗口只能执行 stop_subagent / archive_subagent（${call.name} 不在其中）——其余工具请等当前任务结束后调用。`, full: "", prunedChars: 0 };
+            : { text: `错误：即时应答窗口只能执行 stop_subagent / archive_subagent / subagent_status（${call.name} 不在其中）——其余工具请等当前任务结束后调用。`, full: "", prunedChars: 0 };
           ui.printToolResult(res.full || res.text, { prunedChars: res.prunedChars }, call.id);
           seq.push({ role: "tool", toolCallId: call.id, content: res.text });
         }

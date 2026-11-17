@@ -8,6 +8,8 @@
  */
 import type { HarnessModule } from "./core/module.ts";
 import { toolAgentTask } from "./modules/tools/agent-task/index.ts";
+import { toolAskUser } from "./modules/tools/ask-user/index.ts";
+import { toolListFiles } from "./modules/tools/list-files/index.ts";
 import { mcpStdio } from "./modules/mcp/stdio/index.ts";
 import { providerAnthropic } from "./modules/providers/anthropic/index.ts";
 import { providerOpenai } from "./modules/providers/openai/index.ts";
@@ -33,6 +35,8 @@ export const BUILTIN_MODULES: HarnessModule[] = [
   providerOpenai,
   providerAnthropic,
   toolAgentTask,
+  toolAskUser,
+  toolListFiles,
   toolLoadSkill,
   toolPwsh,
   toolReadFile,

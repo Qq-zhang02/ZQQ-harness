@@ -109,8 +109,8 @@ try {
   record("newSessionForView(kind) 建协调者会话", coord?.kind === "coordinator");
   const names = coord!.registry.list().map((t) => t.name);
   record(
-    "registry 四件：agent_task + stop_subagent + agent_followup/archive_subagent（docs/18 起 pause/resume 退役）",
-    names.join(",") === "agent_followup,agent_task,archive_subagent,stop_subagent",
+    "registry 七件：agent_task + stop_subagent + agent_followup/archive_subagent（docs/18 起 pause/resume 退役）",
+    names.join(",") === "agent_followup,agent_task,archive_subagent,ask_user,list_files,stop_subagent,subagent_status",
     names.join("、"),
   );
   const coordSys = String(coord!.agent.messages[0]?.content ?? "");
@@ -155,8 +155,8 @@ try {
   const blankNames = coordBlank.registry.list().map((t) => t.name);
   const blankSys = String(coordBlank.agent.messages[0]?.content ?? "");
   record(
-    "bindWorkspace：协调者绑工作区后 registry 仍六件（无 mcp__ 污染）、系统提示无 MCP 段",
-    blankNames.join(",") === "agent_followup,agent_task,archive_subagent,stop_subagent" && !blankSys.includes("# MCP 服务器使用说明"),
+    "bindWorkspace：协调者绑工作区后 registry 仍七件（无 mcp__ 污染）、系统提示无 MCP 段",
+    blankNames.join(",") === "agent_followup,agent_task,archive_subagent,ask_user,list_files,stop_subagent,subagent_status" && !blankSys.includes("# MCP 服务器使用说明"),
   );
 } catch (e) {
   record("Part A 执行", false, e instanceof Error ? `${e.message}\n${e.stack?.split("\n")[1] ?? ""}` : String(e));
