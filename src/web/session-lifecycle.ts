@@ -23,20 +23,24 @@ import {
   type SessionShell,
 } from "./session-runtime.ts";
 import { workerMcpToolsOf } from "./subagents.ts";
+import type { AttachmentStore } from "./attachments.ts";
+import { toStoredMessages } from "./attachments.ts";
 
 /** 会话标题截断（首条用户消息前 N 字符；docs/21 §2.4 低优先提名）。 */
 export const SESSION_TITLE_MAX = 24;
 
 /** 会话存档字段装配的单一出处（原三份重复字面量收敛）。title/messages 由调用方给定：
- *  创建即存档的空占位传 "" 与 []，persistSession 传首条用户消息标题与实际历史。 */
-export function toSessionData(rt: SessionRuntime, title: string, messages: ChatMessage[]): SessionData {
+ *  创建即存档的空占位传 "" 与 []，persistSession 传首条用户消息标题与实际历史。
+ *  docs/33：attachments 给定时消息里的图片转 {mime,ref} 引用（字节落附件库、档不嵌 base64；
+ *  幂等去重）——缺省原样透传（旧形态兼容）。 */
+export function toSessionData(rt: SessionRuntime, title: string, messages: ChatMessage[], attachments?: AttachmentStore): SessionData {
   return {
     id: rt.id,
     title,
     updatedAt: new Date().toISOString(),
     workspace: rt.workspace!.root,
     messageCount: messages.length,
-    messages,
+    messages: toStoredMessages(attachments, messages),
     ...(rt.kind === "coordinator" ? { kind: "coordinator" as const } : {}),
     // worker 审计记录（SA4）：空时不写字段（旧档形状不变，向后兼容）；条数用于恢复配额续期
     ...(rt.subagents.length > 0 ? { subagents: rt.subagents } : {}),
@@ -58,7 +62,7 @@ export function persistSession(sh: SessionShell, rt: SessionRuntime | undefined)
   const msgs = rt.agent.messages.filter((m) => m.role !== "system");
   const firstUser = msgs.find((m) => m.role === "user");
   if (!firstUser || !firstUser.content) return;
-  sh.sessions.save(toSessionData(rt, firstUser.content.slice(0, SESSION_TITLE_MAX), msgs));
+  sh.sessions.save(toSessionData(rt, firstUser.content.slice(0, SESSION_TITLE_MAX), msgs, sh.attachments)); // docs/33：图片转附件库引用
   sh.broadcast(SSE_EVENTS.sessions, sessionsPayload(sh));
 }
 
@@ -129,7 +133,7 @@ export async function bindWorkspace(sh: SessionShell, rt: SessionRuntime, p: str
   sh.sessions.removeFromOrder([rt.id]); // P1-4：换绑前清掉旧工作区 order 键（该 id 已不属于旧工作区）
   sh.sessions.prependOrder(rt.workspace.root, rt.id);
   // 与 newSessionForView 一致：创建即存档（空占位），当前会话立刻在侧边栏可见
-  sh.sessions.save(toSessionData(rt, "", []));
+  sh.sessions.save(toSessionData(rt, "", [], sh.attachments));
   sweepEmptySessions(sh);
 }
 
@@ -165,7 +169,7 @@ export async function newSessionForView(
   sh.sessions.prependOrder(workspaceRoot, rt.id); // 新对话默认在最上方
   // 创建即存档（空消息、暂无标题）：新对话立刻出现在侧边栏，而不是等首轮结束才可见；
   // 首轮结束后 persistSession 会用首条用户消息覆写标题
-  sh.sessions.save(toSessionData(rt, "", []));
+  sh.sessions.save(toSessionData(rt, "", [], sh.attachments));
   sweepEmptySessions(sh); // 及时创建的另一面：被切走的空占位不留垃圾
   return rt;
 }

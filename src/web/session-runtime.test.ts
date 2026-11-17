@@ -19,6 +19,7 @@ import { toolAgentTask } from "../modules/tools/agent-task/index.ts";
 import type { ProviderFormatDef, SystemToolDef, McpTransportDef } from "../core/types.ts";
 import type { SubagentService } from "../core/types.ts";
 import { SessionStore } from "./sessions.ts";
+import { AttachmentStore } from "./attachments.ts";
 import type { ProviderConfig, ProviderFile } from "../providers/store.ts";
 import { createRuntime, currentState, requestApprovalFor, type SessionShell } from "./session-runtime.ts";
 import { startTurn, toSessionData } from "./session-lifecycle.ts";
@@ -85,6 +86,7 @@ function makeShell(
   return {
     ctx,
     sessions: new SessionStore(userDir),
+    attachments: new AttachmentStore(userDir), // docs/33
     providerFile: {
       path: join(userDir, "providers.json"),
       data: { active: "p1", providers: [overrides?.provider ?? fakeProvider] },

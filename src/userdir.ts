@@ -11,6 +11,7 @@ export const USER_DIR_NAME = ".ZQQ-harness";
 export const USER_DIR_LAYOUT = {
   sessions: "sessions",
   spill: "spill",
+  attachments: "attachments", // 图片附件内容寻址库（docs/33：字节按 sha256 只落一份、会话档只存引用；永不自动清理）
   skills: "skills",
   tmp: "tmp",
   modules: "modules",

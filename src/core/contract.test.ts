@@ -350,9 +350,9 @@ test("哨兵（P5 已启用）：server.ts 不再写死技能目录数组与沙�
   assert.ok(!serverSrc.includes("WindowsAclRunner"), "沙箱后端应来自 ctx.sandboxBackends 选型");
 });
 
-test("哨兵（P6 已启用；docs/25 DT0 调整 250→270；2026-11-16 真机回归再调 270→278：默认端口 WinNAT 排除段 EACCES 回退属监听生命周期，留在瘦壳）：server.ts ≤278 行", () => {
+test("哨兵（P6 已启用；docs/25 DT0 调整 250→270；2026-11-16 真机回归再调 270→278；docs/33 附件库接线再调 278→282）：server.ts ≤282 行", () => {
   const lines = serverSrc.split("\n").length;
-  assert.ok(lines <= 278, `server.ts 应只剩 bootstrap/静态/SSE/meta/分发/进程生命周期（DT0 优雅停机 + 端口绑定回退），当前 ${lines} 行`);
+  assert.ok(lines <= 282, `server.ts 应只剩 bootstrap/静态/SSE/meta/分发/进程生命周期（DT0 优雅停机 + 端口绑定回退），当前 ${lines} 行`);
 });
 
 test("哨兵（P8 已启用；docs/23 D2 改显式装载）：阈值常量经 initConfig() 重绑的生效值，导入期不读 harness.json", () => {

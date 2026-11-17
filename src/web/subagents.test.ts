@@ -25,6 +25,7 @@ import type { McpTransportDef, SystemToolDef } from "../core/types.ts";
 import type { ChatParams, ChatResult, LLMProvider } from "../llm/provider.ts";
 import type { SessionRuntime } from "../core/host.ts";
 import { SessionStore } from "./sessions.ts";
+import { AttachmentStore } from "./attachments.ts";
 import { runWorker, subagentServiceFor, applySubagentControl, archiveSourceOf, subagentStatusText, WORKER_ROLE_SECTION } from "./subagents.ts";
 import { makeWorkerUi } from "./subagent-worker.ts";
 import { TOOL_EVENT_ARGS_MAX_CHARS } from "../config.ts";
@@ -117,6 +118,7 @@ function makeHarness(
   const sh: SessionShell = {
     ctx,
     sessions: new SessionStore(userDir),
+    attachments: new AttachmentStore(userDir), // docs/33
     providerFile: {
       path: "",
       data: {

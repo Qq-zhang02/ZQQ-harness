@@ -23,6 +23,7 @@ import { loadModules } from "../src/core/module.ts";
 import { BUILTIN_MODULES } from "../src/modules.ts";
 import { loadConfig } from "../src/config.ts";
 import { SessionStore } from "../src/web/sessions.ts";
+import { AttachmentStore } from "../src/web/attachments.ts";
 import { createRuntime, currentState, type SessionShell } from "../src/web/session-runtime.ts";
 import { bindWorkspace, newSessionForView, switchView } from "../src/web/session-lifecycle.ts";
 import { subagentServiceFor } from "../src/web/subagents.ts";
@@ -73,6 +74,7 @@ try {
   const sh = {
     ctx,
     sessions: new SessionStore(userDir),
+    attachments: new AttachmentStore(userDir), // docs/33
     providerFile: {
       path: join(userDir, "providers.json"),
       data: {

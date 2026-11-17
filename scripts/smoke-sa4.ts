@@ -25,6 +25,7 @@ import { loadModules } from "../src/core/module.ts";
 import { BUILTIN_MODULES } from "../src/modules.ts";
 import { loadConfig, SUBAGENT_MAX_TOTAL } from "../src/config.ts";
 import { SessionStore } from "../src/web/sessions.ts";
+import { AttachmentStore } from "../src/web/attachments.ts";
 import { createRuntime, currentState, type SessionShell } from "../src/web/session-runtime.ts";
 import { toSessionData } from "../src/web/session-lifecycle.ts";
 import { subagentServiceFor } from "../src/web/subagents.ts";
@@ -113,6 +114,7 @@ try {
   const sh = {
     ctx,
     sessions: new SessionStore(userDir),
+    attachments: new AttachmentStore(userDir), // docs/33
     providerFile: {
       path: join(userDir, "providers.json"),
       data: {
@@ -231,8 +233,8 @@ try {
     const end = mainJs.indexOf("\n};", start);
     const hasKey = mainJs.slice(start, end).includes("\n  subagent(");
     record(
-      "前端三端：SSE_HANDLERS 含 subagent 键 + onSubagent 渲染函数 + /status 子代理行；server.ts 零改动（≤278 行，DT0 调整）",
-      hasKey && front.includes("function onSubagent") && front.includes("🎯 子代理 ") && serverLines <= 278, // docs/25 DT0：250→270；2026-11-16 真机回归 270→278（WinNAT 端口回退属监听生命周期，与 contract.test.ts 哨兵同步——该次漏改此处）；F4 起 SSE 表在 main.js、渲染链跨 app/ 模块（front 全景扫）
+      "前端三端：SSE_HANDLERS 含 subagent 键 + onSubagent 渲染函数 + /status 子代理行；server.ts 近零改动（≤282 行，docs/33 附件库接线 +3）",
+      hasKey && front.includes("function onSubagent") && front.includes("🎯 子代理 ") && serverLines <= 282, // docs/25 DT0：250→270→278；docs/33 附件库接线 278→282（与 contract.test.ts 哨兵同步）；F4 起 SSE 表在 main.js、渲染链跨 app/ 模块（front 全景扫）
       `handler=${hasKey}；server.ts=${serverLines} 行`,
     );
     // docs/22 §4.1：图片规则单一出处——前端校验/按钮 title 全走 meta.imageRules（imgRules()），

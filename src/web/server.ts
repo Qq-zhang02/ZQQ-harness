@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { initConfig, loadConfig, HARNESS_CONFIG, SANDBOX_TMP_MAX_AGE_HOURS } from "../config.ts";
 import { ensureProvidersFile } from "../providers/store.ts";
 import { SessionStore, sweepStaleSpill } from "./sessions.ts";
+import { AttachmentStore } from "./attachments.ts";
 import { loadRecentWorkspaces, workspacesFilePath } from "./workspaces.ts";
 import { ensureUserDir, USER_DIR_LAYOUT as UDL } from "../userdir.ts";
 import { setSandboxRunner } from "../sandbox/runner.ts";
@@ -114,9 +115,11 @@ for (const m of loadedExternals) if (disabled.has(m.name)) console.error(`[harne
 await loadModules(ctx, [...enabledBuiltins, ...externals]);
 const providerFile = ensureProvidersFile(USER_DIR, process.cwd(), ctx.providerFormats);
 const sessions = new SessionStore(USER_DIR);
+const attachments = new AttachmentStore(USER_DIR); // docs/33：图片附件内容寻址库
 shell = {
   ctx,
   sessions,
+  attachments,
   providerFile,
   runtimes: new Map(),
   viewId: "",

@@ -17,6 +17,7 @@ import { createWorkspace, readAgentsMd, type Workspace } from "../workspace.ts";
 import { McpManager, loadMcpConfig } from "../mcp/manager.ts";
 import { createProvider, normalizeEffort, type ProviderConfig, type ProviderFile } from "../providers/store.ts";
 import type { SessionData, SessionStore } from "./sessions.ts";
+import { restoreStoredMessages, toStoredMessages, type AttachmentStore } from "./attachments.ts";
 import {
   askWithMode,
   auditAsked,
@@ -44,6 +45,8 @@ import type { RuntimeSettings, SessionRuntime } from "../core/host.ts";
 export interface SessionShell {
   ctx: HarnessContext;
   sessions: SessionStore;
+  /** 图片附件内容寻址库（docs/33）：会话档只存 sha256 引用、字节落 attachments/v1 一份 */
+  attachments: AttachmentStore;
   providerFile: ProviderFile;
   runtimes: Map<string, SessionRuntime>;
   viewId: string;
@@ -397,9 +400,10 @@ export function compactionDepsOf(sh: SessionShell, rt: SessionRuntime, opts?: { 
       });
       return r.content;
     },
-    ...(opts?.backup === false
-      ? {}
-      : { backup: (history: ChatMessage[]): void => sh.sessions.backupBeforeCompact(rt.id, history) }),
+      ...(opts?.backup === false
+        ? {}
+        // docs/33：压缩前备份同样只存引用（图片字节在附件库里，备份 JSON 不再嵌 base64）
+        : { backup: (history: ChatMessage[]): void => sh.sessions.backupBeforeCompact(rt.id, toStoredMessages(sh.attachments, history)) }),
   };
 }
 
@@ -577,7 +581,9 @@ export async function createRuntime(
     compaction: compactionDepsOf(sh, rt),
     promptSections: coordSections ?? sh.ctx.promptSections, // docs/20：coordinator 加 subagent-prompt 段；normal 直传（字节不变）
   });
-  if (d) rt.agent.restore(d.messages);
+  // docs/33：恢复时解析附件引用（{mime,ref} → 校验 sha256 → {mime,data}；缺失/损坏降级丢图+标注；
+  // 旧档内联 base64 原样兼容）
+  if (d) rt.agent.restore(restoreStoredMessages(sh.attachments, d.messages));
   // P1-3（docs/28）：MCP 后台装配放 agent 就位之后启动（完成回调要 setMcpInstructions）
   if (wantMcp) applyMcpInBackground(sh, rt, workspace?.root ?? null);
   // docs/20 修订（真机反馈）：协调者创建即预热 worker MCP——「子代理系统提示词说明」段
