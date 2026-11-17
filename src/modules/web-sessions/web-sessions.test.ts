@@ -630,3 +630,67 @@ test("/api/settings：busy 放行权限三键（live 应用+广播+不落盘）�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------- docs/32 真机回归：/api/ask-user 决议（预删除会让 settle 幂等守卫误判 → promise 永挂） ----------
+
+test("/api/ask-user：按 id 决议 resolve 提问 promise（choice/text 两态）；野值 400 留槽可重试；未知 id 409", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-websessions-ask-"));
+  try {
+    const ctx = buildContext(
+      {
+        userDir: dir,
+        globalSkillsDir: join(dir, "skills"),
+        globalMcpFile: join(dir, "mcp.json"),
+        workspacesFile: join(dir, "workspaces.json"),
+        sessionsDir: join(dir, "sessions"),
+      },
+      loadConfig(),
+    );
+    // 桩 rt：pendingAskUsers 槽的 resolver 与 web/session-runtime.ts askUserFor 的 settle 同构（自删 + resolve）
+    const rt = { pendingAskUsers: new Map<string, (a: unknown) => void>() };
+    const host = { runtimes: () => new Map([["s1", rt]]) } as unknown as SessionHost;
+    ctx.sessionHost = host;
+    webSessions.setup(ctx);
+    const route = ctx.routes.get("/api/ask-user");
+    const call = async (body: Record<string, unknown>) => {
+      const responses: Array<{ status: number; data: unknown }> = [];
+      const r: ServerRequest = {
+        req: {} as never,
+        res: {} as never,
+        url: new URL("http://localhost/api/ask-user"),
+        body: async () => body,
+        json: (status, data) => responses.push({ status, data }),
+      };
+      await route!.handler(r);
+      return responses[0]!;
+    };
+
+    // 挂两个提问（模拟同轮并行多问——Map 槽互不覆盖）
+    const waiter = (id: string) =>
+      new Promise<unknown>((res) => {
+        rt.pendingAskUsers.set(id, (a) => {
+          rt.pendingAskUsers.delete(id);
+          res(a);
+        });
+      });
+    const p1 = waiter("k1");
+    const p2 = waiter("k2");
+
+    assert.equal((await call({ sessionId: "s1", id: "ghost", choice: 0 })).status, 409, "未知 id 409");
+    assert.equal((await call({ sessionId: "s1", id: "k1" })).status, 400, "缺 choice/text 400");
+    assert.equal((await call({ sessionId: "s1", id: "k1", choice: "x" })).status, 400, "野值 choice 400");
+    assert.equal(rt.pendingAskUsers.has("k1"), true, "400 后槽仍在（卡片留在屏上可重试）");
+
+    // 回归主断言：决议必须 resolve 提问 promise——双删 bug 在此超时（真机表现为选完选项轮次卡死）
+    const race = <T,>(p: Promise<T>) => Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error("决议未 resolve（预删除使 settle 守卫误判）")), 1_000))]);
+    const ok1 = await call({ sessionId: "s1", id: "k1", choice: 1 });
+    assert.equal(ok1.status, 202);
+    assert.deepEqual(await race(p1), { choice: 1 }, "choice 决议到达 resolver");
+    assert.equal(rt.pendingAskUsers.has("k1"), false, "决议后槽清空");
+    const ok2 = await call({ sessionId: "s1", id: "k2", text: " 都不要，自定义 " });
+    assert.equal(ok2.status, 202);
+    assert.deepEqual(await race(p2), { text: "都不要，自定义" }, "text（其它）决议到达 resolver 且已 trim");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

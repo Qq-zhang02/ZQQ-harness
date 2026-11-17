@@ -1,6 +1,9 @@
 /**
  * 工具调用的展示信息（docs/28 P2-3，纯逻辑）：折叠行摘要（pwsh=description、读/写/编辑=
  * 动词+文件名）与展开体片段（write=只显示写入内容、edit=红绿 diff、其他=参数 JSON 照旧）。
+ * docs/32 真机回归起，新五工具对齐「只显内容」理念：ask_user 折叠头=问题、展开体=问题+选项
+ * 列表（回答在结果 tres）；subagent_status / list_files / stop / archive 折叠头=动词+对象、
+ * 展开体只留结果（空数组，read_file 同款）。
  * 主对话（chat.js addTool）与子代理时间线（drawer.js makeTimeline）共用——DOM 渲染器在
  * dom.js 的 renderToolBody（消费本模块的片段数据）。全部纯函数，禁 DOM 全局引用
  * （F1 可测性边界，契约测试哨兵锁定，PURE 集合含本文件）。
@@ -51,6 +54,21 @@ export function toolHeadline(name, argsRaw, fallbackPreview) {
         return "编辑 " + p + " · +" + add + " -" + rm + " 行";
       }
       return "编辑 " + p;
+    } else if (name === "ask_user" && typeof a.question === "string" && a.question.trim()) {
+      // docs/32 真机回归：新工具对齐「只显内容」——折叠头=问题本身，不是参数 JSON
+      return "提问 " + firstLine(a.question.trim());
+    } else if (name === "subagent_status") {
+      return a.all === true ? "查看子代理状态表（含历史记录）" : "查看子代理状态表";
+    } else if (name === "list_files") {
+      return "列目录 " + (p || "工作区根");
+    } else if (name === "stop_subagent" || name === "archive_subagent") {
+      const label =
+        Number.isInteger(a.subId) && Number(a.subId) > 0
+          ? "#" + a.subId + (typeof a.name === "string" && a.name ? "（" + a.name + "）" : "")
+          : typeof a.name === "string" && a.name
+            ? a.name
+            : "";
+      return (name === "stop_subagent" ? "打断子代理 " : "归档子代理 ") + (label || "（未指定目标）");
     }
   }
   return firstLine(String(fallbackPreview ?? ""));
@@ -83,6 +101,22 @@ export function toolBodyBlocks(name, argsRaw) {
   /** @type {ToolBodyBlock[]} */
   const blocks = [];
   const d = typeof a.description === "string" ? a.description.trim() : "";
+  // docs/32 真机回归（展示理念统一）：ask_user 展开体=问题+选项列表（回答在结果 tres 里，
+  // 不再显示参数 JSON）；subagent_status / list_files / stop / archive 展开体只留结果——
+  // 状态表/目录清单/控制结果本身就是内容（read_file 同款空数组语义）
+  if (name === "ask_user") {
+    const q = typeof a.question === "string" ? a.question : "";
+    const opts = Array.isArray(a.options) ? a.options.filter((o) => typeof o === "string" && o.trim()) : [];
+    if (!q.trim()) return null; // 缺问题（畸形/截断）→ 降级参数块
+    blocks.push({ type: "content", text: q, cap: "问题" });
+    if (opts.length > 0) {
+      blocks.push({ type: "content", text: opts.map((o, i) => i + 1 + ". " + o).join("\n"), cap: "选项" });
+    }
+    return blocks;
+  }
+  if (name === "subagent_status" || name === "list_files" || name === "stop_subagent" || name === "archive_subagent") {
+    return [];
+  }
   if (name === "run_pwsh") {
     const c = typeof a.command === "string" ? a.command : "";
     if (!c.trim()) return null; // 缺命令（畸形/截断）→ 降级参数块

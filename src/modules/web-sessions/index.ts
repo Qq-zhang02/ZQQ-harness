@@ -130,7 +130,9 @@ export const webSessions: HarnessModule = {
           r.json(400, { error: "需要 choice（选项下标）或 text（其它说明）之一" });
           return;
         }
-        rt.pendingAskUsers.delete(id);
+        // settle 自带幂等守卫（含从槽删除）——这里**只调它**，不预先 delete：预先删会让守卫
+        // 把本次决议误判为「迟到触发」而提前返回，提问 promise 永不 resolve = 工具卡死
+        // （真机回归 2026-11-17：选完选项轮次挂起、结果永不回填）。
         settle(text ? { text } : { choice });
         r.json(202, { ok: true });
       },

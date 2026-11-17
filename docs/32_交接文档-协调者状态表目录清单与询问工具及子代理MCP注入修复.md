@@ -65,3 +65,12 @@
 2. 派长任务后运行中插话「现在进度如何」→ 应见 `subagent_status` 工具块真实执行并转述状态表。
 3. 协调者或普通会话让模型「向我确认一下用哪个方案」→ 弹询问卡：点选项回流「用户选择了：…」；「其它」输入文字回流「用户没有选给定选项，自行输入：…」；停止会话 → 模型收到未回答提示。
 4. 协调者让它列工作区根目录 → `list_files` 返回文件名清单（无内容）。
+
+## §5 真机回归修复记录（2026-11-17，随 v0.3.5 发布）
+
+真机试第一轮发现两处问题，均已修复并带回归测试：
+
+1. **选完选项轮次卡死、结果永不回填**（严重）：`/api/ask-user` 路由在调 `settle` 前**预先** `rt.pendingAskUsers.delete(id)`——settle 的幂等守卫（`if (!delete(id)) return`）把本次决议误判为「迟到触发」提前返回，提问 promise **永不 resolve**，工具循环挂死（仅停止会话可解）。修复：路由只调 settle（删除由 settle 自己做）；回归测试挂在 web-sessions.test.ts（双删必超时）。教训：**幂等守卫与槽删除必须同属一处**，调用方不得先动槽。
+2. **工具块展示带参数 JSON 格式**：ask_user / subagent_status / list_files / stop_subagent / archive_subagent 五个工具没有 toolinfo 定制，折叠头与展开体都落到「参数 JSON」兜底（如 `{}`、`{"all":true}`），与 write/edit/pwsh 的「只显内容」理念不一致。修复（toolinfo.js）：ask_user 折叠头=`提问 <问题>`、展开体=问题+编号选项两块（回答在结果 tres）；subagent_status / list_files / stop / archive 折叠头=`动词+对象`（查看子代理状态表 / 列目录 <path> / 打断·归档子代理 #N（name））、展开体只留结果（read_file 同款空数组语义）。
+
+v0.3.4 未打包即被 v0.3.5 取代（发版提交仅版本号，无产物）。

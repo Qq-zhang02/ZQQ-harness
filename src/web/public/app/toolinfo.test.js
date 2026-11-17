@@ -110,3 +110,33 @@ test("isToolResultError：「错误：」前缀与 pwsh 非零 exit 判失败；
   // 修剪注记在头部不影响判定（pruneToolResult 头部保留省略标记时错误行仍在开头附近的情况由前缀/exit 行覆盖）
   assert.equal(isToolResultError("[输出超过 48000 字符已截断……]\nexit code: 2"), true);
 });
+
+// ---------- docs/32 真机回归：新五工具对齐「只显内容」理念（不显示参数 JSON 格式块） ----------
+
+test("toolHeadline：ask_user 折叠行=问题本身；subagent_status/list_files/stop/archive=动词+对象", () => {
+  assert.equal(toolHeadline("ask_user", j({ question: "用哪个方案？\n第二行说明", options: ["A", "B"] }), "{}"), "提问 用哪个方案？ 第二行说明",
+    "折叠行=提问+问题首段（firstLine 压空白截 100）");
+  assert.equal(toolHeadline("ask_user", j({ options: ["A"] }), "问题缺失 preview"), "问题缺失 preview", "缺问题退 fallback");
+  assert.equal(toolHeadline("subagent_status", j({}), ""), "查看子代理状态表");
+  assert.equal(toolHeadline("subagent_status", j({ all: true }), ""), "查看子代理状态表（含历史记录）");
+  assert.equal(toolHeadline("list_files", j({ path: "src/auth" }), ""), "列目录 src/auth");
+  assert.equal(toolHeadline("list_files", j({}), ""), "列目录 工作区根");
+  assert.equal(toolHeadline("stop_subagent", j({ name: "wa", subId: 2 }), ""), "打断子代理 #2（wa）");
+  assert.equal(toolHeadline("stop_subagent", j({ name: "wa" }), ""), "打断子代理 wa");
+  assert.equal(toolHeadline("archive_subagent", j({ subId: 3 }), ""), "归档子代理 #3");
+  assert.equal(toolHeadline("archive_subagent", j({}), ""), "归档子代理 （未指定目标）");
+});
+
+test("toolBodyBlocks：ask_user 展开体=问题+编号选项两块；subagent_status/list_files/stop/archive=[]（只留结果）", () => {
+  const ask = toolBodyBlocks("ask_user", j({ question: "用哪个方案？", options: ["方案A", "方案B", "  "] }));
+  assert.deepEqual(ask, [
+    { type: "content", text: "用哪个方案？", cap: "问题" },
+    { type: "content", text: "1. 方案A\n2. 方案B", cap: "选项" },
+  ], "空白选项被过滤、编号连续");
+  assert.equal(toolBodyBlocks("ask_user", j({ question: "  ", options: ["A"] })), null, "缺问题降级参数块");
+  assert.deepEqual(toolBodyBlocks("subagent_status", j({ all: true })), []);
+  assert.deepEqual(toolBodyBlocks("list_files", j({ path: "docs" })), []);
+  assert.deepEqual(toolBodyBlocks("stop_subagent", j({ subId: 1 })), []);
+  assert.deepEqual(toolBodyBlocks("archive_subagent", j({ name: "wr" })), []);
+  assert.equal(toolBodyBlocks("ask_user", "残缺"), null, "参数不可解析降级");
+});
