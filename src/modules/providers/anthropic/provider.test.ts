@@ -253,3 +253,30 @@ test("toAnthropicMessages：user 带 images 转 [text, image(base64 source)]；�
   const plain = toAnthropicMessages([{ role: "user", content: "问" }]);
   assert.equal(plain[0]!.content, "问", "无图消息字节不变");
 });
+
+// ---------- docs/34：read_image 的 tool_result 图像块（content 数组 = text + image base64） ----------
+
+test("toAnthropicMessages：tool 消息带图 → tool_result content 数组（text + image base64 source）", () => {
+  const imgMsg: ChatMessage = {
+    role: "tool",
+    toolCallId: "c9",
+    content: "[已读取图片 pic.png] 格式 image/png",
+    images: [{ mime: "image/png", data: "QUJD" }],
+  };
+  const out = toAnthropicMessages([imgMsg]) as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+  assert.equal(out.length, 1, "仍在 tool_result 合并通道内（user 包裹）");
+  assert.equal(out[0]!.role, "user");
+  const block = out[0]!.content[0]!;
+  assert.equal(block.type, "tool_result");
+  assert.equal(block.tool_use_id, "c9");
+  const inner = block.content as Array<Record<string, unknown>>;
+  assert.equal(inner[0]!.type, "text");
+  const img = inner[1] as { type: string; source: Record<string, string> };
+  assert.equal(img.type, "image");
+  assert.equal(img.source.type, "base64");
+  assert.equal(img.source.media_type, "image/png");
+  assert.equal(img.source.data, "QUJD");
+  // 无图 tool 消息 content 仍是字符串（形状不变）
+  const plain = toAnthropicMessages([{ role: "tool", toolCallId: "c1", content: "ok" }]) as Array<{ content: Array<Record<string, unknown>> }>;
+  assert.equal(plain[0]!.content[0]!.content, "ok");
+});

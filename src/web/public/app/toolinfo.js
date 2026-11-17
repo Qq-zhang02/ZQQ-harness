@@ -54,6 +54,8 @@ export function toolHeadline(name, argsRaw, fallbackPreview) {
         return "编辑 " + p + " · +" + add + " -" + rm + " 行";
       }
       return "编辑 " + p;
+    } else if (name === "read_image" && typeof a.path === "string" && a.path) {
+      return "读图 " + a.path; // docs/34：折叠头=读图+路径（图片本体在结果与对话图像块里）
     } else if (name === "ask_user" && typeof a.question === "string" && a.question.trim()) {
       // docs/32 真机回归：新工具对齐「只显内容」——折叠头=问题本身，不是参数 JSON
       return "提问 " + firstLine(a.question.trim());
@@ -114,8 +116,8 @@ export function toolBodyBlocks(name, argsRaw) {
     }
     return blocks;
   }
-  if (name === "subagent_status" || name === "list_files" || name === "stop_subagent" || name === "archive_subagent") {
-    return [];
+  if (name === "subagent_status" || name === "list_files" || name === "stop_subagent" || name === "archive_subagent" || name === "read_image") {
+    return []; // docs/34：read_image 展开体只留结果说明（图像本体模型侧可见，UI 渲染见已知边界）
   }
   if (name === "run_pwsh") {
     const c = typeof a.command === "string" ? a.command : "";

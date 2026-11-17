@@ -123,7 +123,18 @@ export function toAnthropicMessages(
       out.push({ role: "assistant", content: blocks.length > 0 ? blocks : [{ type: "text", text: "(空回复)" }] });
       continue;
     }
-    const block = { type: "tool_result", tool_use_id: m.toolCallId, content: m.content };
+    // docs/34：read_image 的图像投影——tool_result 官方支持 content 数组（text + image base64 块）
+    const block =
+      m.images && m.images.length > 0
+        ? {
+            type: "tool_result",
+            tool_use_id: m.toolCallId,
+            content: [
+              { type: "text", text: m.content },
+              ...m.images.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mime, data: img.data } })),
+            ],
+          }
+        : { type: "tool_result", tool_use_id: m.toolCallId, content: m.content };
     const last = out[out.length - 1];
     const lastContent = last && last.role === "user" ? (last.content as Array<Record<string, unknown>>) : null;
     if (Array.isArray(lastContent) && (lastContent[0] as { type?: string } | undefined)?.type === "tool_result") {

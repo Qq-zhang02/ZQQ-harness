@@ -125,3 +125,26 @@ test("toStoredMessages/restoreStoredMessages：无库（undefined）原样透传
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------- docs/34：tool 消息图片（read_image）同口径引用变换 ----------
+
+test("toStoredMessages/restoreStoredMessages：tool 消息图片与 user 同口径（引用落盘、往返还原）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-attach-"));
+  try {
+    const store = new AttachmentStore(dir);
+    const toolMsg: ChatMessage = {
+      role: "tool",
+      toolCallId: "c1",
+      content: "[已读取图片 pic.png]",
+      images: [{ mime: "image/png", data: PNG_B64 }],
+    };
+    const stored = toStoredMessages(store, [toolMsg]);
+    const ref = (stored[0] as unknown as { images: StoredImage[] }).images[0]!.ref;
+    assert.equal(ref.length, 64, "tool 图片转引用（档内不嵌 base64）");
+    assert.ok(!JSON.stringify(stored).includes(PNG_B64));
+    const back = restoreStoredMessages(store, stored);
+    assert.deepEqual((back[0] as unknown as { images: unknown }).images, [{ mime: "image/png", data: PNG_B64 }], "往返还原");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

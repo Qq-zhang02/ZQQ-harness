@@ -600,14 +600,16 @@ export class Agent {
               return { call, r };
             }),
           );
-          for (const { call, r } of done) this.history.push({ role: "tool", toolCallId: call.id, content: r.text });
+          // docs/34：工具返回图像（read_image）挂到 tool 消息——提供方投影成路由对应形态
+          for (const { call, r } of done)
+            this.history.push({ role: "tool", toolCallId: call.id, content: r.text, ...(r.images?.length ? { images: r.images } : {}) });
         } else {
           for (const call of calls) {
             ui.printToolCall(call.name, previewArgs(call.arguments), call.id, call.arguments);
             const r = await registry.executeWithMeta(call.name, call.arguments, ctx);
             // UI 拿完整输出（spill 只影响入模型内容）；元数据带修剪信息供前端展示
             ui.printToolResult(r.full, { prunedChars: r.prunedChars, ...(r.spilled ? { spilled: r.spilled } : {}) }, call.id);
-            this.history.push({ role: "tool", toolCallId: call.id, content: r.text });
+            this.history.push({ role: "tool", toolCallId: call.id, content: r.text, ...(r.images?.length ? { images: r.images } : {}) });
           }
         }
       } finally {

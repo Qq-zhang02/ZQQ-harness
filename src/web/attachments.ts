@@ -71,7 +71,9 @@ function isStoredImage(im: unknown): im is StoredImage {
 export function toStoredMessages(attachments: AttachmentStore | undefined, messages: ChatMessage[]): ChatMessage[] {
   if (!attachments) return messages;
   return messages.map((m) => {
-    if (m.role !== "user" || !m.images?.length) return m;
+    // docs/34：tool 消息也带图（read_image）——引用变换与 user 同口径
+    if (m.role !== "user" && m.role !== "tool") return m;
+    if (!m.images?.length) return m;
     return {
       ...m,
       images: m.images.map((im) => ({ mime: im.mime, ref: attachments.put(im.data) })),
@@ -87,7 +89,9 @@ export function toStoredMessages(attachments: AttachmentStore | undefined, messa
 export function restoreStoredMessages(attachments: AttachmentStore | undefined, stored: ChatMessage[]): ChatMessage[] {
   if (!attachments) return stored;
   return stored.map((m) => {
-    if (m.role !== "user" || !m.images?.length) return m;
+    // docs/34：tool 消息也带图（read_image）——引用变换与 user 同口径
+    if (m.role !== "user" && m.role !== "tool") return m;
+    if (!m.images?.length) return m;
     const images: ChatImage[] = [];
     const lost: string[] = [];
     for (const im of m.images as unknown as Array<ChatImage | StoredImage>) {

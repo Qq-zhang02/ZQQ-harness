@@ -21,6 +21,7 @@ import { toolLoadSkill } from "./modules/tools/load-skill/index.ts";
 import { toolMcpManage } from "./modules/tools/mcp-manage/index.ts";
 import { toolPwsh } from "./modules/tools/pwsh/index.ts";
 import { toolReadFile } from "./modules/tools/read-file/index.ts";
+import { toolReadImage } from "./modules/tools/read-image/index.ts";
 import { toolReadArchive } from "./modules/tools/read-archive/index.ts";
 import { toolWriteFile } from "./modules/tools/write-file/index.ts";
 import { webApproval } from "./modules/web-approval/index.ts";
@@ -40,6 +41,7 @@ export const BUILTIN_MODULES: HarnessModule[] = [
   toolLoadSkill,
   toolPwsh,
   toolReadFile,
+  toolReadImage,
   toolReadArchive,
   toolWriteFile,
   toolEditFile,

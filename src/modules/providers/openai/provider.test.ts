@@ -206,3 +206,28 @@ test("toSdkMessages：user 带 images 转 [text, image_url(data URI)]；无图�
   const plain = toSdkMessages([{ role: "user", content: "问" }], false)[0] as unknown as { content: unknown };
   assert.equal(plain.content, "问");
 });
+
+// ---------- docs/34：read_image 的 tool 消息图像投影（tool 文本 + 紧随合成 user 多模态消息） ----------
+
+test("toSdkMessages：tool 消息带图 → tool 文本消息 + 紧随合成 user 多模态消息（image_url data URI）", () => {
+  const imgMsg: ChatMessage = {
+    role: "tool",
+    toolCallId: "c9",
+    content: "[已读取图片 pic.png] 格式 image/png",
+    images: [{ mime: "image/png", data: "QUJD" }],
+  };
+  const out = asRecords(toSdkMessages([imgMsg], false));
+  assert.equal(out.length, 2, "投影为两条消息");
+  assert.equal(out[0]!.role, "tool");
+  assert.equal(out[0]!.tool_call_id, "c9");
+  assert.equal(out[0]!.content, "[已读取图片 pic.png] 格式 image/png", "tool 本体仍纯文本（兼容面最宽）");
+  assert.equal(out[1]!.role, "user");
+  const parts = out[1]!.content as Array<Record<string, unknown>>;
+  assert.equal(parts[0]!.type, "text");
+  const img = parts[1] as { type: string; image_url: { url: string } };
+  assert.equal(img.type, "image_url");
+  assert.ok(img.image_url.url.startsWith("data:image/png;base64,QUJD"), "data URI 携带字节");
+  // 无图 tool 消息保持单条（形状不变）
+  const plain = asRecords(toSdkMessages([{ role: "tool", toolCallId: "c1", content: "ok" }], false));
+  assert.equal(plain.length, 1);
+});

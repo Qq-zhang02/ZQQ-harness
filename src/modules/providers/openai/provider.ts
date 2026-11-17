@@ -41,7 +41,7 @@ export function toSdkMessages(
   messages: ChatMessage[],
   passback: boolean,
 ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
-  const mapped = messages.map((m): Record<string, unknown> => {
+  const mapped = messages.flatMap((m): Array<Record<string, unknown>> => {
     if (m.role === "assistant") {
       // 兜底：既无正文也无 tool_calls 的 assistant 消息会被 API 400 拒绝
       const hasCalls = m.toolCalls.length > 0;
@@ -55,19 +55,38 @@ export function toSdkMessages(
         }));
         if (passback && m.thinking) msg.reasoning_content = m.thinking.text;
       }
-      return msg;
+      return [msg];
     }
-    if (m.role === "tool") return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
+    if (m.role === "tool") {
+      const toolMsg: Record<string, unknown> = { role: "tool", tool_call_id: m.toolCallId, content: m.content };
+      // docs/34：read_image 的图像投影——tool role 在 OpenAI 兼容面只收文本，图像以紧随的
+      // 合成 user 多模态消息投递（历史形状不变，路由兼容面最宽；紧邻 tool 结果语义连贯）
+      if (m.images && m.images.length > 0) {
+        return [
+          toolMsg,
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "[上一条工具结果附带的图片]" },
+              ...m.images.map((img) => ({ type: "image_url", image_url: { url: `data:${img.mime};base64,${img.data}` } })),
+            ],
+          },
+        ];
+      }
+      return [toolMsg];
+    }
     if (m.role === "user" && m.images && m.images.length > 0) {
-      return {
-        role: "user",
-        content: [
-          { type: "text", text: m.content },
-          ...m.images.map((img) => ({ type: "image_url", image_url: { url: `data:${img.mime};base64,${img.data}` } })),
-        ],
-      };
+      return [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: m.content },
+            ...m.images.map((img) => ({ type: "image_url", image_url: { url: `data:${img.mime};base64,${img.data}` } })),
+          ],
+        },
+      ];
     }
-    return { role: m.role, content: m.content };
+    return [{ role: m.role, content: m.content }];
   });
   // 结构与 SDK 参数类型一致，此处一次受控断言收口
   return mapped as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[];

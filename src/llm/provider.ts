@@ -86,7 +86,9 @@ export type ChatMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string; images?: ChatImage[] }
   | { role: "assistant"; content: string | null; toolCalls: ToolCallRequest[]; thinking?: ThinkingBlock }
-  | { role: "tool"; toolCallId: string; content: string };
+  | { role: "tool"; toolCallId: string; content: string;
+      /** 图像块（docs/34 read_image）：提供方投影成路由对应的图像形态（anthropic=tool_result
+       *  内图像块；openai 兼容=紧随合成 user 多模态消息） */ images?: ChatImage[] };
 
 export interface ChatParams {
   messages: ChatMessage[];

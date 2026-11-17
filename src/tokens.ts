@@ -91,7 +91,8 @@ export function messageTokenCount(m: ChatMessage, count: (s: string) => number, 
     for (const tc of m.toolCalls ?? []) n += count(tc.name + tc.arguments);
     if (passbackThinking && m.thinking) n += count(m.thinking.text);
   }
-  if (m.role === "user" && m.images) n += m.images.length * IMAGE_TOKEN_EST;
+  // docs/34：read_image 的图像挂 tool 消息——与 user 图像同款固定估算
+  if ((m.role === "user" || m.role === "tool") && m.images) n += m.images.length * IMAGE_TOKEN_EST;
   return n + MESSAGE_FRAME_TOKENS;
 }
 
