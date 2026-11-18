@@ -118,6 +118,10 @@ export interface SessionRuntime {
   inbox?: string[];
   /** 当前运行轮的锚点（开始时历史长度+用户消息）：前端切走再切回时用它对齐重放实时事件 */
   turnInfo: { ml: number; userText: string } | null;
+  /** 首轮装配进度已展示过（docs/36，瞬态不入档）：本运行实例只在第一条消息开跑时广播
+   *  装配步骤（系统提示词/技能/两级 AGENTS.md → MCP 注入 → 请求已发出）；重启/恢复档的
+   *  运行实例是新对象，首条消息同样展示（MCP 重连等待正好需要这个可见性）。 */
+  assemblyShown?: boolean;
   /** 本会话活动 worker（并行闸与中止级联用；SA3 起由 subagentServiceFor 登记/注销） */
   workers: Set<Promise<SubagentResult>>;
   /** 本会话累计派出的 worker 数（C7 累计闸；跨轮持续，重启从存档 subagents 记录条数续期） */

@@ -624,3 +624,81 @@ test("编排计时：普通会话（kind=normal）语义零变化——settle �
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------- docs/36：首轮装配进度（系统提示词 → MCP 注入 → 请求已发出，按真实装配时序） ----------
+
+test("首轮装配进度：首条消息按装配序广播三段（含 MCP 桩服务器），第二条消息不再展示", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-rt-asm-"));
+  try {
+    const sh = makeShell(dir);
+    sh.ctx.mcpTransports.register(preloadStubTransport);
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { demo: { type: "stub", command: "stub" } } }), "utf8");
+    const infos: string[] = [];
+    sh.broadcast = (event, data) => {
+      if (event === "info") infos.push(String((data as { message?: string }).message ?? ""));
+    };
+    const rt = await createRuntime(sh, { workspaceRoot: dir });
+    assert.equal(rt.assemblyShown, undefined, "展示标志瞬态：createRuntime 不置位");
+
+    startTurn(sh, rt, "第一条");
+    await waitTurnEnd(rt);
+    assert.ok(infos[0]!.startsWith("🧩 系统提示装配完成：系统提示词 "), infos[0]);
+    assert.ok(infos[0]!.includes("· 系统工具 "), infos[0]);
+    assert.ok(infos[0]!.includes("技能 "), infos[0]);
+    assert.ok(infos[1]!.startsWith("🔌 MCP 注入：已连接 demo"), infos[1]);
+    assert.ok(infos[1]!.includes("mcp__ 工具可用"), infos[1]);
+    assert.ok(infos[2]!.startsWith("✅ 装配完毕，用户请求已发出"), infos[2]);
+    assert.equal(infos.length, 3, "无压缩/无其他 info：恰好三段");
+
+    // 第二条消息：不再展示（标志已置位）
+    infos.length = 0;
+    startTurn(sh, rt, "第二条");
+    await waitTurnEnd(rt);
+    assert.equal(infos.length, 0, "后续消息零装配广播");
+    assert.equal(rt.assemblyShown, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("首轮装配进度：无 MCP 配置时省略 MCP 行（系统提示 → 请求已发出两段）；协调者文案走子代理口径", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-rt-asm2-"));
+  try {
+    const sh = makeShell(dir);
+    const infos: string[] = [];
+    sh.broadcast = (event, data) => {
+      if (event === "info") infos.push(String((data as { message?: string }).message ?? ""));
+    };
+    const rt = await createRuntime(sh, { workspaceRoot: dir });
+    startTurn(sh, rt, "第一条");
+    await waitTurnEnd(rt);
+    assert.equal(infos.length, 2, "无 MCP：只有系统提示行 + 请求已发出行");
+    assert.ok(infos[0]!.startsWith("🧩"));
+    assert.ok(infos[1]!.startsWith("✅"));
+    rmSync(dir, { recursive: true, force: true });
+  } catch (e) {
+    rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
+  // 协调者变体：MCP 行走「子代理 MCP」口径
+  const dir2 = mkdtempSync(join(tmpdir(), "zqq-rt-asm3-"));
+  try {
+    const sh2 = makeShell(dir2);
+    sh2.ctx.mcpTransports.register(preloadStubTransport);
+    writeFileSync(join(dir2, "mcp.json"), JSON.stringify({ mcpServers: { demo: { type: "stub", command: "stub" } } }), "utf8");
+    const infos2: string[] = [];
+    sh2.broadcast = (event, data) => {
+      if (event === "info") infos2.push(String((data as { message?: string }).message ?? ""));
+    };
+    const coord = await createRuntime(sh2, { workspaceRoot: dir2, kind: "coordinator" });
+    startTurn(sh2, coord, "目标");
+    await waitTurnEnd(coord);
+    const mcpLine = infos2.find((m) => m.startsWith("🔌"));
+    assert.ok(mcpLine, "协调者也展示 MCP 注入行（worker MCP 预热闸门）");
+    assert.ok(mcpLine!.startsWith("🔌 子代理 MCP 注入"), mcpLine);
+    assert.ok(mcpLine!.includes("协调者自身不带 mcp__ 工具"), mcpLine);
+    assert.ok(infos2[infos2.length - 1]!.startsWith("✅"), "收尾仍是请求已发出");
+  } finally {
+    rmSync(dir2, { recursive: true, force: true });
+  }
+});

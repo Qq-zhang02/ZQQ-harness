@@ -231,6 +231,9 @@ export function takeCoordinatorTurnText(rt: SessionRuntime): string {
   return parts.length === 1 ? head : parts.join("\n\n――――\n\n");
 }
 
+/** token 数 → 1.2k 风格（首轮装配进度行用；与前端 fmtTok 同口径的本地实现） */
+const kTok = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
 export function startTurn(sh: SessionShell, rt: SessionRuntime, text: string, images?: ChatImage[]): void {
   rt.busy = true;
   rt.abortCtl = new AbortController();
@@ -244,17 +247,48 @@ export function startTurn(sh: SessionShell, rt: SessionRuntime, text: string, im
   if (rt.workspace) {
     rt.agent.setWorkspace(rt.workspace, readAgentsMd(rt.workspace.root), undefined, undefined, readAgentsMd(sh.userDir));
   }
+  // docs/36 首轮装配进度（瞬态标志，每运行实例一次）：按**真实装配时序**逐段亮出——同步段
+  // （系统提示词/两级 AGENTS.md/技能/工具 schema）先完成，慢段（MCP 握手，mcpReady 闸门）
+  // 在其后，全部就绪才发请求（下方 ✅ 行紧贴 agent.run）。重启/恢复后的运行实例是新对象，
+  // 首条消息同样展示（MCP 重连等待正是最需要可见性的窗口）。
+  const firstAssembly = rt.assemblyShown !== true;
+  if (firstAssembly) {
+    rt.assemblyShown = true;
+    const bd = rt.agent.contextEstimate().breakdown;
+    sh.broadcast(SSE_EVENTS.info, {
+      sessionId: rt.id,
+      message:
+        `🧩 系统提示装配完成：系统提示词 ${kTok(bd.systemPrompt)}（基础规则+两级 AGENTS.md）· 系统工具 ${kTok(bd.systemTools)} · ` +
+        `技能 ${rt.skills.length} 项${bd.skills > 0 ? `（${kTok(bd.skills)}）` : ""} tokens`,
+    });
+  }
   sh.broadcast(SSE_EVENTS.state, currentState(sh, rt));
   void (async () => {
     try {
       await rt.mcpReady; // P1-3（docs/28）：MCP 后台装配收口——首条消息发出时 mcp__ 工具/说明书必已就位（永不 reject）
-      // 压缩触发一（pressure 自动）：请求派生前压力 ≥ 阈值 → 先压缩再跑轮
+      if (firstAssembly) {
+        const connected = rt.mcp.status();
+        const failed = rt.mcp.failedServers();
+        if (connected.length > 0 || failed.length > 0) {
+          // 协调者的 MCP 是给子代理的（D3：自身 registry 无 mcp__ 工具，说明书进「子代理说明」段）
+          const head = rt.kind === "coordinator" ? "🔌 子代理 MCP 注入" : "🔌 MCP 注入";
+          const tail = rt.kind === "coordinator" ? "——说明已并入「子代理系统提示词说明」段（协调者自身不带 mcp__ 工具）" : "——服务器使用说明已并入系统提示，mcp__ 工具可用";
+          sh.broadcast(SSE_EVENTS.info, {
+            sessionId: rt.id,
+            message: `${head}：已连接 ${connected.join("、") || "无"}${failed.length > 0 ? `；未连上：${failed.map((f) => `${f.name}（${f.error}）`).join("、")}` : ""}${tail}`,
+          });
+        }
+      }
+      // 压缩触发一（pressure 自动）：请求派发前压力 ≥ 阈值 → 先压缩再跑轮
       if (rt.agent.contextPressure(cfgOf(sh, rt).contextLength) >= COMPACTION_PRESSURE) {
         sh.broadcast(SSE_EVENTS.info, {
           sessionId: rt.id,
           message: `上下文占用已达阈值（${Math.round(COMPACTION_PRESSURE * 100)}%），自动压缩历史…`,
         });
         await doCompact(sh, rt);
+      }
+      if (firstAssembly) {
+        sh.broadcast(SSE_EVENTS.info, { sessionId: rt.id, message: "✅ 装配完毕，用户请求已发出" });
       }
       await rt.agent.run(text, rt.abortCtl!.signal, images);
     } catch (e) {
