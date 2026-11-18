@@ -128,7 +128,7 @@ function withFetchStub(handler: (body: Record<string, unknown>) => Response): { 
   return { bodies, restore: () => (globalThis.fetch = orig) };
 }
 
-function makeProvider(effort: "off" | "high" = "high"): AnthropicProvider {
+function makeProvider(effort: "off" | "high" | "default" = "high"): AnthropicProvider {
   return new AnthropicProvider({ apiKey: "k", baseUrl: "https://example.invalid", model: "claude-x", effort });
 }
 
@@ -207,11 +207,11 @@ test("chat：思考开启时回放对齐的 thinking 块（带签名），思考
     assert.deepEqual(blocks[0], { type: "thinking", thinking: "想一想", signature: "s" });
     assert.deepEqual(bodyOn.thinking, { type: "enabled", budget_tokens: 16384 });
 
-    // 思考关闭（effort=off）：不发 thinking 参数，也不回放 thinking 块
+    // 思考关闭（effort=off）：显式发 disabled（docs/37：兼容端缺省=默认思考，不发关不掉），也不回放 thinking 块
     stub.bodies.length = 0;
     await makeProvider("off").chat({ messages: history });
     const bodyOff = stub.bodies[0]!;
-    assert.equal(bodyOff.thinking, undefined);
+    assert.deepEqual(bodyOff.thinking, { type: "disabled" });
     const blocksOff = (bodyOff.messages as Array<{ content: Array<Record<string, unknown>> }>)[1]!.content;
     assert.deepEqual(blocksOff.map((b) => b.type), ["tool_use"]);
   } finally {
@@ -317,4 +317,63 @@ test("toAnthropicMessages：tool 消息带图 → tool_result content 数组（t
   // 无图 tool 消息 content 仍是字符串（形状不变）
   const plain = toAnthropicMessages([{ role: "tool", toolCallId: "c1", content: "ok" }]) as Array<{ content: Array<Record<string, unknown>> }>;
   assert.equal(plain[0]!.content[0]!.content, "ok");
+});
+
+// ---------- docs/37：DeepSeek/MiMo 等 anthropic 兼容端的核查补齐 ----------
+
+test("chat：effort=off 显式发 thinking:{type:\"disabled\"}——兼容端（GLM/DeepSeek/MiMo）缺省=默认思考，不发关不掉", async () => {
+  const stub = withFetchStub(() => sseResponse(MIN_EVENTS));
+  try {
+    await makeProvider("off").chat({ messages: [{ role: "user", content: "问" }] });
+    assert.deepEqual(stub.bodies[0]!.thinking, { type: "disabled" }, "off 档显式 disabled");
+    // 对照：default 档不发思考参数（既有语义不变）
+    stub.bodies.length = 0;
+    await makeProvider("default").chat({ messages: [{ role: "user", content: "问" }] });
+    assert.equal(stub.bodies[0]!.thinking, undefined, "default 档不发思考参数");
+    // 对照：high 档照旧 enabled+budget
+    stub.bodies.length = 0;
+    await makeProvider("high").chat({ messages: [{ role: "user", content: "问" }] });
+    assert.deepEqual(stub.bodies[0]!.thinking, { type: "enabled", budget_tokens: 16384 });
+  } finally {
+    stub.restore();
+  }
+});
+
+test("chat：官方端对 disabled 报 400 → 去掉思考参数重试一次（缺省即关，语义不变）", async () => {
+  let calls = 0;
+  const stub = withFetchStub(() => {
+    calls++;
+    if (calls === 1) return new Response("invalid type: disabled", { status: 400 });
+    return sseResponse(MIN_EVENTS);
+  });
+  try {
+    const r = await makeProvider("off").chat({ messages: [{ role: "user", content: "问" }] });
+    assert.equal(calls, 2, "恰好重试一次");
+    assert.equal(stub.bodies[1]!.thinking, undefined, "重试请求不再带 thinking");
+    assert.equal(r.content, "答案", "重试后正常拿到流结果");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("chat：DeepSeek 兼容端的 message_delta.output_tokens_details.thinking_tokens → reasoningTokens（其中思考）", async () => {
+  const events = [
+    { type: "message_start", message: { usage: { input_tokens: 34, output_tokens: 0 } } },
+    { type: "content_block_delta", delta: { type: "text_delta", text: "答" } },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn" },
+      usage: { input_tokens: 34, output_tokens: 26, cache_read_input_tokens: 5, output_tokens_details: { thinking_tokens: 24 } },
+    },
+  ];
+  const stub = withFetchStub(() => sseResponse(events));
+  try {
+    const r = await makeProvider().chat({ messages: [{ role: "user", content: "问" }] });
+    assert.equal(r.usage?.promptTokens, 34, "input 实值在 message_start 即有（DeepSeek/MiMo 形状）");
+    assert.equal(r.usage?.completionTokens, 26);
+    assert.equal(r.usage?.cacheHitTokens, 5);
+    assert.equal(r.usage?.reasoningTokens, 24, "思考 token 单列（与 openai 路线同口径）");
+  } finally {
+    stub.restore();
+  }
 });

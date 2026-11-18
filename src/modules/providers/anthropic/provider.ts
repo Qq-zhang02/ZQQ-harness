@@ -56,8 +56,14 @@ interface SseEvent {
   } | null;
   /** usage 事件形状：官方端点 message_delta 只带 output_tokens；GLM 等 Anthropic 兼容端点
    *  在 message_delta 携带最终 input_tokens / cache_read_input_tokens（真机实证：GLM 的
-   *  message_start.usage.input_tokens 恒为 0 占位，实值只在 message_delta——docs/35）。 */
-  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number } | null;
+   *  message_start.usage.input_tokens 恒为 0 占位，实值只在 message_delta——docs/35）。
+   *  DeepSeek 的 anthropic 兼容端另附 output_tokens_details.thinking_tokens（docs/37）。 */
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    output_tokens_details?: { thinking_tokens?: number | null } | null;
+  } | null;
 }
 
 function safeParseJson(s: string): Record<string, unknown> {
@@ -212,19 +218,31 @@ export class AnthropicProvider implements LLMProvider {
       }));
     }
     if (budget) body.thinking = { type: "enabled", budget_tokens: budget };
+    // docs/37：off 档显式发 disabled——三家兼容端点（GLM/DeepSeek/MiMo）缺省=默认思考，
+    // 不发参数关不掉（实测照样思考烧 token）；官方 Anthropic 只认 enabled（400）→ 下方
+    // 去参重试兜底（官方缺省本就是关，语义不变）。
+    const wantDisabled = effort === "off";
+    if (wantDisabled) body.thinking = { type: "disabled" };
 
-    const res = await fetch(endpoint(this.baseUrl), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": this.apiKey,
-        "anthropic-version": API_VERSION,
-      },
-      body: JSON.stringify(body),
-      signal: params.signal
-        ? AbortSignal.any([params.signal, AbortSignal.timeout(ANTHROPIC_FETCH_TIMEOUT_MS)])
-        : AbortSignal.timeout(ANTHROPIC_FETCH_TIMEOUT_MS),
-    });
+    const doFetch = (): Promise<Response> =>
+      fetch(endpoint(this.baseUrl), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": this.apiKey,
+          "anthropic-version": API_VERSION,
+        },
+        body: JSON.stringify(body),
+        signal: params.signal
+          ? AbortSignal.any([params.signal, AbortSignal.timeout(ANTHROPIC_FETCH_TIMEOUT_MS)])
+          : AbortSignal.timeout(ANTHROPIC_FETCH_TIMEOUT_MS),
+      });
+    let res = await doFetch();
+    if (res.status === 400 && wantDisabled && body.thinking) {
+      // 官方 Anthropic 对 type:"disabled" 报 400（协议只认 enabled）：去掉显式关参数重试一次
+      delete body.thinking;
+      res = await doFetch();
+    }
     if (!res.ok || !res.body) {
       let detail = "";
       try {
@@ -306,12 +324,16 @@ export class AnthropicProvider implements LLMProvider {
             // 用量兜底合并（docs/35 真机待办3）：官方端点 message_delta 只有 output_tokens；
             // GLM 等兼容端点的 input_tokens 实值（message_start 是 0 占位）与缓存命中都在这里——
             // 逐字段择新覆盖，两侧端点形状都齐。usage 缺席（无 message_start 的畸形流）就地补建。
+            // docs/37：DeepSeek 兼容端在此附思考 token（output_tokens_details.thinking_tokens，
+            // 官方协议无此字段）——读入后与 openai 路线的 reasoning_tokens 同口径（顶栏「其中思考」）。
             const u = ev.usage;
             if (u) {
               usage ??= { promptTokens: 0, completionTokens: 0 };
               if (u.output_tokens) usage.completionTokens = u.output_tokens;
               if (u.input_tokens) usage.promptTokens = u.input_tokens;
               if (u.cache_read_input_tokens) usage.cacheHitTokens = u.cache_read_input_tokens;
+              const think = u.output_tokens_details?.thinking_tokens;
+              if (think) usage.reasoningTokens = think;
             }
             break;
           }
