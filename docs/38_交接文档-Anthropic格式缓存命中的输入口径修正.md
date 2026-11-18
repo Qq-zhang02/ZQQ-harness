@@ -12,11 +12,17 @@
 | 提供方 | 格式 | 命中字段 | 输入字段语义 | 修复前命中率 |
 |---|---|---|---|---|
 | DeepSeek | openai | `prompt_cache_hit_tokens` | `prompt_tokens` = 全量（hit+miss） | ✅ 正确 |
-| GLM | openai | `prompt_tokens_details.cached_tokens`（docs/35 起读） | 全量 | ✅ 正确 |
-| MiMo | openai | 端点不给 | 全量 | 恒 0%（端点无此数据） |
+| GLM | openai | `prompt_tokens_details.cached_tokens`（docs/35 起读） | 全量 | ✅ 正确（**但实测该端点不缓存**：重复前缀 cached 恒 0） |
+| MiMo | openai | `prompt_tokens_details.cached_tokens`（**长上下文才给**：短消息时字段为 null——实测 1337 token 前缀命中 1280） | 全量 | ✅ 正确（docs/35 补读正好接住） |
 | GLM | anthropic | `cache_read_input_tokens`（实测恒 0——该端点未开缓存计费） | `input_tokens` = 全量 | 0%（真没命中） |
-| MiMo | anthropic | 无 | 全量 | 0% |
+| MiMo | anthropic | 无字段（后端大概率在缓存——与 openai 格式共享缓存后端，见下） | 全量 | 不可见 |
 | **DeepSeek** | **anthropic** | `cache_read_input_tokens` | **官方语义：`input_tokens` 只算未命中部分！**（命中在 cache_read/cache_creation） | ❌ **被钳 100% + 输入累计漏算** |
+
+**勘误（追记实测，2026-11-18）**：本文初版把 MiMo openai 记为"端点不给字段"——那是**短消息**（12 token，
+不触发缓存）探测的误导；长前缀（~1300 token）实测 MiMo openai 缓存且报告（cached 1280/1337）。同轮
+另证：DeepSeek 与 MiMo 的**两种格式共享缓存后端**（跨格式的同前缀"第一次请求"即命中早前另一格式留下的
+缓存）；GLM **两条路线均不缓存**（openai 重复前缀 cached 恒 0）。GLM-anthropic 未启用缓存是否因未发
+官方协议要求的 `cache_control` 断点标记，待后续实验（候选功能：提供方可选注入 cache_control）。
 
 ## 实证（同前缀连发两回，2026-11-18）
 
