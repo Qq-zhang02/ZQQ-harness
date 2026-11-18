@@ -9,7 +9,7 @@ Agent 应用（**Web UI**，`npm run web`）：多提供方 LLM + **10 个系统
 - **常见任务最小改动路径**：调阈值= config.ts 三件套 + 测试；新工具 = `modules/tools/<名>/` + `modules.ts` 加一行；改提示词 = `core/sections.ts`（golden 测试把关）——速查表见 docs/21 §6。
 - **变更惯例**：docs/ 编号文档（设计稿→头部补实施记录）；每阶段收尾 `npm run typecheck` + `npm test` 全绿 + Web UI 手工冒烟。
 - **前端与桌面统一路线（已全部收官）**（详见 [docs/26](docs/26_开发文档-前端架构优化与桌面端统一路线.md) §8）：**前端优化（F1–F4）与桌面端（DT0–DT3）**。①地基（DT0+F1）②桌面形态（DT1 薄壳 + DT2 打包）③质量渐进（F2 store 化；F3 keyed 收官）④F4 大分区拆文件（index.html 2,906→473 行，视图七模块无环分层）⑤**DT3 桌面增强已完成**（审批通知/开机自启/托盘常驻/休眠恢复，四项独立 commit，详见 [docs/25](docs/25_开发文档-桌面端版本方案.md) 头部实施记录）。前端「运行阈值」设置入口见 [docs/24](docs/24_交接文档-前端设置入口与harness热应用.md)。路线内无遗留开发项；后续新工作另立文档。
-- **最新一轮**（[docs/38](docs/38_交接文档-Anthropic格式缓存命中的输入口径修正.md)，Anthropic 格式缓存命中的输入口径修正）：命中率分母必须是**总输入**——DeepSeek 的 anthropic 端是官方语义（`input_tokens` 只算未命中、命中在 `cache_read/cache_creation`，实测 R2=178+1024），此前裸取 input 当总量 → 命中率被钳 **100%** 且输入累计漏算；现按官方公式 `总输入 = input + cache_read + cache_creation` 统一（GLM/MiMo 加和 no-op），命中率显示真实百分比、上下文锚定同步变准。附各家缓存命中率计算链路全景表。上一轮：[docs/37](docs/37_交接文档-DeepSeek与MiMo的Anthropic格式接入核查.md)（DeepSeek/MiMo 的 Anthropic 格式接入核查）。上上轮：[docs/36](docs/36_交接文档-首轮装配进度可视化.md)（首轮装配进度可视化，随 v0.3.10 发布）。
+- **最新一轮**（[docs/39](docs/39_交接文档-Anthropic路线缓存断点默认注入.md)，Anthropic 路线 cache_control 断点默认注入）：实测三端后给 anthropic 路线**默认注入 `cache_control` 断点**（末消息末块，官方会话式断点位）——**MiMo-anthropic 由「后端缓存但不报告」转为命中可见且省钱**（实测 R2 命中 1280）、DeepSeek 无副作用（自动缓存照旧）、GLM 忽略（真不支持）；未知端 400 → 去标重试兜底。上一轮：[docs/38](docs/38_交接文档-Anthropic格式缓存命中的输入口径修正.md)（缓存命中输入口径修正：总输入=input+cache_read+cache_creation，随 v0.3.12 发布）。上上轮：[docs/37](docs/37_交接文档-DeepSeek与MiMo的Anthropic格式接入核查.md)（DeepSeek/MiMo 的 Anthropic 格式接入核查，随 v0.3.11 发布）。
 - **打包与冒烟速查**：[docs/27](docs/27_操作手册-桌面端打包与冒烟.md)——给自己看的操作手册（照抄命令即可）：预检三件套（typecheck + test + smoke:sa4）→ 双镜像 electron-builder 打包 → 打包版验收清单与常见坑速查。**版本更替发版清单（改哪些地方、提交顺序、产物验收）**：[docs/31](docs/31_操作手册-版本更替与发版清单.md)（v0.3.3 即按此流程）。
 
 ## 快速开始
@@ -42,7 +42,7 @@ npm run desktop           # 桌面版（Electron 薄壳，docs/25 DT1）：独�
 - **思考档位按提供方设置**：默认（不添加思考参数，适配不支持思考档位的模型如 mimo）/ 关 / 低 / 高 / 最高；选"默认"时请求不带任何 thinking/reasoning 参数
 - **模型与思考档位按对话记录，不是全局**：「用于当前对话」只切换当前对话的模型（历史保留）并写入该对话的存档，切换/恢复对话时自动跟随；「设为默认」只决定新对话用哪个提供方
 - 「测试连接」按提供方自己的思考档位发最小请求验证配置
-- 接口格式说明：OpenAI 兼容格式按 DeepSeek 风格发送思考参数（`thinking`/`reasoning_effort`）；Anthropic 兼容格式走 `/v1/messages` + SSE，思考映射为扩展思考 budget（低 4k / 高 16k / 最高 32k），**off 档显式发 `disabled`**（GLM/DeepSeek/MiMo 兼容端缺省=默认思考、不发参数关不掉；官方 Anthropic 不认 disabled→自动去参重试一次，docs/37）
+- 接口格式说明：OpenAI 兼容格式按 DeepSeek 风格发送思考参数（`thinking`/`reasoning_effort`）；Anthropic 兼容格式走 `/v1/messages` + SSE，思考映射为扩展思考 budget（低 4k / 高 16k / 最高 32k），**off 档显式发 `disabled`**（GLM/DeepSeek/MiMo 兼容端缺省=默认思考、不发参数关不掉；官方 Anthropic 不认 disabled→自动去参重试一次，docs/37），**默认注入 `cache_control` 断点**（末消息末块——MiMo 端激活缓存与命中报告、DeepSeek 无副作用、GLM 忽略；未知端 400 自动去标重试，docs/39）
 - **思考内容入历史与回传**：所有轮次的思考（含签名与产出模型）随会话历史存档——**回放/回传范围限定在带工具调用的轮次**：Anthropic 路线在思考开启的请求中**原样回放 thinking 块**（模型一致且签名有效才回放，换模型自动省略，签名缺失降级并告警），修复官方端点多轮工具调用的 400；OpenAI 兼容（DeepSeek）路线**默认不回传**历史思考（实测不回传也无 400，省 token），设环境变量 `REASONING_PASSBACK=1` 开启合规回传。最终回答轮的思考只存档供前端显示，不回传
 - **压缩等辅助调用强制关思考**：会话压缩的摘要调用固定 `effort: off`（openai 路线显式 `thinking:disabled`），不付思考成本、思考流也不串进前端
 
@@ -443,7 +443,8 @@ npm run smoke:sa4        # 可观测性冒烟：SSE subagent 事件 + 审计存�
 - `29_交接文档-真机待办六项修复.md`——真机待办六项处置记录（2026-11-16 已实施）：文件工具优先提示词 / TASKS.md 退役 / 截断阈值上调（含受影响测试校准记录）/ write_file 缺参指引 / 送达气泡即时渲染（turn 锚点复用，服务端零改动）/ token 分类复查结论
 - `30_开发文档-权限热切换与审批卡权限更改.md`——运行中改权限即时生效（权限三键 busy 放行、工具 deps live 读、busy 不落盘轮末存档兜底）+ 审批卡「解除沙箱并放行 / 允许并不再询问」（auto 自动放行档：普通卡自动批、提权卡保留人工；apply 补丁先应用后 settle）；含 auto vs 全开放语义速查表
 - `31_操作手册-版本更替与发版清单.md`——**给自己看的发版速查**（与 docs/27 配套：27 讲打包与冒烟，31 讲发版前后动哪些文件）：版本号只改 package.json 一处（lockfile/UI/源码均无版本号的实证）、发版前提四条（文档/README 三处/活数字/预检）、两提交惯例、双产物+latest.yml+koffi DLL（@koromix 分包查法）验收清单、推送命令与七条版本更替专属坑
-- `38_交接文档-Anthropic格式缓存命中的输入口径修正.md`——命中率 100% 之谜：DeepSeek-anthropic 的 input_tokens 只算未命中（官方语义，实测 R2=178+1024）——按官方公式总输入=input+cache_read+cache_creation 统一修复（GLM/MiMo no-op），附各家缓存命中率计算链路全景表
+- `39_交接文档-Anthropic路线缓存断点默认注入.md`——cache_control 三端实验（MiMo 挂 user 末块激活缓存+报告/GLM 真不支持/DeepSeek 无副作用）→ 默认注入末消息末块 + 400 去标重试兜底；smoke:anthropic 需传本机提供方 id 的附注
+- `38_交接文档-Anthropic格式缓存命中的输入口径修正.md`——命中率 100% 之谜：DeepSeek-anthropic 的 input_tokens 只算未命中（官方语义，实测 R2=178+1024）——按官方公式总输入=input+cache_read+cache_creation 统一修复（GLM/MiMo no-op），附各家缓存命中率计算链路全景表（勘误：MiMo openai 长上下文实测有缓存有报告；GLM 两路线均不缓存；跨格式共享缓存后端）
 - `37_交接文档-DeepSeek与MiMo的Anthropic格式接入核查.md`——两家新 anthropic 端点真机实测（三端 usage/签名/disabled 全景表）+ 两处补齐：`output_tokens_details.thinking_tokens` 读入 reasoningTokens（跨格式「其中思考」对齐）、off 档显式 disabled + 官方 400 去参重试兜底
 - `36_交接文档-首轮装配进度可视化.md`——首条消息的装配阶段可视化：startTurn 按**真实装配时序**广播三段 info（🧩 系统提示装配〔breakdown 同源数字〕→ 🔌 MCP 注入〔协调者走子代理口径、无配置省略〕→ ✅ 请求已发出，紧贴 agent.run）；rt.assemblyShown 瞬态标志每运行实例只展示一次（重启/恢复档首条消息同样展示）；复用 info 事件零前端改动
 - `35_交接文档-真机待办四项修复.md`——真机待办四项处置记录：①协调者编排计时（子代理运行期间 turnStartedAt 保持、settleCoordinatorClock 收口——等待空窗计入「本次/累计」）②抽屉列表行两行结构（⏱/上下文徽标上第一行与名称并排）③提供方用量兼容（四家端点实测形状表：anthropic 格式 GLM 输入实值在 message_delta / openai 格式 cached_tokens 双字段）④休眠待命归档（syncDrawer idle 状态修正 + archiveDormantRecord 记录级归档，SubagentControlIo 接缝）

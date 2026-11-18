@@ -94,6 +94,36 @@ export function replayableThinking(th: ThinkingBlock, opts: ReplayOptions): { bl
   return { block: { type: "thinking", thinking: th.text, signature: th.signature } };
 }
 
+/** docs/39：给最后一条消息的末块注入 cache_control 断点（官方缓存协议的启用开关；标记在
+ *  「最新消息的末块」= 官方推荐的会话式断点位——缓存覆盖其全部前缀〔system+工具+历史〕，
+ *  下一轮请求天然命中）。三家兼容端实测：MiMo 由「后端缓存但不报告」转为**命中可见**
+ *  （input=62+read=1280）；DeepSeek 无副作用（自动缓存照旧）；GLM 忽略（不报错）。返回是否注入。 */
+function injectCacheControl(messages: Array<{ role: "user" | "assistant"; content: unknown }>): boolean {
+  const last = messages[messages.length - 1];
+  if (!last) return false;
+  if (typeof last.content === "string") {
+    last.content = [{ type: "text", text: last.content, cache_control: { type: "ephemeral" } }];
+    return true;
+  }
+  if (Array.isArray(last.content) && last.content.length > 0) {
+    const blk = last.content[last.content.length - 1] as Record<string, unknown>;
+    if (!blk.cache_control) {
+      blk.cache_control = { type: "ephemeral" };
+      return true;
+    }
+  }
+  return false;
+}
+
+/** docs/39：去除全部 cache_control 标记（未知兼容端对标记报 400 时的去标重试路径）。 */
+function stripCacheControl(messages: Array<{ content: unknown }>): void {
+  for (const m of messages) {
+    if (Array.isArray(m.content)) {
+      for (const blk of m.content as Array<Record<string, unknown>>) delete blk.cache_control;
+    }
+  }
+}
+
 /** 映射 harness 消息：system 由调用方单独处理；tool 消息合并为 user 的 tool_result 块。 */
 export function toAnthropicMessages(
   messages: ChatMessage[],
@@ -224,6 +254,9 @@ export class AnthropicProvider implements LLMProvider {
     // 去参重试兜底（官方缺省本就是关，语义不变）。
     const wantDisabled = effort === "off";
     if (wantDisabled) body.thinking = { type: "disabled" };
+    // docs/39：默认注入 cache_control 断点（末消息末块）——MiMo 激活缓存+报告、DeepSeek
+    // 无副作用、GLM 忽略；未知兼容端若对标记 400 → 下方去标重试兜底。
+    const cacheMarked = injectCacheControl(body.messages as Array<{ role: "user" | "assistant"; content: unknown }>);
 
     const doFetch = (): Promise<Response> =>
       fetch(endpoint(this.baseUrl), {
@@ -239,9 +272,11 @@ export class AnthropicProvider implements LLMProvider {
           : AbortSignal.timeout(ANTHROPIC_FETCH_TIMEOUT_MS),
       });
     let res = await doFetch();
-    if (res.status === 400 && wantDisabled && body.thinking) {
-      // 官方 Anthropic 对 type:"disabled" 报 400（协议只认 enabled）：去掉显式关参数重试一次
-      delete body.thinking;
+    if (res.status === 400 && ((wantDisabled && body.thinking) || cacheMarked)) {
+      // 官方 Anthropic 对 type:"disabled" 报 400（协议只认 enabled）：去掉显式关参数重试一次；
+      // docs/39：未知兼容端对 cache_control 标记报 400 同路——去标后重试（退回该端原生缓存行为）
+      if (wantDisabled) delete body.thinking;
+      if (cacheMarked) stripCacheControl(body.messages as Array<{ content: unknown }>);
       res = await doFetch();
     }
     if (!res.ok || !res.body) {

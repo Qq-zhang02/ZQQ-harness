@@ -402,3 +402,36 @@ test("chat：缓存命中时 input_tokens 只算未命中——总输入=178+102
     stub.restore();
   }
 });
+
+// ---------- docs/39：默认注入 cache_control 断点（末消息末块）+ 400 去标重试兜底 ----------
+
+test("docs/39：默认注入——纯文本 user 消息转块数组并在末块标记 cache_control", async () => {
+  const stub = withFetchStub(() => sseResponse(MIN_EVENTS));
+  try {
+    await makeProvider().chat({ messages: [{ role: "user", content: "问" }] });
+    const msgs = stub.bodies[0]!.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    assert.deepEqual(msgs[0]!.content, [{ type: "text", text: "问", cache_control: { type: "ephemeral" } }]);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("docs/39：末块为块数组（带图）→ 标记最后一块；兼容端对标记 400 → 去标重试一次", async () => {
+  const imgMsg: ChatMessage = { role: "user", content: "看", images: [{ mime: "image/png", data: "QUJD" }] };
+  let calls = 0;
+  const stub = withFetchStub(() => {
+    calls++;
+    return calls === 1 ? new Response("unexpected field: cache_control", { status: 400 }) : sseResponse(MIN_EVENTS);
+  });
+  try {
+    const r = await makeProvider().chat({ messages: [imgMsg] });
+    const first = (stub.bodies[0]!.messages as Array<{ content: Array<Record<string, unknown>> }>)[0]!.content;
+    assert.ok(first[first.length - 1]!.cache_control, "末块（图片块）被标记");
+    assert.equal(calls, 2, "恰好重试一次");
+    const second = (stub.bodies[1]!.messages as Array<{ content: Array<Record<string, unknown>> }>)[0]!.content;
+    assert.ok(second.every((b) => !b.cache_control), "重试体全部去标");
+    assert.equal(r.content, "答案", "重试后正常拿到结果");
+  } finally {
+    stub.restore();
+  }
+});
