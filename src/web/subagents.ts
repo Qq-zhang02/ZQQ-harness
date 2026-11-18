@@ -4,18 +4,17 @@
  *   subagent-worker.ts   装配三态共用件（createWorkerSession/mountWorkerAgent/makeWorkerUi）+ worker MCP
  *   subagent-report.ts   任务执行结算（runOneTask）+ 报告格式化 + 收件箱送达 + 上下文治理三档
  *   subagent-archive.ts  transcript 落盘 + 存档解析 + read_archive source + 归档入口 + 重启唤醒
- *   subagent-records.ts  WorkerSession 驻留类型 + 审计记录 + 用量聚合（家族叶子）
+ *   subagent-records.ts  WorkerSession 驻留类型 + 审计记录 + 用量聚合 + 休眠归档（家族叶子）
  *   subagent-status.ts   subagent_status 状态表文案（docs/32，家族六件套之六）
  * 保留在本文件：SubagentService 门面（subagentServiceFor）+ 非阻塞派发的同步段（tryStartWorker/
  * startWorker，docs/16：配额检查+登记原子完成，超限立即 ok:false 不排队）+ 控制入口
  * （applySubagentControl）+ 协调者提示的「子代理系统提示词说明」段（commonWorkerPromptSectionText）。
- * SA3 冲突治理（§5）：并发/累计配额在 tryStartWorker 同步段检查（并行派发循环（docs/15：同轮
- * 多个 agent_task）天然串行经过这里，检查+占用不会插队）；req.scope 经 AgentDeps.writeScope
- * 进工具上下文（文件三工具硬拒、pwsh 守卫强制弹卡）；中止/超时信号同时挂到审批串行队列。
- * docs/16（完成即时送达，派发非阻塞化）：dispatch/followup 同步完成配额/寻址裁决并启动任务，
- * 立即返回受理回执（SubagentDispatch）；任务结算（完成/失败/打断/归档中止）后报告一律经
- * deliverToCoordinator 送进协调者收件箱（与用户运行中插话共队列，FIFO 按完成顺序逐条开轮）。
- * 协调者感知子代理状态的唯一事实源是送达消息与派发回执文本——SSE 事件不进协调者历史。
+ * SA3 冲突治理（§5）：并发/累计配额在 tryStartWorker 同步段检查（docs/15 同轮并行派发天然串行
+ * 经过，检查+占用不会插队）；req.scope 经 AgentDeps.writeScope 进工具上下文；中止/超时信号挂审批串行队列。
+ * docs/16（完成即时送达，派发非阻塞化）：dispatch/followup 同步完成配额/寻址裁决并启动任务，立即
+ * 返回受理回执；结算（完成/失败/打断/归档中止）后报告一律经 deliverToCoordinator 送进协调者收件箱
+ * （与用户运行中插话共队列，FIFO 按完成顺序逐条开轮）。协调者感知子代理状态的唯一事实源是送达
+ * 消息与派发回执文本——SSE 事件不进协调者历史。
  */
 import { join } from "node:path";
 import { SUBAGENT_MAX_CONCURRENT, SUBAGENT_MAX_TASKS, SUBAGENT_MAX_TOTAL, SUBAGENT_FOLLOWUP_CONTEXT_PCT } from "../config.ts";
@@ -30,14 +29,14 @@ import { cfgOf, type SessionShell } from "./session-runtime.ts";
 import { WORKER_ROLE_SECTION, createWorkerSession, makeWorkerUi, mountWorkerAgent, workerDirTag } from "./subagent-worker.ts";
 import { deliverToCoordinator, followupContextReject, reportMessage, runOneTask } from "./subagent-report.ts";
 import { reviveFollowup } from "./subagent-archive.ts";
-import { finalizeArchive, finishSubagent, type WorkerSession } from "./subagent-records.ts";
+import { archiveDormantRecord, finalizeArchive, finishSubagent, type SubagentControlIo, type WorkerSession } from "./subagent-records.ts";
 
 // 家族公共面 re-export：消费方（session-runtime/lifecycle、web-sessions、测试与冒烟脚本）
 // 的 import 路径保持在 ./subagents.ts 不变（沿 session-runtime 对 server.ts 的同款先例）。
 export { WORKER_ROLE_SECTION, workerMcpToolsOf } from "./subagent-worker.ts";
 export { archiveSourceOf } from "./subagent-archive.ts";
 export { subagentStatusText } from "./subagent-status.ts"; // docs/32：状态表文案（家族六件套之六）
-export type { WorkerSession } from "./subagent-records.ts";
+export type { WorkerSession, SubagentControlIo } from "./subagent-records.ts";
 
 /** docs/20：协调者提示里的「子代理（worker）系统提示词说明」段正文——worker 共同系统
  *  提示的同构重放：与 mountWorkerAgent 的装配同源（ctx.promptSections 全量 + subagent-role；
@@ -95,10 +94,9 @@ export function commonWorkerPromptSectionText(sh: SessionShell, rt: SessionRunti
 
 /**
  * 派发启动的同步段（docs/16 非阻塞派发）：配额（C7）检查 + subagentTotal 自增 + spawned
- * 广播 + 控制句柄/并发登记全部同步完成——调用方（subagentServiceFor.dispatch，含 docs/15
- * 同轮多调用的并行分支天然串行经过这里）检查+登记构成原子段，不会被同批后续任务插队。
- * 超限立即 ok:false 回执——不排队（排队会让协调者误以为已受理）。ok=true 附任务 promise
- * （无人 await、与调用方解耦；结算值由服务层经 deliverToCoordinator 自动送达协调者）。
+ * 广播 + 控制句柄/并发登记全部同步完成——检查+登记构成原子段（docs/15 同轮并行分支天然
+ * 串行经过），不会被同批后续任务插队。超限立即 ok:false 回执——不排队（排队会让协调者
+ * 误以为已受理）。ok=true 附任务 promise（无人 await；结算值经 deliverToCoordinator 自动送达）。
  */
 function tryStartWorker(
   sh: SessionShell,
@@ -134,10 +132,9 @@ function tryStartWorker(
 
 /**
  * 装配并运行一个 worker：阻塞至其完成（或超时/中止），返回 SubagentResult（首个任务的结果）。
- * 失败一律 ok:false 返回（不抛错）。docs/16 后仅为直调便利出口（单测/冒烟脚本）——正式
- * 工具路径走 subagentServiceFor.dispatch（tryStartWorker 非阻塞派发 + 自动送达）。
- * docs/9：req.reusable=true 时装配的 Agent 跨任务驻留（任务结束转 idle 待命，followup/
- * archive 经 reusables Map 寻址）；一次性子代理的事件流与结果拼装与历史版本一致。
+ * 失败一律 ok:false 返回（不抛错）。docs/16 后仅为直调便利出口（单测/冒烟脚本）——正式工具
+ * 路径走 subagentServiceFor.dispatch。docs/9：reusable=true 时 Agent 跨任务驻留（任务结束转
+ * idle 待命，followup/archive 经 reusables Map 寻址）；一次性子代理与历史版本一致。
  */
 export async function runWorker(
   sh: SessionShell,
@@ -151,9 +148,8 @@ export async function runWorker(
 }
 
 /** 装配 worker 并执行首个任务（tryStartWorker 配额通过后调用；docs/17 起装配三段共用）：
- *  spawned 广播 + 控制句柄注册（createWorkerSession）→ 构造期参数捕获（effort/scope/system
- *  ——transcript 存档 meta 由它生成，重启唤醒照此重装）→ Agent 装配（mountWorkerAgent）
- *  → runOneTask。 */
+ *  spawned 广播+句柄注册（createWorkerSession）→ 构造期参数捕获（effort/scope/system，
+ *  transcript meta 用）→ Agent 装配（mountWorkerAgent）→ runOneTask。 */
 async function startWorker(
   sh: SessionShell,
   rt: SessionRuntime,
@@ -220,15 +216,17 @@ async function startWorker(
 
 /** 控制入口的唯一实现（W2-S；docs/18 起暂停/恢复退役）：按 subId（优先）或 name 匹配
  *  活动子代理并施加 stop（打断当前任务，同名者全部生效）或 archive（归档可复用子代理
- *  ——空闲立即归档，执行中=中止当前任务后归档；一次性子代理不支持手动归档）。idle 态
- *  没有任务在执行，无 stop 对象。两处消费——createRuntime 注入协调者工具的
- *  deps.subagentControl、web-sessions 的 /api/subagent/control 路由。返回面向调用方
+ *  ——空闲立即归档，执行中=中止当前任务后归档；一次性子代理不支持手动归档）。idle 态没有
+ *  任务在执行，无 stop 对象。docs/35 真机待办4：archive 无活动匹配时回落到休眠待命记录
+ *  （archiveDormantRecord）——不再要求先复活才能归档。两处消费——createRuntime 注入协调者
+ *  工具的 deps.subagentControl、web-sessions 的 /api/subagent/control 路由。返回面向调用方
  *  （模型/HTTP）的结果文案；miss 时附活动清单供自纠错。 */
 export function applySubagentControl(
   rt: SessionRuntime,
   target: { name?: string; subId?: number },
   action: "stop" | "archive",
   via: "ui" | "model" = "model",
+  io?: SubagentControlIo,
 ): string {
   const live = [...rt.activeSubagents.values()];
   const matches =
@@ -238,6 +236,11 @@ export function applySubagentControl(
         ? live.filter((a) => a.name === target.name)
         : [];
   if (matches.length === 0) {
+    // docs/35 真机待办4：归档回落休眠待命记录（重启后实例不在线、记录仍在的 idle 可复用）
+    if (action === "archive") {
+      const dormant = rt.subagents.filter((r) => r.reusable && r.state === "idle" && (target.subId !== undefined ? r.subId === target.subId : r.name === target.name));
+      if (dormant.length > 0) return dormant.map((r) => archiveDormantRecord(rt, r, via, io)).join("\n");
+    }
     const list = live
       .map((a) => `${a.name}#${a.subId}${a.status === "idle" ? "（空闲待命）" : ""}`)
       .join("、");
@@ -271,12 +274,9 @@ export function applySubagentControl(
  * 子代理服务（按会话实例化，P8 seam 的 v2 实现）：默认名自动编号 sub-1/sub-2。
  * server.ts bootstrap 经 ctx.subagent 挂载；createRuntime 对 kind=coordinator 注入给
  * agent_task/agent_followup。docs/16：两方法都是**非阻塞派发**——同步完成配额/寻址裁决
- * 并启动（tryStartWorker 的同步段原子完成检查+登记），立即返回 SubagentDispatch 回执；
- * 任务 promise 与调用方解耦，结算（完成/失败/打断/归档中止）后报告一律经
- * deliverToCoordinator 自动送达协调者（异常归一化 ok:false，不抛错）。
- * docs/9：reusables Map 持有本会话存活的可复用 worker 驻留上下文（followup 寻址/归档释放）；
- * seq 惰性从存档记录最大 subId 续期（服务创建早于存档恢复，且防重启后与可复用记录
- * upsert 撞 subId）。
+ * 并启动，立即返回 SubagentDispatch 回执；结算（完成/失败/打断/归档中止）后报告一律经
+ * deliverToCoordinator 自动送达协调者（异常归一化 ok:false，不抛错）。docs/9：reusables Map
+ * 持有本会话存活的可复用 worker 驻留上下文；seq 惰性从存档记录最大 subId 续期（防撞 subId）。
  */
 export function subagentServiceFor(sh: SessionShell, rt: SessionRuntime): SubagentService {
   let seq: number | null = null;

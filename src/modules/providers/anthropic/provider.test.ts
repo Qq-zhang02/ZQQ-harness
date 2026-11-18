@@ -147,6 +147,44 @@ test("chat：signature_delta 聚合进 reasoningSignature，thinking/text 正常
   }
 });
 
+// docs/35 真机待办3：GLM 等 Anthropic 兼容端点的 message_start.usage.input_tokens 是 0 占位，
+// 实值（input_tokens / cache_read_input_tokens）只在末尾 message_delta——此前输入 token 恒 0
+test("chat：兼容端点 message_delta 携带最终 input_tokens/cache → 覆盖 message_start 的 0 占位", async () => {
+  const events = [
+    { type: "message_start", message: { usage: { input_tokens: 0, output_tokens: 0 } } },
+    { type: "content_block_delta", delta: { type: "text_delta", text: "答" } },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn" },
+      usage: { input_tokens: 13, output_tokens: 32, cache_read_input_tokens: 4 },
+    },
+  ];
+  const stub = withFetchStub(() => sseResponse(events));
+  try {
+    const r = await makeProvider().chat({ messages: [{ role: "user", content: "问" }] });
+    assert.equal(r.usage?.promptTokens, 13);
+    assert.equal(r.usage?.completionTokens, 32);
+    assert.equal(r.usage?.cacheHitTokens, 4);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("chat：畸形流缺 message_start → message_delta 就地补建 usage（不丢用量）", async () => {
+  const events = [
+    { type: "content_block_delta", delta: { type: "text_delta", text: "答" } },
+    { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 7, output_tokens: 9 } },
+  ];
+  const stub = withFetchStub(() => sseResponse(events));
+  try {
+    const r = await makeProvider().chat({ messages: [{ role: "user", content: "问" }] });
+    assert.equal(r.usage?.promptTokens, 7);
+    assert.equal(r.usage?.completionTokens, 9);
+  } finally {
+    stub.restore();
+  }
+});
+
 test("chat：思考开启时回放对齐的 thinking 块（带签名），思考关闭不回放也不发思考参数", async () => {
   const history: ChatMessage[] = [
     { role: "user", content: "问" },

@@ -21,10 +21,10 @@ import type { SubagentService } from "../core/types.ts";
 import { SessionStore } from "./sessions.ts";
 import { AttachmentStore } from "./attachments.ts";
 import type { ProviderConfig, ProviderFile } from "../providers/store.ts";
-import { createRuntime, currentState, requestApprovalFor, type SessionShell } from "./session-runtime.ts";
+import { createRuntime, currentState, requestApprovalFor, settleCoordinatorClock, type SessionShell } from "./session-runtime.ts";
 import { startTurn, toSessionData } from "./session-lifecycle.ts";
 import type { ApprovalRequest } from "../approval/types.ts";
-import type { SessionRuntime } from "../core/host.ts";
+import type { ActiveSubagent, SessionRuntime } from "../core/host.ts";
 
 /** 桩提供方格式：createProvider 走注册表工厂，chat 永远返回一句固定回答。 */
 const fakeFormat: ProviderFormatDef = {
@@ -540,6 +540,86 @@ test("工具接线：协调者可执行 stop_subagent（经 rt.activeSubagents�
     assert.ok(out.includes("没有匹配") && out.includes("当前活动：无"), out);
     const plain = await createRuntime(sh, { workspaceRoot: dir });
     assert.ok(!plain.registry.list().some((t) => t.name === "stop_subagent"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------- docs/35 真机待办1：协调者计时覆盖整段编排（子代理运行期间持续计时，全停才收口） ----------
+
+/** 轮末等待：startTurn 异步推进，busy 翻 false 即轮结束（fakeFormat 无工具单轮即终）。 */
+async function waitTurnEnd(rt: SessionRuntime): Promise<void> {
+  for (let i = 0; i < 400 && rt.busy; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(rt.busy, false, "轮应已结束");
+}
+
+/** 桩活动子代理句柄（不真跑任务——只占 activeSubagents 的状态位）。 */
+function stubActive(subId: number, name: string, status: "run" | "idle"): ActiveSubagent {
+  return { subId, name, status, stop: () => {} };
+}
+
+test("编排计时：轮末仍有子代理在跑 → turnStartedAt 保持（等待期间持续计时）；最后一个收尾才折算收口", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-rt-clock1-"));
+  try {
+    const sh = makeShell(dir);
+    const rt = await createRuntime(sh, { workspaceRoot: dir, kind: "coordinator" });
+    rt.activeSubagents.set(9, stubActive(9, "w9", "run"));
+    startTurn(sh, rt, "派出任务");
+    await waitTurnEnd(rt);
+    assert.notEqual(rt.turnStartedAt, null, "子代理仍在跑：轮末不清零（编排等待持续计时）");
+    const startedAt = rt.turnStartedAt;
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(rt.turnStartedAt, startedAt, "等待期间锚点不动（前端本地滴算「本次」）");
+    // 子代理收尾转 idle（runOneTask 各出口的 settleCoordinatorClock 消费点）
+    rt.activeSubagents.get(9)!.status = "idle";
+    settleCoordinatorClock(sh, rt);
+    assert.equal(rt.turnStartedAt, null, "最后一个子代理离开 run 态 → 折算清零");
+    assert.ok(rt.runMs >= 30, "累计吃进整段编排（协调者轮 + 子代理等待），当前 " + rt.runMs);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("编排计时：无子代理的轮照旧轮末清零（现状语义不变）；编排期新轮接续同段「本次」不重置", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-rt-clock2-"));
+  try {
+    const sh = makeShell(dir);
+    const rt = await createRuntime(sh, { workspaceRoot: dir, kind: "coordinator" });
+    startTurn(sh, rt, "第一轮");
+    await waitTurnEnd(rt);
+    assert.equal(rt.turnStartedAt, null, "无子代理：轮末照旧清零（现状语义不变）");
+
+    // 模拟编排等待中报告送达开新轮（turnStartedAt 由上一轮保持非空）
+    rt.activeSubagents.set(3, stubActive(3, "w3", "run"));
+    rt.turnStartedAt = Date.now() - 5000;
+    const carried = rt.turnStartedAt;
+    startTurn(sh, rt, "报告处理");
+    await waitTurnEnd(rt);
+    assert.equal(rt.turnStartedAt, carried, "子代理仍在跑：新轮不清零，「本次」跨轮接续");
+    // busy 期间 settle 防御空转（收尾路径不会在协调者运行中抢先折算）
+    const pinned = rt.turnStartedAt;
+    rt.busy = true;
+    settleCoordinatorClock(sh, rt);
+    assert.equal(rt.turnStartedAt, pinned, "busy 时不动作");
+    rt.busy = false;
+    rt.activeSubagents.get(3)!.status = "idle";
+    settleCoordinatorClock(sh, rt);
+    assert.equal(rt.turnStartedAt, null);
+    assert.ok(rt.runMs >= 5000, "折算覆盖携带进来的整段（含上一轮起的等待）");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("编排计时：普通会话（kind=normal）语义零变化——settle 恒空转", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-rt-clock3-"));
+  try {
+    const sh = makeShell(dir);
+    const rt = await createRuntime(sh, { workspaceRoot: dir });
+    rt.turnStartedAt = Date.now() - 1000;
+    settleCoordinatorClock(sh, rt);
+    assert.notEqual(rt.turnStartedAt, null, "普通会话不走编排收口（轮末既有逻辑清零）");
+    rt.turnStartedAt = null; // 还原，避免影响后续断言路径
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

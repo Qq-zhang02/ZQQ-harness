@@ -8,12 +8,32 @@ import { toolHeadline, isToolResultError } from "./toolinfo.js";
 import { createStore } from "./store.js";
 import { CFG, TRACE, C, V } from "./state.js";
 
-/** 子代理行的用时片段：run 本地滴算「本次」；其余态显示累计 elapsedMs。 */
+/** 子代理行的用时片段：run 本地滴算「本次」；其余态显示累计 elapsedMs。（详情页头部与
+ *  过程时间线收尾注用；列表行第一行的计时徽标走 timerText——同口径不带「 · 」前缀。） */
 function elapsedPart(row) {
   if (row.status === "run") {
     return row.taskStartedAt ? " · ⏱ " + fmtDur(Date.now() - row.taskStartedAt) : "";
   }
   return row.elapsedMs != null && row.elapsedMs > 0 ? " · ⏱ " + fmtDur(row.elapsedMs) : "";
+}
+/** docs/35 真机待办2：列表行第一行的计时徽标文本（run=本次滴算；其余=累计），无值返回 ""。 */
+function timerText(row) {
+  if (row.status === "run") {
+    return row.taskStartedAt ? "⏱ " + fmtDur(Date.now() - row.taskStartedAt) : "";
+  }
+  return row.elapsedMs != null && row.elapsedMs > 0 ? "⏱ " + fmtDur(row.elapsedMs) : "";
+}
+/** docs/35 真机待办2：列表行第一行的上下文徽标（紧凑「上下文 N%」，档位警告收进 ⚠ + title）；
+ *  无值返回 null。档位线全从服务端 meta 取（ctxTiers），无 meta 只出数字。 */
+function ctxBadge(row) {
+  if (row.contextPct == null) return null;
+  const t = ctxTiers();
+  const base = "上下文 " + row.contextPct + "%";
+  if (!t) return { text: base };
+  if (row.contextPct > t.arch) return { text: base + " ⚠", cls: "arch", title: "上下文占用 " + row.contextPct + "% 已超强制归档线（>" + t.arch + "%）——任务完成即强制归档" };
+  if (row.contextPct >= t.cut) return { text: base + " ⚠", cls: "cut", title: "上下文占用 " + row.contextPct + "% 已达追加上限（≥" + t.cut + "%）——agent_followup 将被拒收" };
+  if (row.contextPct > t.warn) return { text: base + " ⚠", cls: "warn", title: "上下文较长（" + row.contextPct + "% > " + t.warn + "%）——继续任务易产生幻觉，建议归档重派" };
+  return { text: base };
 }
 
 // ---------- 子代理抽屉（需求三 docs/8 §3.2 方案 A）：主列只留摘要，实时过程与回看都进右栏 ----------
@@ -118,6 +138,34 @@ function subMetaText(row) {
   if (row.status === "done") return "📦 已归档 · " + (stats.length > 0 ? "✓ " + stats.join(" · ") : "完成") + pct;
   return "📦 已归档 · ✗ " + (row.error || "失败") + (stats.length > 0 ? "（" + stats.join(" · ") + "）" : "") + pct;
 }
+/** docs/35 真机待办2：列表行第二行 meta（与 subMetaText 同源但去掉用时/上下文段——两者已上移
+ *  第一行徽标），保持列表行信息不重复；详情页头部仍用全量 subMetaText。 */
+function listMetaText(row) {
+  if (row.status === "run") return row.summary ? "… " + row.summary : "运行中";
+  if (row.status === "idle") {
+    const parts = [];
+    if (row.tasks) parts.push("已完成 " + row.tasks + " 次任务");
+    if (row.rounds != null) parts.push("累计 " + row.rounds + " 轮");
+    if (row.usage) parts.push("输入 " + fmtTok(row.usage.prompt) + " / 输出 " + fmtTok(row.usage.completion) + " tokens");
+    // docs/17：待命记录在但活句柄不在（服务重启过）= 休眠待命——agent_followup 派任务时自动从存档唤醒
+    const head = row.stale ? "空闲待命 · 服务重启过 · 派任务时自动唤醒" : "空闲待命 · 可继续派任务";
+    return head + (parts.length ? " · " + parts.join(" · ") : "");
+  }
+  if (row.status === "archived") {
+    const parts = [];
+    if (row.reusable) {
+      if (row.tasks) parts.push("共 " + row.tasks + " 次任务");
+      if (row.rounds != null) parts.push(row.rounds + " 轮");
+      if (row.usage) parts.push("输入 " + fmtTok(row.usage.prompt) + " / 输出 " + fmtTok(row.usage.completion) + " tokens");
+    }
+    return "已归档（只读）" + (parts.length ? " · " + parts.join(" · ") : "");
+  }
+  const stats = [];
+  if (row.rounds != null) stats.push(row.rounds + " 轮");
+  if (row.usage) stats.push("输入 " + fmtTok(row.usage.prompt) + " / 输出 " + fmtTok(row.usage.completion) + " tokens");
+  if (row.status === "done") return "📦 已归档 · " + (stats.length > 0 ? "✓ " + stats.join(" · ") : "完成");
+  return "📦 已归档 · ✗ " + (row.error || "失败") + (stats.length > 0 ? "（" + stats.join(" · ") + "）" : "");
+}
 function hasLiveSub() {
   for (const r of drawer.workers.values()) if (r.status === "run") return true;
   return false;
@@ -157,7 +205,11 @@ function syncDrawer(st) {
       if (rec.contextPct != null) row.contextPct = rec.contextPct; // docs/10 R1：存档记录快照
       if (rec.elapsedMs != null) row.elapsedMs = rec.elapsedMs; // 累计用时快照
       if (rec.reusable && rec.state === "idle") {
-        // 活实例在 → 状态由下方 activeSubagents 回填（idle）；不在（重启休眠）→ 末尾统一标 stale（docs/17：followup 自动唤醒）
+        // 活实例在 → 状态由下方 activeSubagents 回填（idle）；不在（重启休眠）→ 末尾统一标 stale（docs/17：followup 自动唤醒）。
+        // docs/35 真机待办4：这里必须先把行定到 idle——此前新建行保持缺省 run 态，重启后
+        // 休眠待命的子代理显示「运行中」（⏹ 可点但后端无句柄），归档按钮同因状态错乱不可用。
+        row.status = "idle";
+        row.taskStartedAt = undefined;
         idleRec.add(rec.subId);
         row.transcript = rec.transcript || "";
         row.rounds = rec.rounds;
@@ -447,20 +499,42 @@ function stopCtxPoll() {
 }
 
 // ---------- 运行计时（1s 本地滴答）：主对话顶栏「本次/累计」+ 子代理行/详情页用时 ----------
-/** 运行行的 meta 文案（与 updateDrawerRow 同源——计时滴答就地更新，不整列重渲染）。
- *  docs/11 W2：带上下文占比片段（docs/10 修订记录口径——run 行也显示「上下文 X%」）。 */
-function runMetaText(row) {
-  return (row.summary ? "… " + row.summary : "运行中") + elapsedPart(row) + ctxPctPart(row);
+/** docs/35 真机待办2：行内计时/上下文徽标的就地写入（updateDrawerRow 建骨架时同款 HTML；
+ *  计时滴答与 ctx 轮询走本函数——不整列重渲染，保留悬停与滚动状态）。 */
+function setRowBadges(rowEl, row) {
+  const t = rowEl.querySelector(".st-timer");
+  const tv = timerText(row);
+  if (t) {
+    t.textContent = tv;
+    t.hidden = !tv;
+  }
+  const c = rowEl.querySelector(".st-ctx");
+  if (c) {
+    const b = ctxBadge(row);
+    c.hidden = !b;
+    if (b) {
+      c.textContent = b.text;
+      c.className = "st-ctx" + (b.cls ? " " + b.cls : "");
+      if (b.title) c.title = b.title;
+      else c.removeAttribute("title");
+    }
+  }
 }
-/** docs/11 W2：运行中行数据（上下文/用时）的就地刷新——列表行 meta 文本与详情头部单独
- *  更新，不重建时间线（阅读位置/展开态/滚动全部保持；ctx 轮询消费）。 */
+/** docs/11 W2 + docs/35 真机待办2：运行中行数据（上下文/用时）的就地刷新——第一行计时/
+ *  上下文徽标与第二行 meta、详情头部单独更新，不重建时间线（阅读位置/展开态/滚动全部
+ *  保持；ctx 轮询消费）。 */
 function refreshRowMetaInPlace(row) {
-  const metaEl = document.querySelector('#drwList .drwrow[data-sub-id="' + row.subId + '"] .st-meta');
-  if (metaEl) metaEl.textContent = runMetaText(row);
+  const rowEl = document.querySelector('#drwList .drwrow[data-sub-id="' + row.subId + '"]');
+  if (rowEl) {
+    setRowBadges(rowEl, row);
+    const metaEl = rowEl.querySelector(".st-meta");
+    if (metaEl) metaEl.textContent = listMetaText(row);
+  }
   if (drawer.detail === row.subId) renderDetailHead(row);
 }
 function tickClock() {
-  // 主对话：本次 = 当前轮（busy 时 turnStartedAt 起算）；累计 = 存档 runMs + 在飞部分（无双算）
+  // 主对话：本次 = 当前轮（turnStartedAt 起算）；累计 = 存档 runMs + 在飞部分（无双算）。
+  // docs/35 真机待办1：协调者的 turnStartedAt 在子代理运行期间由服务端保持——计时覆盖整段编排。
   const cur = C.state.turnStartedAt ? Date.now() - C.state.turnStartedAt : 0;
   const clockEl = $("#clock");
   if (clockEl) {
@@ -469,11 +543,15 @@ function tickClock() {
       : "⏱ 累计 " + fmtDur(C.state.runMs || 0);
     clockEl.classList.toggle("on", !!C.state.turnStartedAt);
   }
-  // 子代理运行中行：按行就地更新 meta 的用时段（保留悬停与滚动状态）
-  document.querySelectorAll("#drwList .drwrow.run .st-meta").forEach((metaEl) => {
-    const it = metaEl.closest(".drwrow");
+  // 子代理运行中行：按行就地更新第一行计时徽标（保留悬停与滚动状态）
+  document.querySelectorAll("#drwList .drwrow.run .st-timer").forEach((tEl) => {
+    const it = tEl.closest(".drwrow");
     const row = it && drawer.workers.get(Number(it.dataset.subId));
-    if (row) metaEl.textContent = runMetaText(row);
+    if (row) {
+      const tv = timerText(row);
+      tEl.textContent = tv;
+      tEl.hidden = !tv;
+    }
   });
   // 详情页头部（运行中才随时间变）
   const drow = drawer.workers.get(drawer.detail);
@@ -533,17 +611,16 @@ function drawerRowNode(subId) {
   it.addEventListener("click", () => { drawer.detail = subId; renderDrawer(); });
   return it;
 }
-/** 行状态机视觉刷新（keyed 复用时每轮调用）：类名/图标/名称/meta/⏹📦 可见性。 */
+/** 行状态机视觉刷新（keyed 复用时每轮调用）：类名/图标/名称行（docs/35 真机待办2：第一行
+ *  = 名称 + ⏱ 计时 + 上下文% 并排徽标）/第二行 meta（去用时/上下文的 listMetaText）/⏹📦 可见性。 */
 function updateDrawerRow(n, row) {
   const cls = row.status === "run" ? "run" : row.status === "idle" ? "idle" : row.status === "archived" ? "arch" : row.status === "done" ? "ok" : "err";
   n.className = "drwrow " + cls;
   n.querySelector(".st-icon").textContent = row.status === "run" ? "▶" : row.status === "idle" ? "💤" : row.status === "archived" ? "📦" : row.status === "done" ? "✓" : "✗";
-  n.querySelector(".st-name").innerHTML = "<b>" + esc(row.name) + '</b> <span class="st-id">#' + Number(row.subId) + "</span>";
-  let meta;
-  if (row.status === "run") meta = runMetaText(row);
-  else if (row.status === "idle") meta = subMetaText(row);
-  else if (row.status === "archived" || row.status === "done") meta = subMetaText(row) + (row.transcript ? " · 📄" : "");
-  else meta = subMetaText(row);
+  n.querySelector(".st-name").innerHTML =
+    "<b>" + esc(row.name) + '</b> <span class="st-id">#' + Number(row.subId) + '</span><span class="st-timer" hidden></span><span class="st-ctx" hidden></span>';
+  setRowBadges(n, row); // 第一行徽标内容与显隐（骨架 span 由上一行预置）
+  const meta = listMetaText(row) + (row.transcript && (row.status === "archived" || row.status === "done") ? " · 📄" : "");
   const metaEl = n.querySelector(".st-meta");
   metaEl.textContent = meta;
   metaEl.className = "st-meta" + (row.status === "error" ? " err" : "");

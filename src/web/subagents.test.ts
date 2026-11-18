@@ -1765,3 +1765,61 @@ test("subagentStatusText：all=true 只附最近 SUBAGENT_STATUS_HISTORY_MAX 条
   assert.ok(none.includes("需要查看可传 all=true"), "all 缺省时给指引");
   assert.ok(!none.includes("历史记录（最近"), "all 缺省不带历史记录明细段（只在提示句里出现总数）");
 });
+
+// ---------- docs/35 真机待办4：休眠待命记录（服务重启后实例不在线）可直接归档 ----------
+
+test("applySubagentControl：休眠待命记录归档——记录定格 archived + archived 事件 + ui 状态通知 + 落盘", () => {
+  const h = makeHarness([]);
+  h.rt.kind = "coordinator";
+  h.rt.subagents.push({
+    subId: 5,
+    name: "dorm",
+    ok: true,
+    reusable: true,
+    state: "idle",
+    tasks: 2,
+    rounds: 7,
+    usage: { prompt: 100, completion: 40 },
+    transcript: "sub-5-dorm/transcript.json",
+    contextPct: 9,
+    elapsedMs: 8000,
+    at: new Date().toISOString(),
+  });
+  const events: { event: string; data: { phase?: string; subId?: number; tasks?: number } }[] = [];
+  const delivered: string[] = [];
+  let persisted = 0;
+  const msg = applySubagentControl(h.rt, { subId: 5 }, "archive", "ui", {
+    broadcast: (event, data) => events.push({ event, data: data as { phase?: string } }),
+    deliver: (t) => delivered.push(t),
+    persist: () => persisted++,
+  });
+  assert.ok(msg.includes("已归档子代理：dorm#5"), msg);
+  assert.ok(msg.includes("休眠待命"), msg);
+  assert.equal(h.rt.subagents.find((r) => r.subId === 5)!.state, "archived", "记录就地定格 archived");
+  const ev = events.find((e) => e.event === "subagent");
+  assert.equal(ev?.data?.phase, "archived", "archived 事件广播（前端抽屉行翻 📦）");
+  assert.equal(ev?.data?.tasks, 2, "事件携带累计任务数");
+  assert.ok(delivered[0]!.startsWith("[子代理状态 · 自动送达]"), "ui 路径状态通知送达协调者收件箱");
+  assert.ok(delivered[0]!.includes("[[过程档案#5]]"), "有存档时附 read_archive 接续指引");
+  assert.equal(persisted, 1, "记录变更落盘");
+
+  // 已归档的记录不再匹配休眠 idle → 回落 miss 文案（幂等）
+  const again = applySubagentControl(h.rt, { subId: 5 }, "archive", "ui", {
+    broadcast: () => {},
+    deliver: () => {},
+    persist: () => {},
+  });
+  assert.ok(again.startsWith("没有匹配"), again);
+});
+
+test("applySubagentControl：休眠待命记录不参与 stop（没有运行实例可打断）；io 缺席（测试直调）只改记录", () => {
+  const h = makeHarness([]);
+  h.rt.kind = "coordinator";
+  h.rt.subagents.push({ subId: 6, name: "dorm2", ok: true, reusable: true, state: "idle", at: new Date().toISOString() });
+  const stopMsg = applySubagentControl(h.rt, { subId: 6 }, "stop", "ui");
+  assert.ok(stopMsg.startsWith("没有匹配"), stopMsg);
+  // io 缺席：归档仍生效（无广播/送达/落盘副作用）
+  const msg = applySubagentControl(h.rt, { subId: 6 }, "archive", "model");
+  assert.ok(msg.includes("已归档子代理：dorm2#6"), msg);
+  assert.equal(h.rt.subagents.find((r) => r.subId === 6)!.state, "archived");
+});

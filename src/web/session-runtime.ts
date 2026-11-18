@@ -81,6 +81,24 @@ export function clipToolArgs(s: string): string {
 export const busyIds = (sh: SessionShell): string[] =>
   [...sh.runtimes.values()].filter((rt) => rt.busy).map((rt) => rt.id);
 
+/** 协调者会话是否仍有子代理在执行任务（docs/35 真机待办1：编排等待计时的保持条件）。 */
+const orchestrating = (rt: SessionRuntime): boolean =>
+  rt.kind === "coordinator" && [...rt.activeSubagents.values()].some((a) => a.status === "run");
+
+/**
+ * 协调者运行计时的收口（docs/35 真机待办1）：协调者的「本次/累计」计时覆盖整段编排——
+ * 子代理仍在跑时轮末不折算不清零（startTurn finally 交由本函数接管），直到最后一个子代理
+ * 离开 run 态且协调者自身空闲才把 turnStartedAt 折入 runMs 并广播 state（前端时钟即时停）。
+ * 子代理收尾路径（runOneTask 各出口 / finalizeArchive）逐个调用；条件不满足时幂等空转。
+ * 运行时已被替换/会话已删时只本地折算不再广播（广播会复活死会话的前端状态）。
+ */
+export function settleCoordinatorClock(sh: SessionShell, rt: SessionRuntime): void {
+  if (rt.kind !== "coordinator" || rt.busy || rt.turnStartedAt === null || orchestrating(rt)) return;
+  rt.runMs += Date.now() - rt.turnStartedAt;
+  rt.turnStartedAt = null;
+  if (sh.runtimes.get(rt.id) === rt) sh.broadcast(SSE_EVENTS.state, currentState(sh, rt));
+}
+
 export const providerCfgById = (sh: SessionShell, id: string): ProviderConfig =>
   sh.providerFile.data.providers.find((p) => p.id === id) ??
   sh.providerFile.data.providers.find((p) => p.id === sh.providerFile.data.active) ??
@@ -411,6 +429,8 @@ export function compactionDepsOf(sh: SessionShell, rt: SessionRuntime, opts?: { 
 export { subagentServiceFor } from "./subagents.ts";
 // W2-S：协调者工具的子代理控制实现（pause/resume ↔ rt.activeSubagents）
 import { applySubagentControl, commonWorkerPromptSectionText, subagentStatusText, workerMcpToolsOf } from "./subagents.ts";
+// docs/35 真机待办4：控制动作的休眠记录归档路径要向协调者收件箱送达状态通知
+import { deliverToCoordinator } from "./subagent-report.ts";
 // docs/17：read_archive 的存档解析实现（主会话 toolDeps 与 worker 的 workerDeps 同一闭包）
 import { archiveSourceOf } from "./subagents.ts";
 
@@ -498,8 +518,18 @@ export async function createRuntime(
     askUser: askUserFor(sh, rt),
     ...(kind === "coordinator" && sh.ctx.subagent ? { subagent: sh.ctx.subagent(rt) } : {}),
     // W2-S：协调者的 stop_subagent 工具经此触达 rt.activeSubagents（普通会话不注入）；
-    // docs/9：archive_subagent 工具与 /api/subagent/control 的归档动作共用本缝（action 联合扩 "archive"）
-    ...(kind === "coordinator" ? { subagentControl: (target: { name?: string; subId?: number }, action: "stop" | "archive") => applySubagentControl(rt, target, action) } : {}),
+    // docs/9：archive_subagent 工具与 /api/subagent/control 的归档动作共用本缝（action 联合扩 "archive"）；
+    // docs/35 真机待办4：io 三件套（广播/送达/落盘）供休眠待命记录的归档路径使用
+    ...(kind === "coordinator"
+      ? {
+          subagentControl: (target: { name?: string; subId?: number }, action: "stop" | "archive") =>
+            applySubagentControl(rt, target, action, "model", {
+              broadcast: (event, data) => sh.broadcast(event, data),
+              deliver: (text) => deliverToCoordinator(sh, rt, text),
+              persist: () => sh.ctx.sessionHost?.persistSession(rt),
+            }),
+        }
+      : {}),
     // docs/32：subagent_status 工具的状态表文案接缝（闭包读 rt——活动句柄与历史记录实时取值）
     ...(kind === "coordinator" ? { subagentStatus: (opts?: { all?: boolean }) => subagentStatusText(rt, opts) } : {}),
   };

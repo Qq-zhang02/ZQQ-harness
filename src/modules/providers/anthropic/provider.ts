@@ -54,7 +54,10 @@ interface SseEvent {
     partial_json?: string;
     stop_reason?: string | null;
   } | null;
-  usage?: { output_tokens?: number } | null;
+  /** usage 事件形状：官方端点 message_delta 只带 output_tokens；GLM 等 Anthropic 兼容端点
+   *  在 message_delta 携带最终 input_tokens / cache_read_input_tokens（真机实证：GLM 的
+   *  message_start.usage.input_tokens 恒为 0 占位，实值只在 message_delta——docs/35）。 */
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number } | null;
 }
 
 function safeParseJson(s: string): Record<string, unknown> {
@@ -261,6 +264,7 @@ export class AnthropicProvider implements LLMProvider {
           case "error":
             throw new Error(`Anthropic API 错误：${ev.error?.message ?? "未知错误"}`);
           case "message_start":
+            // 官方端点此处即实值；GLM 等兼容端点为 0 占位（实值在末尾 message_delta，见下）
             usage = { promptTokens: ev.message?.usage?.input_tokens ?? 0, completionTokens: 0 };
             break;
           case "content_block_start":
@@ -299,8 +303,16 @@ export class AnthropicProvider implements LLMProvider {
                   : reason === "end_turn"
                     ? "stop"
                     : (reason ?? null);
-            const out = ev.usage?.output_tokens;
-            if (usage && out) usage.completionTokens = out;
+            // 用量兜底合并（docs/35 真机待办3）：官方端点 message_delta 只有 output_tokens；
+            // GLM 等兼容端点的 input_tokens 实值（message_start 是 0 占位）与缓存命中都在这里——
+            // 逐字段择新覆盖，两侧端点形状都齐。usage 缺席（无 message_start 的畸形流）就地补建。
+            const u = ev.usage;
+            if (u) {
+              usage ??= { promptTokens: 0, completionTokens: 0 };
+              if (u.output_tokens) usage.completionTokens = u.output_tokens;
+              if (u.input_tokens) usage.promptTokens = u.input_tokens;
+              if (u.cache_read_input_tokens) usage.cacheHitTokens = u.cache_read_input_tokens;
+            }
             break;
           }
           default:

@@ -171,7 +171,22 @@ export const webSessions: HarnessModule = {
         }
         // docs/11 W1：界面入口标记 via:"ui"——空闲归档等协调者不可见的异常变动会向其收件箱
         // 送达状态通知（工具路径的返回文案本身已抵达协调者，不重复送）。
-        const message = applySubagentControl(rt, subId !== undefined ? { subId, ...(name ? { name } : {}) } : { name: name! }, action, "ui");
+        // docs/35 真机待办4：io 三件套（广播/送达/落盘）供休眠待命记录（服务重启残留）的
+        // 归档路径使用——deliver 复刻 deliverToCoordinator 语义（入队，空闲即开轮）。
+        const message = applySubagentControl(
+          rt,
+          subId !== undefined ? { subId, ...(name ? { name } : {}) } : { name: name! },
+          action,
+          "ui",
+          {
+            broadcast: (event, data) => host.broadcast(event, data),
+            deliver: (text) => {
+              (rt.inbox ??= []).push(text);
+              if (!rt.busy && rt.workspace && host.runtimes().get(rt.id) === rt) host.startTurn(rt, rt.inbox.shift()!);
+            },
+            persist: () => host.persistSession(rt),
+          },
+        );
         const ok = !message.startsWith("没有匹配") && !message.startsWith("错误");
         r.json(ok ? 200 : 404, { ok, message });
       },

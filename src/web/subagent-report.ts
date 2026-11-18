@@ -14,7 +14,7 @@ import { formatWorkerResult } from "../modules/tools/agent-task/agent-task.ts";
 import type { SessionRuntime } from "../core/host.ts";
 import type { SubagentResult } from "../core/types.ts";
 import type { ProviderConfig } from "../providers/store.ts";
-import { cfgOf, requestApprovalFor, type SessionShell } from "./session-runtime.ts";
+import { cfgOf, requestApprovalFor, settleCoordinatorClock, type SessionShell } from "./session-runtime.ts";
 import { dumpTranscript } from "./subagent-archive.ts";
 import { finalizeArchive, finishSubagent, reportAggregated, reusableRecord, upsertSubagentRecord, usageFields, type WorkerSession } from "./subagent-records.ts";
 
@@ -233,6 +233,9 @@ export async function runOneTask(
         ...(ws.contextPct !== undefined ? { contextPct: ws.contextPct } : {}),
         ...(ws.elapsedMs > 0 ? { elapsedMs: ws.elapsedMs } : {}),
       });
+      // docs/35 真机待办1：若这是最后一个 run 态子代理，协调者编排计时在此折算收口
+      // （随后报告送达若开新轮，startTurn 会重新起算「本次」——累计无缝衔接）
+      settleCoordinatorClock(sh, rt);
     }
     return res;
   }

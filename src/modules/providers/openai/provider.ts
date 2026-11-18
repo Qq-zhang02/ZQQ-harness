@@ -179,8 +179,13 @@ export class OpenAICompatProvider implements LLMProvider {
           completion_tokens_details?: { reasoning_tokens?: number | null } | null;
         }).completion_tokens_details;
         const reasoningTokens = details?.reasoning_tokens ?? 0;
-        const cacheHit = (chunk.usage as unknown as { prompt_cache_hit_tokens?: number | null })
-          .prompt_cache_hit_tokens;
+        // 缓存命中两套字段并存（docs/35 真机待办3，实测四家端点形状各异）：DeepSeek 私有
+        // prompt_cache_hit_tokens 优先；GLM 等 OpenAI 风格兼容端点只有
+        // prompt_tokens_details.cached_tokens（此前漏读 → 这些家的缓存命中恒不计）
+        const cacheHit =
+          (chunk.usage as unknown as { prompt_cache_hit_tokens?: number | null }).prompt_cache_hit_tokens ??
+          (chunk.usage as unknown as { prompt_tokens_details?: { cached_tokens?: number | null } | null })
+            .prompt_tokens_details?.cached_tokens;
         usage = {
           promptTokens: chunk.usage.prompt_tokens ?? 0,
           completionTokens: chunk.usage.completion_tokens ?? 0,

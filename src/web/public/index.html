@@ -196,8 +196,16 @@
   .drwrow.arch .st-icon { color: var(--dim); }
   .drwrow.arch { opacity: .78; }
   .drwrow .st-main { flex: 1; min-width: 0; }
-  .drwrow .st-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .drwrow .st-name .st-id { color: var(--dim); font-size: 11.5px; }
+  /* docs/35 真机待办2：第一行 = 名称 + #id + ⏱计时 + 上下文% 并排（计时/上下文推到行尾对齐）；
+   * b 可收缩省略，徽标不折行不收缩 */
+  .drwrow .st-name { font-size: 13px; white-space: nowrap; display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .drwrow .st-name b { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+  .drwrow .st-name .st-id { color: var(--dim); font-size: 11.5px; flex-shrink: 0; }
+  .drwrow .st-name .st-timer { margin-left: auto; color: var(--dim); font-size: 11.5px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .drwrow.run .st-name .st-timer { color: var(--yellow); }
+  .drwrow .st-name .st-ctx { color: var(--dim); font-size: 11.5px; flex-shrink: 0; }
+  .drwrow .st-name .st-ctx.warn { color: var(--yellow); }
+  .drwrow .st-name .st-ctx.cut, .drwrow .st-name .st-ctx.arch { color: var(--red); }
   .drwrow .st-meta { color: var(--dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .drwrow .st-meta.err { color: var(--red); }
   /* W2-S（docs/7 §2.3 → 需求三迁入抽屉列表行）：⏸/▶ 手动暂停/恢复按钮 */
@@ -351,7 +359,7 @@
           <select id="sandboxSelect"></select>
         </label>
         <span class="spacer"></span>
-        <span id="clock" title="运行计时：本次 = 当前轮用时；累计 = 会话全部轮次用时（随会话存档）">⏱ 0s</span>
+        <span id="clock" title="运行计时：本次 = 当前轮用时；累计 = 会话全部运行用时（随会话存档）。协调者会话的计时覆盖整段编排——子代理运行期间持续计时，全部子代理结束才停（docs/35）">⏱ 0s</span>
         <span id="tokWrap">
           <span id="tok" title="点击查看输入 token 分类构成">输入 <b>0</b> · 输出 <b>0</b></span>
           <div class="tokpanel hidden" id="tokPanel"></div>

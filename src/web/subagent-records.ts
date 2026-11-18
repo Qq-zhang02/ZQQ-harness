@@ -7,14 +7,54 @@
  * state:"archived" + archived 事件 + 句柄/驻留注销）。本文件是家族叶子：不 import 其他
  * subagent-* 文件（类型自足），可被全部兄弟文件安全引用。
  */
-import { SSE_EVENTS } from "../core/events.ts";
+import { AUTO_DELIVERY_PREFIXES, SSE_EVENTS, type SseEventName } from "../core/events.ts";
 import type { ActiveSubagent, SessionRuntime } from "../core/host.ts";
 import type { SubagentResult } from "../core/types.ts";
-import { reportUsage, type SessionShell } from "./session-runtime.ts";
+import { reportUsage, settleCoordinatorClock, type SessionShell } from "./session-runtime.ts";
 import type { Agent } from "../agent.ts";
 import type { ApprovalDecision, ApprovalRequest } from "../approval/types.ts";
 import type { EffortSetting } from "../llm/provider.ts";
 import type { SubagentRecord } from "./sessions.ts";
+
+/** 控制动作的壳侧副作用接缝（docs/35 真机待办4）：活动句柄路径本就持有 sh 广播/送达/落盘；
+ *  休眠待命记录（服务重启后残留）的归档同样需要这三件事——由两处调用方（createRuntime 工具
+ *  闭包 / web-sessions 路由）就近装配注入。io 缺席（无壳的测试直调）只改记录，无副作用。 */
+export interface SubagentControlIo {
+  broadcast(event: SseEventName, data: unknown): void;
+  /** 状态通知送进协调者收件箱（= deliverToCoordinator(sh, rt, text)） */
+  deliver(text: string): void;
+  /** 会话落盘（= persistSession(sh, rt)） */
+  persist(): void;
+}
+
+/** 休眠待命记录（服务重启后运行实例不在线、待命记录仍在）的直接归档（docs/35 真机待办4）：
+ *  无活动句柄可中止——记录就地定格 state:"archived" + archived 事件（前端行翻 📦）+ ui 路径
+ *  状态通知（协调者视角的异常变动，与活动归档同约定）+ 落盘。返回面向调用方的结果文案。 */
+export function archiveDormantRecord(rt: SessionRuntime, rec: SubagentRecord, via: "ui" | "model", io?: SubagentControlIo): string {
+  upsertSubagentRecord(rt, { ...rec, state: "archived", at: new Date().toISOString() });
+  io?.broadcast(SSE_EVENTS.subagent, {
+    sessionId: rt.id,
+    subId: rec.subId,
+    name: rec.name,
+    phase: "archived",
+    ...(rec.tasks !== undefined ? { tasks: rec.tasks } : {}),
+    ...(rec.rounds !== undefined ? { rounds: rec.rounds } : {}),
+    ...(rec.usage ? { usage: rec.usage } : {}),
+    ...(rec.transcript ? { transcript: rec.transcript } : {}),
+    ...(rec.contextPct !== undefined ? { contextPct: rec.contextPct } : {}),
+    ...(rec.elapsedMs !== undefined ? { elapsedMs: rec.elapsedMs } : {}),
+  });
+  if (via === "ui") {
+    io?.deliver(
+      `${AUTO_DELIVERY_PREFIXES.status} 可复用子代理 ${rec.name}#${rec.subId} 已被用户归档（服务重启后的休眠待命记录；不可再用 agent_followup 追加任务）。` +
+        (rec.transcript
+          ? `需要继续该方向的工作时用 agent_task 重新派发，任务书可让它先用 read_archive（subId=${rec.subId}）读过程存档接续上下文 [[过程档案#${rec.subId}]]。`
+          : "需要继续该方向的工作时用 agent_task 重新派发。"),
+    );
+  }
+  io?.persist();
+  return `已归档子代理：${rec.name}#${rec.subId}（休眠待命——服务重启后运行实例不在线；共完成 ${rec.tasks ?? 0} 次任务）。归档后仅可查看过程存档，不可再派任务。`;
+}
 
 /** 可复用 worker 的驻留上下文（docs/9）：装配一次跨任务复用（Agent 与完整历史延续即复用
  *  价值）。Map 由 subagentServiceFor 闭包持有（服务与会话同生命周期）；runWorker 直调
@@ -126,6 +166,8 @@ export function finalizeArchive(sh: SessionShell, rt: SessionRuntime, ws: Worker
     ...(ws.contextPct !== undefined ? { contextPct: ws.contextPct } : {}),
     ...(ws.elapsedMs > 0 ? { elapsedMs: ws.elapsedMs } : {}),
   });
+  // docs/35 真机待办1：这可能是最后一个 run 态子代理的收尾——协调者编排计时在此折算收口
+  settleCoordinatorClock(sh, rt);
 }
 
 /** worker 收尾统一出口（SA4，一次性子代理）：审计记录进 rt.subagents（随 toSessionData
@@ -164,6 +206,7 @@ export function finishSubagent(
     ...(res.contextPct !== undefined ? { contextPct: res.contextPct } : {}),
     ...(res.elapsedMs !== undefined ? { elapsedMs: res.elapsedMs } : {}),
   });
+  settleCoordinatorClock(sh, rt); // docs/35 真机待办1：最后一个子代理收尾 → 编排计时收口
 }
 
 /** worker 全程用量一次计入父会话（分类明细随 worker 历史消亡，差额归 other——守恒不变量 1）。 */

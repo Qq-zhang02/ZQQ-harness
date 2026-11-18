@@ -46,15 +46,22 @@ async function* fakeStream(): AsyncGenerator<unknown> {
   yield { choices: [{ delta: { content: "好" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
 }
 
-/** 替换 provider 内部的 OpenAI client，捕获请求体并回放固定流。 */
-function stubClient(p: OpenAICompatProvider): { bodies: Record<string, unknown>[] } {
+/** docs/35 真机待办3：可注入 usage 形状的流回放（各家端点字段不同——DeepSeek 私有
+ *  prompt_cache_hit_tokens / GLM 等 OpenAI 风格 prompt_tokens_details.cached_tokens / MiMo 无缓存字段）。 */
+async function* fakeStreamWithUsage(usage: Record<string, unknown>): AsyncGenerator<unknown> {
+  yield { choices: [{ delta: { content: "好" }, finish_reason: "stop" }] };
+  yield { choices: [], usage };
+}
+
+/** 替换 provider 内部的 OpenAI client，捕获请求体并回放固定流（可换 usage 形状）。 */
+function stubClient(p: OpenAICompatProvider, stream: AsyncGenerator<unknown> = fakeStream()): { bodies: Record<string, unknown>[] } {
   const bodies: Record<string, unknown>[] = [];
   (p as unknown as { client: unknown }).client = {
     chat: {
       completions: {
         create: async (body: Record<string, unknown>) => {
           bodies.push(body);
-          return fakeStream();
+          return stream;
         },
       },
     },
@@ -230,4 +237,59 @@ test("toSdkMessages：tool 消息带图 → tool 文本消息 + 紧随合成 use
   // 无图 tool 消息保持单条（形状不变）
   const plain = asRecords(toSdkMessages([{ role: "tool", toolCallId: "c1", content: "ok" }], false));
   assert.equal(plain.length, 1);
+});
+
+// ---------- docs/35 真机待办3：流式 usage 的各家端点形状（实测四家） ----------
+
+test("chat：usage 缓存命中两套字段——DeepSeek 私有 prompt_cache_hit_tokens 优先", async () => {
+  const p = makeProvider();
+  stubClient(
+    p,
+    fakeStreamWithUsage({
+      prompt_tokens: 34,
+      completion_tokens: 24,
+      prompt_cache_hit_tokens: 12,
+      prompt_tokens_details: { cached_tokens: 0 },
+      completion_tokens_details: { reasoning_tokens: 24 },
+    }),
+  );
+  const r = await p.chat({ messages: [{ role: "user", content: "问" }] });
+  assert.equal(r.usage?.promptTokens, 34);
+  assert.equal(r.usage?.completionTokens, 24);
+  assert.equal(r.usage?.cacheHitTokens, 12, "私有字段优先");
+  assert.equal(r.usage?.reasoningTokens, 24);
+});
+
+test("chat：GLM 等 OpenAI 风格端点只有 prompt_tokens_details.cached_tokens → 也能计入缓存命中", async () => {
+  const p = makeProvider();
+  stubClient(
+    p,
+    fakeStreamWithUsage({
+      prompt_tokens: 17,
+      completion_tokens: 24,
+      prompt_tokens_details: { cached_tokens: 9 },
+      completion_tokens_details: { reasoning_tokens: 21 },
+    }),
+  );
+  const r = await p.chat({ messages: [{ role: "user", content: "问" }] });
+  assert.equal(r.usage?.promptTokens, 17);
+  assert.equal(r.usage?.cacheHitTokens, 9, "OpenAI 风格 cached_tokens 兜底可读");
+  assert.equal(r.usage?.reasoningTokens, 21);
+});
+
+test("chat：MiMo 形状（无任何缓存字段，prompt_tokens_details=null）→ 不虚构缓存命中", async () => {
+  const p = makeProvider();
+  stubClient(
+    p,
+    fakeStreamWithUsage({
+      prompt_tokens: 12,
+      completion_tokens: 24,
+      prompt_tokens_details: null,
+      completion_tokens_details: { reasoning_tokens: 24 },
+    }),
+  );
+  const r = await p.chat({ messages: [{ role: "user", content: "问" }] });
+  assert.equal(r.usage?.promptTokens, 12);
+  assert.equal(r.usage?.cacheHitTokens, undefined);
+  assert.equal(r.usage?.reasoningTokens, 24);
 });

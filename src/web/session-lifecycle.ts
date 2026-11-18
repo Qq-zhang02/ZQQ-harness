@@ -234,7 +234,9 @@ export function takeCoordinatorTurnText(rt: SessionRuntime): string {
 export function startTurn(sh: SessionShell, rt: SessionRuntime, text: string, images?: ChatImage[]): void {
   rt.busy = true;
   rt.abortCtl = new AbortController();
-  rt.turnStartedAt = Date.now(); // 本次运行计时（前端本地滴答；结束时并入 runMs 累计）
+  // docs/35 真机待办1：协调者编排计时保持——上一轮在子代理仍在跑时结束（turnStartedAt 未清），
+  // 新轮（报告送达/用户插话）接续同一段「本次」，不重置；普通会话轮间必为 null，行为不变。
+  if (rt.turnStartedAt === null) rt.turnStartedAt = Date.now();
   rt.turnInfo = { ml: rt.agent.messages.length, userText: text }; // 轮锚点：切走再切回时前端据此补齐全部过程
   rescanSkillsFor(sh, rt); // 技能热重载：每轮开始重扫目录
   rt.agent.setSkills(rt.skills);
@@ -259,9 +261,14 @@ export function startTurn(sh: SessionShell, rt: SessionRuntime, text: string, im
       sh.broadcast(SSE_EVENTS.error, { sessionId: rt.id, message: e instanceof Error ? e.message : String(e) });
     } finally {
       // 本次轮耗时并入累计（runMs 只含已结束的轮——busy 期间快照下发的 runMs 不含在飞部分，
-      // 前端累计显示 = runMs + 进行中轮的本地滴答，无双算）
-      if (rt.turnStartedAt !== null) rt.runMs += Date.now() - rt.turnStartedAt;
-      rt.turnStartedAt = null;
+      // 前端累计显示 = runMs + 进行中轮的本地滴答，无双算）。
+      // docs/35 真机待办1：协调者会话在子代理仍在跑时**不折算不清零**——计时覆盖整段编排
+      // （含等待子代理的空窗），由最后一个子代理收尾时的 settleCoordinatorClock 折算收口。
+      const waitWorkers = rt.kind === "coordinator" && [...rt.activeSubagents.values()].some((a) => a.status === "run");
+      if (!waitWorkers) {
+        if (rt.turnStartedAt !== null) rt.runMs += Date.now() - rt.turnStartedAt;
+        rt.turnStartedAt = null;
+      }
       rt.busy = false;
       rt.abortCtl = null;
       rt.turnInfo = null;
