@@ -44,7 +44,7 @@ const BUDGET_MIN_HEADROOM_TOKENS = 1_024;
 interface SseEvent {
   type?: string;
   error?: { message?: string } | null;
-  message?: { usage?: { input_tokens?: number } | null } | null;
+  message?: { usage?: { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | null } | null;
   content_block?: { type?: string; id?: string; name?: string } | null;
   delta?: {
     type?: string;
@@ -62,6 +62,7 @@ interface SseEvent {
     input_tokens?: number;
     output_tokens?: number;
     cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
     output_tokens_details?: { thinking_tokens?: number | null } | null;
   } | null;
 }
@@ -281,10 +282,19 @@ export class AnthropicProvider implements LLMProvider {
         switch (ev.type) {
           case "error":
             throw new Error(`Anthropic API 错误：${ev.error?.message ?? "未知错误"}`);
-          case "message_start":
-            // 官方端点此处即实值；GLM 等兼容端点为 0 占位（实值在末尾 message_delta，见下）
-            usage = { promptTokens: ev.message?.usage?.input_tokens ?? 0, completionTokens: 0 };
+          case "message_start": {
+            // 官方端点此处即实值；GLM 等兼容端点为 0 占位（实值在末尾 message_delta，见下）。
+            // docs/38：官方语义 input_tokens 只算未命中部分——总输入 = input + cache_read +
+            // cache_creation（DeepSeek 兼容端实测 R2：178+1024=1202；GLM/MiMo 的 cache 恒 0，
+            // 加和 no-op，两种形状统一）。
+            const su = ev.message?.usage;
+            usage = {
+              promptTokens: (su?.input_tokens ?? 0) + (su?.cache_read_input_tokens ?? 0) + (su?.cache_creation_input_tokens ?? 0),
+              completionTokens: 0,
+              ...(su?.cache_read_input_tokens ? { cacheHitTokens: su.cache_read_input_tokens } : {}),
+            };
             break;
+          }
           case "content_block_start":
             if (ev.content_block?.type === "tool_use") {
               toolIdx++;
@@ -326,11 +336,14 @@ export class AnthropicProvider implements LLMProvider {
             // 逐字段择新覆盖，两侧端点形状都齐。usage 缺席（无 message_start 的畸形流）就地补建。
             // docs/37：DeepSeek 兼容端在此附思考 token（output_tokens_details.thinking_tokens，
             // 官方协议无此字段）——读入后与 openai 路线的 reasoning_tokens 同口径（顶栏「其中思考」）。
+            // docs/38：promptTokens 按官方公式取总输入（未命中 input + 命中读 cache_read + 命中写
+            // cache_creation）——此前裸取 input_tokens 会漏掉命中部分（输入少算、命中率被钳到 100%）。
             const u = ev.usage;
             if (u) {
               usage ??= { promptTokens: 0, completionTokens: 0 };
               if (u.output_tokens) usage.completionTokens = u.output_tokens;
-              if (u.input_tokens) usage.promptTokens = u.input_tokens;
+              const inTotal = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+              if (inTotal > 0) usage.promptTokens = inTotal;
               if (u.cache_read_input_tokens) usage.cacheHitTokens = u.cache_read_input_tokens;
               const think = u.output_tokens_details?.thinking_tokens;
               if (think) usage.reasoningTokens = think;

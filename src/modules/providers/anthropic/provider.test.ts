@@ -162,7 +162,8 @@ test("chat：兼容端点 message_delta 携带最终 input_tokens/cache → 覆�
   const stub = withFetchStub(() => sseResponse(events));
   try {
     const r = await makeProvider().chat({ messages: [{ role: "user", content: "问" }] });
-    assert.equal(r.usage?.promptTokens, 13);
+    // docs/38：官方语义 input=未命中——总输入 13+4=17（GLM 实测 read 恒 0 时加和 no-op）
+    assert.equal(r.usage?.promptTokens, 17);
     assert.equal(r.usage?.completionTokens, 32);
     assert.equal(r.usage?.cacheHitTokens, 4);
   } finally {
@@ -369,10 +370,34 @@ test("chat：DeepSeek 兼容端的 message_delta.output_tokens_details.thinking_
   const stub = withFetchStub(() => sseResponse(events));
   try {
     const r = await makeProvider().chat({ messages: [{ role: "user", content: "问" }] });
-    assert.equal(r.usage?.promptTokens, 34, "input 实值在 message_start 即有（DeepSeek/MiMo 形状）");
+    assert.equal(r.usage?.promptTokens, 39, "docs/38：总输入=未命中 34+命中 5（官方语义，input 实值在 start 即有）");
     assert.equal(r.usage?.completionTokens, 26);
     assert.equal(r.usage?.cacheHitTokens, 5);
     assert.equal(r.usage?.reasoningTokens, 24, "思考 token 单列（与 openai 路线同口径）");
+  } finally {
+    stub.restore();
+  }
+});
+
+// docs/38：DeepSeek-anthropic 命中场景实测样本（同前缀第二回：input 只剩未命中 178、
+// 命中读 1024）——总输入 1202、命中率 85%，不再被钳到 100%
+test("chat：缓存命中时 input_tokens 只算未命中——总输入=178+1024=1202（此前 1024/178 被钳 100% 且输入少算）", async () => {
+  const events = [
+    { type: "message_start", message: { usage: { input_tokens: 178, cache_creation_input_tokens: 0, cache_read_input_tokens: 1024, output_tokens: 0 } } },
+    { type: "content_block_delta", delta: { type: "text_delta", text: "答" } },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn" },
+      usage: { input_tokens: 178, cache_creation_input_tokens: 0, cache_read_input_tokens: 1024, output_tokens: 26, output_tokens_details: { thinking_tokens: 24 } },
+    },
+  ];
+  const stub = withFetchStub(() => sseResponse(events));
+  try {
+    const r = await makeProvider().chat({ messages: [{ role: "user", content: "问" }] });
+    assert.equal(r.usage?.promptTokens, 1202, "总输入 = 未命中 + 命中读 + 命中写");
+    assert.equal(r.usage?.cacheHitTokens, 1024);
+    const rate = r.usage!.cacheHitTokens! / r.usage!.promptTokens!;
+    assert.ok(Math.round(rate * 100) === 85 && rate < 1, "命中率 85%（真实可 <100），不再钳 100");
   } finally {
     stub.restore();
   }
