@@ -10,7 +10,7 @@
  * （mountWorkerAgent）。任务执行与结算在 subagent-report，存档与唤醒在 subagent-archive。
  */
 import { join } from "node:path";
-import { SUBAGENT_MAX_TOOL_ROUNDS } from "../config.ts";
+import { THRESHOLDS } from "../config.ts";
 import { loadMcpConfig } from "../mcp/manager.ts";
 import { ToolRegistry, type Tool } from "../tools/registry.ts";
 import { Agent, type AgentUi } from "../agent.ts";
@@ -371,7 +371,7 @@ export async function mountWorkerAgent(sh: SessionShell, rt: SessionRuntime, ws:
     ui,
     requestApproval: workerDeps.requestApproval,
     settings: { alwaysConfirm: rt.settings.alwaysConfirm, effort: ws.effort ?? rt.settings.effort }, // D4：缺省继承父会话
-    maxToolRounds: SUBAGENT_MAX_TOOL_ROUNDS, // D5：达上限收尾总结，保证总能交报告；worker 创建时读 live binding（热应用对后续派发生效）
+    maxToolRounds: THRESHOLDS.subagentMaxToolRounds, // D5：达上限收尾总结，保证总能交报告；worker 创建时读 live binding（热应用对后续派发生效）
     skills: rt.skills,
     agentsMd: readAgentsMd(w.root),
     globalAgentsMd: readAgentsMd(sh.userDir),

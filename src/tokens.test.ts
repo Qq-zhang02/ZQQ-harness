@@ -8,9 +8,9 @@ import {
   estimateBreakdown,
   messageTokenCount,
   messageTokens,
-  IMAGE_TOKEN_EST,
   withOther,
 } from "./tokens.ts";
+import { THRESHOLDS } from "./config.ts";
 import type { ChatMessage, ToolSchema } from "./llm/provider.ts";
 import { skillListText, type SkillInfo } from "./core/skills.ts";
 
@@ -171,14 +171,14 @@ test("contextPressure：total/contextLength 夹到 [0,1]，非法 contextLength 
 
 // ---------- docs/10 R3：图片 token 估算 ----------
 
-test("messageTokenCount：user 消息带图片按 IMAGE_TOKEN_EST 计入（docs/10 R3）", () => {
+test("messageTokenCount：user 消息带图片按 THRESHOLDS.imageTokenEst 计入（docs/10 R3）", () => {
   const base = { role: "user" as const, content: "hello world" };
   const withImg = { role: "user" as const, content: "hello world", images: [{ mime: "image/png" as const, data: "AAAA" }, { mime: "image/jpeg" as const, data: "BBBB" }] };
   const diff = messageTokenCount(withImg, () => 0) - messageTokenCount(base, () => 0);
-  assert.equal(diff, 2 * IMAGE_TOKEN_EST);
+  assert.equal(diff, 2 * THRESHOLDS.imageTokenEst);
   // 计数进 messages 分类（estimateBreakdown 六类合计不变量保持）
   const bd = estimateBreakdown([{ role: "system", content: "sys" }, withImg], []);
-  assert.ok(bd.messages >= 2 * IMAGE_TOKEN_EST);
+  assert.ok(bd.messages >= 2 * THRESHOLDS.imageTokenEst);
 });
 
 test("messageTokens：带图消息的对象身份缓存路径同样生效", () => {
@@ -186,5 +186,5 @@ test("messageTokens：带图消息的对象身份缓存路径同样生效", () =
   const a = messageTokens(m);
   const b = messageTokens(m);
   assert.equal(a, b);
-  assert.ok(a >= IMAGE_TOKEN_EST);
+  assert.ok(a >= THRESHOLDS.imageTokenEst);
 });

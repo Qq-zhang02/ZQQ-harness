@@ -7,7 +7,7 @@
  * + 失败归因（docs/18 打断即终结：「任务被用户停止」独立文案）。协调者感知子代理状态的
  * 唯一事实源是送达消息与派发回执文本——SSE 事件不进协调者历史。
  */
-import { SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_RESULT_MAX_CHARS, SUBAGENT_WARN_CONTEXT_PCT } from "../config.ts";
+import { THRESHOLDS } from "../config.ts";
 import { pruneToolResult } from "../tools/prune.ts";
 import { AUTO_DELIVERY_PREFIXES, SSE_EVENTS } from "../core/events.ts";
 import { formatWorkerResult } from "../modules/tools/agent-task/agent-task.ts";
@@ -43,7 +43,7 @@ export function deliverToCoordinator(sh: SessionShell, rt: SessionRuntime, text:
 /** 延迟送达的报告消息（docs/11 W1；docs/16 起为所有任务结算的送达形态）：与历史工具结果
  *  同格式（协调者既有的阅读习惯）+ 送达前缀；一次性子代理补自动归档注记（状态显式可见）。 */
 export function reportMessage(res: SubagentResult, name: string): string {
-  const body = formatWorkerResult(res, name, { warnPct: SUBAGENT_WARN_CONTEXT_PCT, followupPct: SUBAGENT_FOLLOWUP_CONTEXT_PCT });
+  const body = formatWorkerResult(res, name, { warnPct: THRESHOLDS.subagentWarnContextPct, followupPct: THRESHOLDS.subagentFollowupContextPct });
   const tail = res.reusable ? "" : "\n（该子代理为一次性：任务结束已自动归档。）";
   return `${AUTO_DELIVERY_PREFIXES.report}\n${body}${tail}`;
 }
@@ -51,7 +51,7 @@ export function reportMessage(res: SubagentResult, name: string): string {
 /** followup 上下文门槛拒收文案（docs/10 R1；在线与唤醒两路共用，docs/17 起指引 read_archive）。 */
 export function followupContextReject(name: string, subId: number, pct: number): string {
   return (
-    `子代理 ${name}#${subId} 的上下文占用已达 ${pct}%（上限 ${SUBAGENT_FOLLOWUP_CONTEXT_PCT}%，subagentFollowupContextPct）——上下文过长的子代理继续任务容易产生幻觉，不宜再追加。` +
+    `子代理 ${name}#${subId} 的上下文占用已达 ${pct}%（上限 ${THRESHOLDS.subagentFollowupContextPct}%，subagentFollowupContextPct）——上下文过长的子代理继续任务容易产生幻觉，不宜再追加。` +
     `请用 archive_subagent 归档后用 agent_task 重新派发；任务书可让它先用 read_archive（subId=${subId}）读过程存档接续上下文 [[过程档案#${subId}]]。`
   );
 }
@@ -139,7 +139,7 @@ export async function runOneTask(
     reportAggregated(sh, rt, ws.cur.usage);
     if (r && r.finalText) {
       // 报告预算：超出修剪为预算内文本；剪掉量超 spill 阈值时全文落 worker 私有目录
-      const pr = pruneToolResult(r.finalText, SUBAGENT_RESULT_MAX_CHARS, ws.spillDir ? { dir: ws.spillDir } : undefined);
+      const pr = pruneToolResult(r.finalText, THRESHOLDS.subagentResultMaxChars, ws.spillDir ? { dir: ws.spillDir } : undefined);
       res = {
         ok: true,
         text: pr.text,
@@ -179,7 +179,7 @@ export async function runOneTask(
   }
   // docs/17：收尾形态先判定（存档 meta.state 要落对值）——一次性必归档；可复用=归档请求
   // 挂起或上下文超归档线 → 归档，否则 idle 待命。
-  const toArchived = !ws.active.reusable || cur.pendingArchive || (contextPct !== undefined && contextPct > SUBAGENT_ARCHIVE_CONTEXT_PCT);
+  const toArchived = !ws.active.reusable || cur.pendingArchive || (contextPct !== undefined && contextPct > THRESHOLDS.subagentArchiveContextPct);
   if (ws.active.reusable) {
     // 可复用收尾（docs/9）：累计统计先入账（下方存档 meta 随之落盘，拿到最新累计值）
     ws.tasks++;
@@ -207,7 +207,7 @@ export async function runOneTask(
     if (cur.pendingArchive) {
       res.archived = "request"; // docs/11 W1：归档请求中止的收尾——工具层输出归档说明而非待命提示
       finalizeArchive(sh, rt, ws, reusables);
-    } else if (contextPct !== undefined && contextPct > SUBAGENT_ARCHIVE_CONTEXT_PCT) {
+    } else if (contextPct !== undefined && contextPct > THRESHOLDS.subagentArchiveContextPct) {
       // docs/10 R1：上下文超过强制归档线——不转 idle 直接归档（继续驻留只会诱导协调者向
       // 高幻觉风险实例追加任务）；归档语义与手动归档一致，res.forceArchived 让工具层把
       // 待命提示替换为归档说明。

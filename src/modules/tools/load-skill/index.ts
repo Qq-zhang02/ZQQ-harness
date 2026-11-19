@@ -9,6 +9,9 @@ import { readFileSync } from "node:fs";
 import type { HarnessModule } from "../../../core/module.ts";
 import type { SystemToolDef } from "../../../core/types.ts";
 import type { Tool } from "../../../tools/registry.ts";
+// docs/40 阶段二：SKILL.md 属阅读类输出——注册表修剪按 readToolResultMaxChars 取预算
+// （超出仍由注册表统一截断 + spill 全文），不再被通用 toolResultMaxChars 锁死
+import { THRESHOLDS } from "../../../config.ts";
 
 const def: SystemToolDef = {
   name: "load_skill",
@@ -16,6 +19,7 @@ const def: SystemToolDef = {
   create(deps) {
     return {
       name: "load_skill",
+      resultBudget: () => THRESHOLDS.readToolResultMaxChars, // 调用期求值（live binding，docs/40）
       description:
         "加载某个技能的完整说明（SKILL.md 全文）。当任务与系统提示“可用技能”清单中的某项相关时，先调用本工具加载后再照做。",
       parameters: {

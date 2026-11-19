@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { PRECOMPACT_KEEP, SPILL_MAX_AGE_HOURS } from "../config.ts";
+import { THRESHOLDS } from "../config.ts";
 import type { ChatMessage, EffortSetting, UsageBreakdown } from "../llm/provider.ts";
 import type { AuditEvent, AskMode } from "../approval/types.ts";
 import type { SandboxMode } from "../sandbox/types.ts";
@@ -399,7 +399,7 @@ export class SessionStore {
 
   /**
    * 压缩前备份：把原 history 写到 <id>.precompact-<n>.json（重启后手动可救）。
-   * 环形覆写（docs/21 §3.4 / docs/22 §4.2）：保留最近 PRECOMPACT_KEEP 份——写第 n+1 份前
+   * 环形覆写（docs/21 §3.4 / docs/22 §4.2）：保留最近 THRESHOLDS.precompactKeep 份——写第 n+1 份前
    * 删最老（序号 ≤ n+1-keep 的全删），长期存活的会话不再无限积累备份。
    * best-effort：写盘失败不抛错（压缩照常进行，只是少了退路）。
    */
@@ -413,7 +413,7 @@ export class SessionStore {
         if (m) n = Math.max(n, Number(m[1]));
       }
       // 删最老（环形）：写 n+1 前把序号 ≤ n+1-keep 的旧备份清掉，保留数恒为 keep
-      const oldestToKeep = n + 1 - PRECOMPACT_KEEP;
+      const oldestToKeep = n + 1 - THRESHOLDS.precompactKeep;
       if (oldestToKeep >= 1) {
         for (let k = 1; k <= oldestToKeep; k++) {
           rmSync(join(this.dir, `${id}.precompact-${k}.json`), { force: true });
@@ -434,9 +434,9 @@ export class SessionStore {
  * 启动时清扫超龄的会话 spill 目录（docs/21 §3.4 / docs/22 §4.2，与沙箱 tmp 同策略）：
  * spill/<sessionId>/ 整目录按 mtime 超过 maxAgeMs 即删（best-effort，目录不存在静默）。
  * 长期存活会话的落盘输出不再无限增长；被清会话若还在，其 [[过程档案#N]] 链接失效是预期语义
- * （默认 168h=7 天前的过程档案已无接续价值）。缺省 maxAge 由 config.SPILL_MAX_AGE_HOURS 派生。
+ * （默认 168h=7 天前的过程档案已无接续价值）。缺省 maxAge 由 config.THRESHOLDS.spillMaxAgeHours 派生。
  */
-export function sweepStaleSpill(spillRoot: string, maxAgeMs = SPILL_MAX_AGE_HOURS * 3600_000): void {
+export function sweepStaleSpill(spillRoot: string, maxAgeMs = THRESHOLDS.spillMaxAgeHours * 3600_000): void {
   let names: string[] = [];
   try {
     names = readdirSync(spillRoot);

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { checkCommandAgainstWorkspace, isReadOnlyPwshCommand, pathHintsOutsideScope } from "../../../workspace.ts";
-import { DEFAULTS, ESCALATION_MAX, PWSH_CAPTURE_MAX_BYTES } from "../../../config.ts";
+import { THRESHOLDS } from "../../../config.ts";
 import type { Tool, ToolContext } from "../../../tools/registry.ts";
 import type { SystemToolDeps } from "../../../core/types.ts";
 import { getSandboxRunner } from "../../../sandbox/runner.ts";
@@ -38,7 +38,7 @@ function collectChild(
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
     const collect = (chunks: Buffer[]) => (d: Buffer) => {
-      if (captured >= PWSH_CAPTURE_MAX_BYTES) { // 超过后停止采集，防止极端输出撑爆内存（输出修剪由注册表层统一负责；harness.json 可覆盖）
+      if (captured >= THRESHOLDS.pwshCaptureMaxBytes) { // 超过后停止采集，防止极端输出撑爆内存（输出修剪由注册表层统一负责；harness.json 可覆盖）
         overLimit = true;
         return;
       }
@@ -121,7 +121,7 @@ function refusalText(decision: ApprovalDecision): string {
 // ---- 升级重试（escalation）：沙箱拒绝后记一次"升级额度"；下一次调用只要带 justification
 // 就转交人工审批（额度无论批准与否都被消费）。不要求逐字节复现被拒命令——模型换一种
 // 写法实现同一意图时同样能走到审批，人工在审批卡上看到完整命令后自行把关。 ----
-// 额度上限 = config.ESCALATION_MAX（harness.json escalationMax 可覆盖，缺省 8）。 ----
+// 额度上限 = config.THRESHOLDS.escalationMax（harness.json escalationMax 可覆盖，缺省 8）。 ----
 
 /** 提供给模型的 pwsh 工具：带命令摘要（description）、守卫提示与审批/沙箱模式裁决。
  *  每会话实例化一份（SystemToolDef.create()）：升级额度是会话内状态，多会话互不影响。
@@ -146,7 +146,7 @@ export function createPwshTool(deps?: SystemToolDeps): Tool {
     // 模型随后真的带 justification 时消费（每次 -1），且有 8 点/会话上限。
     const denied = /is denied|拒绝访问|访问被拒/i.test(r.stderr);
     if (!denied) return formatResult({ ...r, spawnError: undefined });
-    escalationCredits = Math.min(escalationCredits + 1, ESCALATION_MAX);
+    escalationCredits = Math.min(escalationCredits + 1, THRESHOLDS.escalationMax);
     return (
       `[sandbox: 工作区外写入/删除被拒绝（${MODE_LABEL[policy.mode]} 模式）]\n` +
       formatResult({ ...r, spawnError: undefined }) +
@@ -176,7 +176,7 @@ export function createPwshTool(deps?: SystemToolDeps): Tool {
             "可选。仅当上一条命令刚被沙箱拒绝、且你确实需要更宽权限时使用：一句话说明理由，" +
             "本次执行将转交用户人工批准。不要在普通调用时填写。",
         },
-        timeout_ms: { type: "integer", description: `可选，超时毫秒数，默认 ${DEFAULTS.pwshTimeoutMs}，最大 ${DEFAULTS.pwshMaxTimeoutMs}` },
+        timeout_ms: { type: "integer", description: `可选，超时毫秒数，默认 ${THRESHOLDS.pwshTimeoutMs}，最大 ${THRESHOLDS.pwshMaxTimeoutMs}` },
       },
       required: ["command", "description"],
     },
@@ -188,10 +188,10 @@ export function createPwshTool(deps?: SystemToolDeps): Tool {
       if (!description) return "错误：description 不能为空，请用一句话概括这条命令的目的";
       const justification = String(args.justification ?? "").trim();
 
-      const requested = Number(args.timeout_ms ?? DEFAULTS.pwshTimeoutMs);
+      const requested = Number(args.timeout_ms ?? THRESHOLDS.pwshTimeoutMs);
       const timeoutMs = Math.min(
-        Math.max(Number.isFinite(requested) ? requested : DEFAULTS.pwshTimeoutMs, 1_000),
-        DEFAULTS.pwshMaxTimeoutMs,
+        Math.max(Number.isFinite(requested) ? requested : THRESHOLDS.pwshTimeoutMs, 1_000),
+        THRESHOLDS.pwshMaxTimeoutMs,
       );
 
       // 守卫（提示层，永远跑）：产出 reasons 喂给审批卡，不再承担放行/拦截裁决

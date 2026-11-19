@@ -3,7 +3,7 @@
  * 绑定工作区、切换视图、建新会话、存档、空占位清扫、运行轮的启动与收尾。
  * 共享单例经 SessionShell 显式传递；createRuntime/视图状态等来自 session-runtime.ts。
  */
-import { COMPACTION_PRESSURE } from "../config.ts";
+import { THRESHOLDS } from "../config.ts";
 import type { CompactOutcome } from "../compaction.ts";
 import type { ChatImage, ChatMessage } from "../llm/provider.ts";
 import { createWorkspace, readAgentsMd } from "../workspace.ts";
@@ -280,10 +280,10 @@ export function startTurn(sh: SessionShell, rt: SessionRuntime, text: string, im
         }
       }
       // 压缩触发一（pressure 自动）：请求派发前压力 ≥ 阈值 → 先压缩再跑轮
-      if (rt.agent.contextPressure(cfgOf(sh, rt).contextLength) >= COMPACTION_PRESSURE) {
+      if (rt.agent.contextPressure(cfgOf(sh, rt).contextLength) >= THRESHOLDS.compactionPressure) {
         sh.broadcast(SSE_EVENTS.info, {
           sessionId: rt.id,
-          message: `上下文占用已达阈值（${Math.round(COMPACTION_PRESSURE * 100)}%），自动压缩历史…`,
+          message: `上下文占用已达阈值（${Math.round(THRESHOLDS.compactionPressure * 100)}%），自动压缩历史…`,
         });
         await doCompact(sh, rt);
       }

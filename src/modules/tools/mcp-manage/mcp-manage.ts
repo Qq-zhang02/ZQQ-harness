@@ -1,23 +1,18 @@
 import { join } from "node:path";
 import type { Tool } from "../../../tools/registry.ts";
 import type { SystemToolDeps } from "../../../core/types.ts";
-import {
-  buildServerConfig,
-  readMcpConfigFile,
-  validateServerEntry,
-  writeMcpConfigFile,
-} from "../../../mcp/config.ts";
+import { buildServerConfig, readMcpConfigFile, validateServerEntry, writeMcpConfigFile } from "../../../mcp/config.ts";
 // docs/21 §2.2-③：超时文案与 transport 同源（config.ts 单一出处），调参后提示不失真
-import { MCP_CALL_TIMEOUT_MS, MCP_HANDSHAKE_TIMEOUT_MS } from "../../../config.ts";
+import { THRESHOLDS } from "../../../config.ts";
 
 /** 原技能（mcp-setup）排错经验的收敛：add 后启动失败时回传给模型的排查清单。
- *  docs/23 D2 起惰性构造：MCP_HANDSHAKE_TIMEOUT_MS 是 initConfig() 重绑的生效常量，
+ *  docs/23 D2 起惰性构造：THRESHOLDS.mcpHandshakeTimeoutMs 是 initConfig() 重绑的生效常量，
  *  导入期插值会把缺省值冻结进文案（渲染文本在缺省下逐字节不变）。 */
 const troubleshootLines = () =>
   [
     "命令不存在：npx/npm/pnpm/yarn/bun 及 .cmd/.bat 会被自动经 cmd /c 启动，直接写 npx 即可；其他可执行文件必须写绝对路径（JSON 里用正斜杠）",
     "服务器向 stdout 打印了日志/横幅（stdout 只允许协议 JSON，日志必须走 stderr）",
-    `首次运行要下载依赖/模型，超过 ${MCP_HANDSHAKE_TIMEOUT_MS / 1000} 秒握手超时：先在终端手动跑一次预热，再重试本工具`,
+    `首次运行要下载依赖/模型，超过 ${THRESHOLDS.mcpHandshakeTimeoutMs / 1000} 秒握手超时：先在终端手动跑一次预热，再重试本工具`,
     "依赖缺失：先 run_pwsh 执行 pip install / npm install",
   ].map((s) => `  - ${s}`);
 
@@ -38,7 +33,7 @@ export function createManageMcpTool(deps: SystemToolDeps): Tool {
       "通用工具源放全局，仅当前项目用的放工作区，拿不准先问用户）。" +
       "写入是\"读取-合并-校验-原子替换\"：文件损坏时拒绝修改以保护已有配置；成功后自动重连本会话，" +
       "状态里直接报告连接结果（N 个工具 / 启动失败原因）；其他已开会话要新建对话或切换工作区才会加载。" +
-      `Windows 适配：Python 服务器自动注入 PYTHONUTF8=1/PYTHONIOENCODING=utf-8；握手超时 ${MCP_HANDSHAKE_TIMEOUT_MS / 1000} 秒、工具调用超时 ${MCP_CALL_TIMEOUT_MS / 1000} 秒；` +
+      `Windows 适配：Python 服务器自动注入 PYTHONUTF8=1/PYTHONIOENCODING=utf-8；握手超时 ${THRESHOLDS.mcpHandshakeTimeoutMs / 1000} 秒、工具调用超时 ${THRESHOLDS.mcpCallTimeoutMs / 1000} 秒；` +
       "服务名用于工具前缀 mcp__<服务名>__<工具名>，建议小写英文与连字符。",
     parameters: {
       type: "object",

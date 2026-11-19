@@ -4,7 +4,7 @@
  * IO 在 deps.archiveSource 接缝（web/subagents.ts archiveSourceOf，主会话与全部 worker
  * 同一实现）；本模块只做参数校验、渲染与预算截断。
  */
-import { ARCHIVE_RENDER_MAX_CHARS } from "../../../config.ts";
+import { THRESHOLDS } from "../../../config.ts";
 import type { ChatMessage } from "../../../llm/provider.ts";
 import { pruneToolResult } from "../../../tools/prune.ts";
 import type { Tool } from "../../../tools/registry.ts";
@@ -43,11 +43,14 @@ export function renderArchiveMessages(messages: readonly ChatMessage[]): string 
 
 /** read_archive：存档注入（docs/17）。subId（本会话子代理过程存档）/ sessionId（主对话
  *  记录）二选一；都不给时返回可用存档清单自纠错（清单来自 deps.archiveSource）。渲染
- *  文本超出 archiveRenderMaxChars 预算截为头部 + 省略标记（pruneToolResult 同款；不 spill
- *  ——存档全文本就在盘上，缺什么再读什么）。 */
+ *  文本超出预算截为头部 + 省略标记（不 spill——存档全文本就在盘上，缺什么再读什么）。
+ *  docs/40 阶段二（单层化）：预算 = min(archiveRenderMaxChars, 阅读类注册表预算)，自限后
+ *  注册表二次修剪不再触发（此前 160k 预剪会被注册表再砍到通用预算、spill 落的还是已剪版）；
+ *  resultBudget 声明阅读类预算供注册表兜底口径一致。两者均调用期求值（live binding）。 */
 export function createReadArchiveTool(deps: SystemToolDeps): Tool {
   return {
     name: "read_archive",
+    resultBudget: () => THRESHOLDS.readToolResultMaxChars,
     description:
       "读取一份历史存档，把其中的对话与操作过程转成可读文本注入本代理的上下文（不是直接读 JSON 原文）。两种来源二选一：" +
       "subId=本会话某个子代理的过程存档（接续已被归档/失效子代理的工作——任务书指定的 subId）；" +
@@ -75,7 +78,8 @@ export function createReadArchiveTool(deps: SystemToolDeps): Tool {
       const header =
         `存档注入 · ${r.label} · 共 ${r.messages.length} 条消息\n` +
         "（以下是该段历史的过程回放，供接续上下文；运行中子代理的快照截至其最近一次任务结束）\n\n";
-      const pr = pruneToolResult(header + renderArchiveMessages(r.messages), ARCHIVE_RENDER_MAX_CHARS);
+      const budget = Math.min(THRESHOLDS.archiveRenderMaxChars, THRESHOLDS.readToolResultMaxChars);
+      const pr = pruneToolResult(header + renderArchiveMessages(r.messages), budget);
       return pr.text;
     },
   };

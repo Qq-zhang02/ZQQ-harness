@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { buildContext } from "../src/core/context.ts";
 import { loadModules } from "../src/core/module.ts";
 import { BUILTIN_MODULES } from "../src/modules.ts";
-import { loadConfig, SUBAGENT_MAX_TOTAL } from "../src/config.ts";
+import { THRESHOLDS, loadConfig } from "../src/config.ts";
 import { SessionStore } from "../src/web/sessions.ts";
 import { AttachmentStore } from "../src/web/attachments.ts";
 import { createRuntime, currentState, type SessionShell } from "../src/web/session-runtime.ts";
@@ -180,7 +180,7 @@ try {
   {
     const before = subEvs().length;
     const beforeRecs = rt.subagents.length;
-    rt.subagentTotal = SUBAGENT_MAX_TOTAL; // 顶到累计上限
+    rt.subagentTotal = THRESHOLDS.subagentMaxTotal; // 顶到累计上限
     const agentTask = rt.registry.list().find((t) => t.name === "agent_task")!;
     const out = await agentTask.execute({ description: "d", task: "超限任务" }, toolCtx());
     record(

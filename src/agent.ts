@@ -6,7 +6,7 @@ import { estTokens, estimateBreakdown, contextPressure as contextPressureOf, mes
 import type { ApprovalDecision, ApprovalRequest } from "./approval/types.ts";
 import type { SandboxMode } from "./sandbox/types.ts";
 import { chooseCutIndex, isContextOverflowError, type CompactionRecord, type CompactOutcome } from "./compaction.ts";
-import { COMPACTION_KEEP_RATIO, DEFAULTS } from "./config.ts";
+import { THRESHOLDS } from "./config.ts";
 import { assembleSystemPrompt, BUILTIN_PROMPT_SECTIONS, toolDocsOf } from "./core/sections.ts";
 import type { Registry } from "./core/registry.ts";
 import type { PromptSection, SectionContext, SubagentRequest, SubagentResult } from "./core/types.ts";
@@ -58,9 +58,9 @@ export interface AgentDeps {
   requestApproval(req: ApprovalRequest): Promise<ApprovalDecision>;
   settings: AgentSettings;
   /** 工具调用轮次上限（可选）：**缺省不传 = 每轮循环 live 读 config.ts 的
-   *  DEFAULTS.maxToolRounds**（docs/24 热应用——initConfig 后对已装配的运行中会话也即时生效，
+   *  THRESHOLDS.maxToolRounds**（docs/24 热应用——initConfig 后对已装配的运行中会话也即时生效，
    *  正在执行的当轮不受影响）。显式传入 = 创建时快照（子代理 worker 传
-   *  SUBAGENT_MAX_TOOL_ROUNDS：worker 创建时读 live binding，按派发生效）。 */
+   *  THRESHOLDS.subagentMaxToolRounds：worker 创建时读 live binding，按派发生效）。 */
   maxToolRounds?: number;
   /** 工作区 AGENTS.md 内容（可选），作为附加系统指令注入 */
   agentsMd?: string | null;
@@ -136,15 +136,31 @@ export class Agent {
    *  本地估算（固定部分变化时做差量校正）。history 被整体替换（compact/restore/clear）
    *  或换提供方（各家计量口径不同）时置 null，回退纯估算，下次请求重建。 */
   private usageAnchor: { promptTokens: number; len: number; lastMsg: ChatMessage; fixed: number } | null = null;
+  // ---- 修剪观测性（docs/40 阶段二） ----
+  /** 会话累计工具结果修剪统计：工具循环结算时经 notePrune 累加，state 载荷经
+   *  pruneStats() 透出（前端 Token 面板一行展示）——调参时能看见截断发生。 */
+  private prune = { count: 0, chars: 0, spills: 0 };
+
+  /** 会话累计工具结果修剪统计：触发次数 / 被剪字符总数 / spill 全文落盘份数。 */
+  pruneStats(): { count: number; chars: number; spills: number } {
+    return { ...this.prune };
+  }
+
+  private notePrune(r: { prunedChars: number; spilled?: string }): void {
+    if (r.prunedChars <= 0 && !r.spilled) return;
+    this.prune.count++;
+    this.prune.chars += r.prunedChars;
+    if (r.spilled) this.prune.spills++;
+  }
 
   constructor(deps: AgentDeps) {
     this.deps = deps;
     this.history.push({ role: "system", content: this.buildSystemPrompt() });
   }
 
-  /** 轮次上限：显式 deps 值优先；否则 live 读 DEFAULTS（每轮循环与达上限文案都经此——单一取值点） */
+  /** 轮次上限：显式 deps 值优先；否则 live 读 THRESHOLDS.maxToolRounds（每轮循环与达上限文案都经此——单一取值点） */
   private get maxToolRounds(): number {
-    return this.deps.maxToolRounds ?? DEFAULTS.maxToolRounds;
+    return this.deps.maxToolRounds ?? THRESHOLDS.maxToolRounds;
   }
 
   private buildSystemPrompt(): string {
@@ -305,14 +321,14 @@ export class Agent {
    * 压缩：system + [历史摘要] + 近期尾部完整轮次。物理替换、不可逆（压缩前先备份）。
    * fail-safe：摘要调用失败/超时/返回空 → 放弃压缩，history 原样保留。
    * opts.keepTokens 可覆盖保留预算：手动 /compact 传小预算（立即显著变小），
-   * 缺省按提供方上下文的 COMPACTION_KEEP_RATIO（自动触发/溢出兜底语义）。
+   * 缺省按提供方上下文的 THRESHOLDS.compactionKeepRatio（自动触发/溢出兜底语义）。
    */
   async compact(opts?: { keepTokens?: number }): Promise<CompactOutcome> {
     const compaction = this.deps.compaction;
     if (!compaction) return { ok: false, reason: "压缩服务不可用" };
     const history = this.history;
     const tokensBefore = this.contextEstimate().total;
-    const keepTokens = opts?.keepTokens ?? Math.round(compaction.contextLength() * COMPACTION_KEEP_RATIO);
+    const keepTokens = opts?.keepTokens ?? Math.round(compaction.contextLength() * THRESHOLDS.compactionKeepRatio);
     const passback = this.thinkingPassbackOf();
     const cut = chooseCutIndex(history, keepTokens, (m) => messageTokens(m, estTokens, passback(m)));
     if (cut < 2) return { ok: false, reason: "没有可压缩的历史（找不到安全的轮边界切点）" };
@@ -420,6 +436,7 @@ export class Agent {
           const res = INTERIM_CONTROL_TOOLS.has(call.name)
             ? await registry.executeWithMeta(call.name, call.arguments, ctx)
             : { text: `错误：即时应答窗口只能执行 stop_subagent / archive_subagent / subagent_status（${call.name} 不在其中）——其余工具请等当前任务结束后调用。`, full: "", prunedChars: 0 };
+          this.notePrune(res);
           ui.printToolResult(res.full || res.text, { prunedChars: res.prunedChars }, call.id);
           seq.push({ role: "tool", toolCallId: call.id, content: res.text });
         }
@@ -596,6 +613,7 @@ export class Agent {
           const done = await Promise.all(
             calls.map(async (call) => {
               const r = await registry.executeWithMeta(call.name, call.arguments, ctx);
+              this.notePrune(r);
               ui.printToolResult(r.full, { prunedChars: r.prunedChars, ...(r.spilled ? { spilled: r.spilled } : {}) }, call.id);
               return { call, r };
             }),
@@ -607,6 +625,7 @@ export class Agent {
           for (const call of calls) {
             ui.printToolCall(call.name, previewArgs(call.arguments), call.id, call.arguments);
             const r = await registry.executeWithMeta(call.name, call.arguments, ctx);
+            this.notePrune(r);
             // UI 拿完整输出（spill 只影响入模型内容）；元数据带修剪信息供前端展示
             ui.printToolResult(r.full, { prunedChars: r.prunedChars, ...(r.spilled ? { spilled: r.spilled } : {}) }, call.id);
             this.history.push({ role: "tool", toolCallId: call.id, content: r.text, ...(r.images?.length ? { images: r.images } : {}) });

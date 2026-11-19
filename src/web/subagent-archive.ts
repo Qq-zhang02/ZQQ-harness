@@ -9,7 +9,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_MAX_CONCURRENT, SUBAGENT_MAX_TASKS } from "../config.ts";
+import { THRESHOLDS } from "../config.ts";
 import { AUTO_DELIVERY_PREFIXES } from "../core/events.ts";
 import type { Agent } from "../agent.ts";
 import type { ChatMessage } from "../llm/provider.ts";
@@ -154,19 +154,19 @@ export function reviveFollowup(
   deliver: (p: Promise<SubagentResult>, name: string) => void,
 ): SubagentDispatch {
   // 闸门复查（与在线 followup 同口径，先于存档读取——不读注定被拒的档；数字用存档记录的累计值）
-  if ((rec.tasks ?? 0) >= SUBAGENT_MAX_TASKS) {
+  if ((rec.tasks ?? 0) >= THRESHOLDS.subagentMaxTasks) {
     return {
       ok: false,
-      error: `任务次数上限已达 ${SUBAGENT_MAX_TASKS}（subagentMaxTasks）：子代理 ${rec.name}#${rec.subId} 的累计任务数已满。请用 archive_subagent 归档后重新 agent_task 派发。`,
+      error: `任务次数上限已达 ${THRESHOLDS.subagentMaxTasks}（subagentMaxTasks）：子代理 ${rec.name}#${rec.subId} 的累计任务数已满。请用 archive_subagent 归档后重新 agent_task 派发。`,
     };
   }
-  if (rec.contextPct !== undefined && rec.contextPct >= SUBAGENT_FOLLOWUP_CONTEXT_PCT) {
+  if (rec.contextPct !== undefined && rec.contextPct >= THRESHOLDS.subagentFollowupContextPct) {
     return { ok: false, error: followupContextReject(rec.name, rec.subId, rec.contextPct) };
   }
-  if (rt.workers.size >= SUBAGENT_MAX_CONCURRENT) {
+  if (rt.workers.size >= THRESHOLDS.subagentMaxConcurrent) {
     return {
       ok: false,
-      error: `并发上限已达 ${SUBAGENT_MAX_CONCURRENT}（subagentMaxConcurrent）：本会话同时运行的子代理已满，该任务未启动。请等现有子代理完成后再派。`,
+      error: `并发上限已达 ${THRESHOLDS.subagentMaxConcurrent}（subagentMaxConcurrent）：本会话同时运行的子代理已满，该任务未启动。请等现有子代理完成后再派。`,
     };
   }
   // 存档读取（同步段）：宽容解析新旧两种格式（docs/17）；读取失败降级为指引重派文案

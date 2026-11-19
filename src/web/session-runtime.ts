@@ -5,9 +5,9 @@
  * 全部共享单例收进 SessionShell（由 server.ts 构造并持有），本文件所有函数显式收 sh
  * ——与 store.ts 的显式参数风格一致，模块间无隐式全局。
  */
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { COMPACTION_PRESSURE, COMPACTION_SUMMARY_MAX_CHARS, DEFAULT_CONTEXT_LENGTH, EFFORT_OPTIONS, IMAGE_RULES, SANDBOX_OPTIONS, SANDBOX_ALIASES, SUBAGENT_ARCHIVE_CONTEXT_PCT, SUBAGENT_FOLLOWUP_CONTEXT_PCT, SUBAGENT_WARN_CONTEXT_PCT, TOOL_EVENT_ARGS_MAX_CHARS } from "../config.ts";
+import { THRESHOLDS, EFFORT_OPTIONS, IMAGE_RULES, SANDBOX_OPTIONS, SANDBOX_ALIASES, TOOL_EVENT_ARGS_MAX_CHARS } from "../config.ts";
 import { COMPACTION_PROMPT } from "../compaction.ts";
 import { pruneToolResult } from "../tools/prune.ts";
 import type { ChatMessage, LLMProvider, UsageBreakdown, UsageInfo } from "../llm/provider.ts";
@@ -175,9 +175,24 @@ const totalsSnapshot = (rt: SessionRuntime) => ({
 
 /** 运行参数与设置项下发（唯一出处 config.ts）：P1 压缩阈值；P4 提供方格式清单；
  *  P7 默认上下文长度 + 档位/沙箱 option 文案与别名（前端不再硬编码）。/api/meta 同源。 */
+// ---- 版号（package.json 单一出处）：懒读取 + 模块级缓存——/api/meta 与 state 载荷共用 ----
+let APP_VERSION = "";
+function appVersion(): string {
+  if (!APP_VERSION) {
+    try {
+      // 相对模块 URL 解析（dev=项目根；打包 asar:false 同构 resources/app/package.json）
+      APP_VERSION = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version?: string }).version ?? "?";
+    } catch {
+      APP_VERSION = "?"; // 读取失败不致命：徽标显示 v?
+    }
+  }
+  return APP_VERSION;
+}
+
 export const metaSnapshot = (sh: SessionShell) => ({
-  pressureThreshold: COMPACTION_PRESSURE,
-  defaultContextLength: DEFAULT_CONTEXT_LENGTH,
+  version: appVersion(), // 界面版号显示（前端顶栏徽标，v 前缀前端加）
+  pressureThreshold: THRESHOLDS.compactionPressure,
+  defaultContextLength: THRESHOLDS.defaultContextLength,
   efforts: EFFORT_OPTIONS,
   sandbox: SANDBOX_OPTIONS,
   sandboxAliases: SANDBOX_ALIASES,
@@ -185,9 +200,9 @@ export const metaSnapshot = (sh: SessionShell) => ({
   // docs/10 R1：子代理上下文治理档位（前端 ⚠ 标记的单一出处，不硬编码）。
   // docs/21 §2.2-⑤：补发第三档 subagentArchivePct（强制归档线）——三档全部下发，
   // 前端不再写 25/35 兜底数字（meta 未到时不显示档位标记）。
-  subagentWarnPct: SUBAGENT_WARN_CONTEXT_PCT,
-  subagentFollowupPct: SUBAGENT_FOLLOWUP_CONTEXT_PCT,
-  subagentArchivePct: SUBAGENT_ARCHIVE_CONTEXT_PCT,
+  subagentWarnPct: THRESHOLDS.subagentWarnContextPct,
+  subagentFollowupPct: THRESHOLDS.subagentFollowupContextPct,
+  subagentArchivePct: THRESHOLDS.subagentArchiveContextPct,
   // docs/22 §4.1：消息图片规则（张数/单张字节/mime 白名单）单一出处 config.IMAGE_RULES——
   // 前端校验与按钮 title 由此渲染，不再硬编码（HTML 静态 accept 保留作无 JS 降级）。
   imageRules: IMAGE_RULES,
@@ -220,6 +235,7 @@ export function currentState(sh: SessionShell, rt: SessionRuntime) {
     runMs: rt.runMs,
     ...(rt.turnStartedAt !== null ? { turnStartedAt: rt.turnStartedAt } : {}),
     context: rt.agent.contextEstimate(),
+    prune: rt.agent.pruneStats(), // docs/40 观测性：会话累计修剪次数/字符/spill 份数（前端 Token 面板一行）
     turn: rt.turnInfo, // 运行轮锚点：busy 时非空，前端切回运行中的会话用它补齐全部过程
     mcpServers: rt.mcp.status(),
     skills: rt.skills.map((s) => s.name),
@@ -408,10 +424,12 @@ export function compactionDepsOf(sh: SessionShell, rt: SessionRuntime, opts?: { 
           return `[${m.role}] ${body}`;
         })
         .join("\n\n");
-      // 摘要输入本身也要防超长：只保留头部（docs/10 R2 起 pruneToolResult 为 head-only，
-      // 不再保留尾部；超过部分的信息损失可接受，备份里仍有全文）——预算为阈值键
-      // compactionSummaryMaxChars（默认 300k，initConfig 热重绑）
-      const capped = pruneToolResult(text, COMPACTION_SUMMARY_MAX_CHARS).text;
+      // 摘要输入本身也要防超长：docs/40 阶段二起头+尾保留（尾部 10% 预算）——摘要输入的
+      // 尾部 = 最接近保留工作集的近期上下文，丢了伤最重；工具输出 head-only 的理由（尾部
+      // 是日志残余）不适用于此（docs/10 §0.2 R2 勘误，备份里仍有全文）
+      const capped = pruneToolResult(text, THRESHOLDS.compactionSummaryMaxChars, undefined, {
+        tailChars: Math.round(THRESHOLDS.compactionSummaryMaxChars * 0.1),
+      }).text;
       const r = await rt.llm.chat({
         messages: [{ role: "user", content: COMPACTION_PROMPT + "\n\n" + capped }],
         effort: "off", // 辅助调用强制关思考（openai 路线显式 thinking:disabled；anthropic 路线不发思考参数）：不付思考成本，思考流也不串进前端
@@ -597,7 +615,7 @@ export async function createRuntime(
     ui: makeUi(sh, rt),
     requestApproval: requestApprovalFor(sh, rt),
     settings: rt.settings,
-    // maxToolRounds 不传：Agent 每轮 live 读 DEFAULTS（docs/24 热应用——保存即对运行中会话生效）
+    // maxToolRounds 不传：Agent 每轮 live 读 THRESHOLDS（docs/24 热应用——保存即对运行中会话生效）
     skills: rt.skills,
     // AGENTS.md 两级注入：全局 ~/.ZQQ-harness/AGENTS.md + 工作区根 AGENTS.md（冲突以工作区为准）
     agentsMd: workspace ? readAgentsMd(workspace.root) : null,

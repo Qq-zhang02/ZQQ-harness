@@ -10,27 +10,33 @@ import type { SystemToolDeps } from "../../../core/types.ts";
 import type { SubagentRequest, SubagentResult } from "../../../core/types.ts";
 import { normalizeEffort } from "../../../providers/store.ts";
 // docs/21 §2.2-③：timeoutMs 下限单一出处（schema/校验/提示词三处曾各自写死 60000）
-import { SUBAGENT_STATUS_HISTORY_MAX, SUBAGENT_TIMEOUT_MIN_MS } from "../../../config.ts";
+import { THRESHOLDS } from "../../../config.ts";
 import { AUTO_DELIVERY_PREFIXES } from "../../../core/events.ts";
 
-/** 单个任务项的参数 schema（agent_task 平铺；agent_tasks 包一层 tasks 数组）。 */
-export const TASK_ITEM_PROPERTIES: Record<string, unknown> = {
-  name: { type: "string", description: "可选，子任务短名（ASCII，如 impl-auth；用于审批卡与报告标注）" },
-  description: { type: "string", description: "一句话任务摘要（必填，审批卡与事件展示用）" },
-  task: {
-    type: "string",
-    description: "完整任务书（必填，自包含——子代理看不到本对话历史）：目标、背景与约束、涉及路径、期望产出（文件落点 + 报告结构）",
-  },
-  scope: { type: "array", items: { type: "string" }, description: "可选，允许写入的相对路径前缀（缺省整个工作区）" },
-  effort: { type: "string", enum: ["off", "low", "high", "max", "default"], description: "可选，思考档位（缺省继承本会话当前档位）" },
-  timeoutMs: { type: "integer", minimum: SUBAGENT_TIMEOUT_MIN_MS, description: `可选，超时毫秒数（最小 ${SUBAGENT_TIMEOUT_MIN_MS}；缺省不限时）` },
-  reusable: {
-    type: "boolean",
-    description:
-      "可选，可复用子代理（docs/9）：任务完成后保留待命（完整上下文延续），后续用 agent_followup 按 name/subId 追加任务、不再使用时 archive_subagent 归档。" +
-      "同一专业方向要跨多次任务延续时才用；缺省 false=一次性（用完即自动归档）。",
-  },
-};
+/** 单个任务项的参数 schema（agent_task 平铺；agent_tasks 包一层 tasks 数组）。
+ *  docs/40 阶段二：改为惰性构造——THRESHOLDS.subagentTimeoutMinMs 是 initConfig() 重绑的生效
+ *  常量，模块顶层对象字面量会在导入期把缺省值 60000 冻结进 schema 的 minimum 与描述文案
+ *  （mcp-manage 排错清单同款先例；此前运行时校验 parseTaskItem 读 live binding 是活的、
+ *  对外发布的 JSON schema 是死的，两处不一致）。 */
+export function taskItemProperties(): Record<string, unknown> {
+  return {
+    name: { type: "string", description: "可选，子任务短名（ASCII，如 impl-auth；用于审批卡与报告标注）" },
+    description: { type: "string", description: "一句话任务摘要（必填，审批卡与事件展示用）" },
+    task: {
+      type: "string",
+      description: "完整任务书（必填，自包含——子代理看不到本对话历史）：目标、背景与约束、涉及路径、期望产出（文件落点 + 报告结构）",
+    },
+    scope: { type: "array", items: { type: "string" }, description: "可选，允许写入的相对路径前缀（缺省整个工作区）" },
+    effort: { type: "string", enum: ["off", "low", "high", "max", "default"], description: "可选，思考档位（缺省继承本会话当前档位）" },
+    timeoutMs: { type: "integer", minimum: THRESHOLDS.subagentTimeoutMinMs, description: `可选，超时毫秒数（最小 ${THRESHOLDS.subagentTimeoutMinMs}；缺省不限时）` },
+    reusable: {
+      type: "boolean",
+      description:
+        "可选，可复用子代理（docs/9）：任务完成后保留待命（完整上下文延续），后续用 agent_followup 按 name/subId 追加任务、不再使用时 archive_subagent 归档。" +
+        "同一专业方向要跨多次任务延续时才用；缺省 false=一次性（用完即自动归档）。",
+    },
+  };
+}
 
 /** 解析并校验一个任务项；非法返回错误文案（字符串），合法返回请求字段。 */
 export function parseTaskItem(args: Record<string, unknown>): { error: string } | SubagentRequest {
@@ -57,7 +63,7 @@ export function parseTaskItem(args: Record<string, unknown>): { error: string } 
   }
   if (args.timeoutMs !== undefined && args.timeoutMs !== null) {
     const n = Number(args.timeoutMs);
-    if (!Number.isFinite(n) || n < SUBAGENT_TIMEOUT_MIN_MS) return { error: `错误：timeoutMs 必须 ≥${SUBAGENT_TIMEOUT_MIN_MS} 毫秒。` };
+    if (!Number.isFinite(n) || n < THRESHOLDS.subagentTimeoutMinMs) return { error: `错误：timeoutMs 必须 ≥${THRESHOLDS.subagentTimeoutMinMs} 毫秒。` };
     req.timeoutMs = Math.floor(n);
   }
   if (args.reusable !== undefined && args.reusable !== null && args.reusable !== false) {
@@ -163,7 +169,7 @@ export function createAgentTaskTool(deps: SystemToolDeps): Tool {
       "任务结算（完成/失败/打断/归档）后，其报告会以「" + AUTO_DELIVERY_PREFIXES.report + "」开头的消息按完成顺序自动送达本会话，到齐后再汇总交付。" +
       "同一专业方向要跨多次任务延续时给 reusable=true" +
       "（它完成后保留全部上下文待命，后续 agent_followup 追加任务、archive_subagent 归档；缺省一次性用完即归档）。",
-    parameters: { type: "object", properties: TASK_ITEM_PROPERTIES, required: ["description", "task"] },
+    parameters: { type: "object", properties: taskItemProperties(), required: ["description", "task"] },
     async execute(args, ctx) {
       const svc = deps.subagent;
       if (!svc) return "错误：子代理服务不可用（本会话不是协调者会话）。";
@@ -232,7 +238,7 @@ export function createAgentFollowupTool(deps: SystemToolDeps): Tool {
         subId: { type: "integer", description: "可复用子代理序号（SSE 事件/报告标注里的 #N）" },
         description: { type: "string", description: "一句话任务摘要（事件与抽屉展示用，建议填）" },
         task: { type: "string", description: "新任务书：目标与期望产出（可引用该子代理的既有上下文——它记得之前的任务）" },
-        timeoutMs: { type: "integer", minimum: SUBAGENT_TIMEOUT_MIN_MS, description: `可选，本任务的超时毫秒数（最小 ${SUBAGENT_TIMEOUT_MIN_MS}；缺省不限时；scope/effort 沿用首次派发）` },
+        timeoutMs: { type: "integer", minimum: THRESHOLDS.subagentTimeoutMinMs, description: `可选，本任务的超时毫秒数（最小 ${THRESHOLDS.subagentTimeoutMinMs}；缺省不限时；scope/effort 沿用首次派发）` },
       },
       required: ["task"],
     },
@@ -248,7 +254,7 @@ export function createAgentFollowupTool(deps: SystemToolDeps): Tool {
       let timeoutMs: number | undefined;
       if (args.timeoutMs !== undefined && args.timeoutMs !== null) {
         const n = Number(args.timeoutMs);
-        if (!Number.isFinite(n) || n < SUBAGENT_TIMEOUT_MIN_MS) return `错误：timeoutMs 必须 ≥${SUBAGENT_TIMEOUT_MIN_MS} 毫秒。`;
+        if (!Number.isFinite(n) || n < THRESHOLDS.subagentTimeoutMinMs) return `错误：timeoutMs 必须 ≥${THRESHOLDS.subagentTimeoutMinMs} 毫秒。`;
         timeoutMs = Math.floor(n);
       }
       const description = args.description === undefined || args.description === null ? undefined : String(args.description).trim() || undefined;
@@ -270,13 +276,13 @@ export function createSubagentStatusTool(deps: SystemToolDeps): Tool {
   return {
     name: "subagent_status",
     description:
-      "查看当前子代理状态表：活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 可附带最近 " + SUBAGENT_STATUS_HISTORY_MAX + " 条历史记录摘要。" +
+      "查看当前子代理状态表：活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 可附带最近 " + THRESHOLDS.subagentStatusHistoryMax + " 条历史记录摘要。" +
       "只读快照、立即返回，不打扰子代理也不等待任务完成。用户追问进度、或调用控制工具前核对 name/subId 时使用。" +
       "注意：任务的最终结果仍以「" + AUTO_DELIVERY_PREFIXES.report + "」送达消息为准，本工具不能代替报告。",
     parameters: {
       type: "object",
       properties: {
-        all: { type: "boolean", description: `可选，附带历史记录摘要（最近 ${SUBAGENT_STATUS_HISTORY_MAX} 条已结算/待命记录）；缺省只看当前活动子代理` },
+        all: { type: "boolean", description: `可选，附带历史记录摘要（最近 ${THRESHOLDS.subagentStatusHistoryMax} 条已结算/待命记录）；缺省只看当前活动子代理` },
       },
     },
     async execute(args) {

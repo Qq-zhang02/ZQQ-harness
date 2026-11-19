@@ -9,7 +9,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { McpConnection, McpServerConfig, McpToolInfo } from "../../../core/types.ts";
 // docs/21 §2.2-③：超时常量单一出处 config.ts（mcp-manage 提示词文案同源插值，调参不失真）
-import { MCP_CALL_TIMEOUT_MS, MCP_HANDSHAKE_TIMEOUT_MS } from "../../../config.ts";
+import { THRESHOLDS } from "../../../config.ts";
 
 interface Pending {
   resolve: (v: unknown) => void;
@@ -82,7 +82,7 @@ export class McpClient implements McpConnection {
         capabilities: {},
         clientInfo: { name: "zqq-harness", version: "0.1.0" },
       },
-      MCP_HANDSHAKE_TIMEOUT_MS,
+      THRESHOLDS.mcpHandshakeTimeoutMs,
     )) as { serverInfo?: { name?: string; version?: string }; instructions?: unknown };
     this.serverInfo = initResult?.serverInfo ?? {};
     this.instructions =
@@ -90,7 +90,7 @@ export class McpClient implements McpConnection {
         ? initResult.instructions.trim()
         : null;
     this.notify("notifications/initialized");
-    const list = (await this.request("tools/list", {}, MCP_HANDSHAKE_TIMEOUT_MS)) as {
+    const list = (await this.request("tools/list", {}, THRESHOLDS.mcpHandshakeTimeoutMs)) as {
       tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
     };
     this.tools = (list?.tools ?? []).map((t) => ({
@@ -169,7 +169,7 @@ export class McpClient implements McpConnection {
   }
 
   /** 调用工具：把 text 内容块拼为字符串返回；isError 时抛错（由注册表转为错误字符串回传模型） */
-  async callTool(name: string, args: Record<string, unknown>, timeoutMs = MCP_CALL_TIMEOUT_MS): Promise<string> {
+  async callTool(name: string, args: Record<string, unknown>, timeoutMs = THRESHOLDS.mcpCallTimeoutMs): Promise<string> {
     const result = (await this.request("tools/call", { name, arguments: args }, timeoutMs)) as {
       content?: Array<{ type?: string; text?: string }>;
       isError?: boolean;

@@ -10,7 +10,7 @@ import type { ToolRegistry } from "../tools/registry.ts";
 import type { PromptSection, SectionContext } from "./types.ts";
 // docs/21 §2.2-③：提示词里的阈值一律插值生效常量，不写死缺省数字（harness.json 覆盖后文案不失真）。
 // core → config.ts 是显式接受的例外：config 是全项目运行参数唯一出处（非 modules，不受模块禁令约束）。
-import { SUBAGENT_MAX_CONCURRENT, SUBAGENT_STATUS_HISTORY_MAX, SUBAGENT_TIMEOUT_MIN_MS } from "../config.ts";
+import { THRESHOLDS } from "../config.ts";
 // docs/21 §2.4 协议解耦：送达前缀常量插值（渲染文本不变，golden 零改动）
 import { AUTO_DELIVERY_PREFIXES } from "./events.ts";
 
@@ -65,7 +65,7 @@ const coordinatorBase = (sc: SectionContext): string =>
     "- 派发纪律（docs/16）：agent_task / agent_followup 派发即返回「已派发」回执、不等待完成；每个子代理的结算（完成/失败/打断/归档）" +
       "会以「" + AUTO_DELIVERY_PREFIXES.report + "」开头的消息按完成顺序自动送达你（你忙碌时积压的报告在轮末合并送达）——像用户消息一样随时到达，无需轮询。" +
       "互不依赖、写入范围不重叠的任务在同一轮里发多个 agent_task 即并行派出（各自给 scope 划定写入范围）；有依赖的任务等前置报告送达后再派。" +
-      `超出并发上限（subagentMaxConcurrent，默认 ${SUBAGENT_MAX_CONCURRENT}）的派发被立即拒绝（不排队）——余下的等报告送达、并发腾出后再派。`,
+      `超出并发上限（subagentMaxConcurrent，默认 ${THRESHOLDS.subagentMaxConcurrent}）的派发被立即拒绝（不排队）——余下的等报告送达、并发腾出后再派。`,
     "- 报告处理纪律：收到部分报告时只向用户简报进度或按需干预（追派/打断/归档），不要提前汇总尚未完成的部分；全部报告到齐后再整合交付。" +
       "等待其余报告时直接简短收尾即可（说明在等什么），报告送达会自动开启你的下一轮。" +
       "用户追问进度时，用 subagent_status 查询当前状态表后如实转述（不要凭印象编造各子代理的进展）。",
@@ -83,7 +83,7 @@ const coordinatorBase = (sc: SectionContext): string =>
       "整合交付前可用 list_files 抽查关键产出物是否真实落盘（只看文件名），发现缺失如实说明并让对应子代理补交。",
     "子代理工具参考（语义精确，严格按此使用）：",
     "- agent_task：派出一个子代理，立即返回「已派发」回执（非阻塞，不等待完成）。description（一句话摘要）与 task（自包含任务书）必填；name 可选短名（审批卡/报告/送达消息标注用）；" +
-      `scope 可选写入分区（相对路径前缀数组）；reusable=true 派出可复用形态；timeoutMs 可选超时（≥${SUBAGENT_TIMEOUT_MIN_MS} 毫秒）。同一轮发多个本调用即并行派出（见派发纪律）。`,
+      `scope 可选写入分区（相对路径前缀数组）；reusable=true 派出可复用形态；timeoutMs 可选超时（≥${THRESHOLDS.subagentTimeoutMinMs} 毫秒）。同一轮发多个本调用即并行派出（见派发纪律）。`,
     "- agent_followup：向空闲待命的可复用子代理追加新任务，立即返回「已派发」回执（非阻塞，不等待完成）。按 name 或 subId 寻址（同名的可复用子代理有多个时必须用 subId）；" +
       "它保留之前全部任务的上下文，任务书可引用既有进展，但新目标与期望产出仍要写清。",
     "- stop_subagent：打断一个运行中子代理的当前任务。语义：**立即中止**——进行中的 LLM 请求与工具执行（含 pwsh 进程）当场终止，" +
@@ -92,7 +92,7 @@ const coordinatorBase = (sc: SectionContext): string =>
     "- archive_subagent：归档一个可复用子代理——归档后仅可查看过程存档、不可再派任务。空闲待命时立即归档；" +
       "执行中归档会先中止其当前任务。一次性子代理任务结束即自动归档，无需（也不支持）本工具。",
     "直用工具参考（只读查询与提问，严格按此使用）：",
-    "- subagent_status：查看当前子代理状态表——活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 附最近 " + SUBAGENT_STATUS_HISTORY_MAX + " 条历史记录摘要。" +
+    "- subagent_status：查看当前子代理状态表——活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 附最近 " + THRESHOLDS.subagentStatusHistoryMax + " 条历史记录摘要。" +
       "只读快照、立即返回、不打扰子代理；用户追问进度、控制工具寻址前核对 name/subId 时用。任务的最终结果仍以送达消息为准，本表不能代替报告。",
     "- list_files：列出工作区内某个目录的文件与子目录名（只读，不含内容，不递归）。用于了解工作区/模块结构、验收前核对产出文件是否真实落盘；要看某个子目录就对它再调用一次。",
     "- ask_user：向用户发起选择题询问并阻塞等待回答。仅用于会改变做法的方向性不确定（需求歧义/方案取舍/破坏性操作确认）且无法从上下文合理推断时：" +

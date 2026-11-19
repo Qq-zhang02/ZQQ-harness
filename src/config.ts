@@ -13,17 +13,19 @@ export interface AppConfig {
 }
 
 // ---- harness.json（P8）：~/.ZQQ-harness/harness.json 用户级覆盖（模块启停 + 运行阈值）----
-// docs/21 §3.3 / docs/23 D2 起**导入期不读该文件**：下方全部生效常量以纯缺省初始化（export let），
-// 由 initConfig() 显式装载并重绑——server.ts bootstrap 调用一次；测试与直调入口因此不受
-// 真机 harness.json 感染（npm test 确定性；要测覆盖行为就显式 initConfig({...})）。
-// 消费方仍按常量名直接引用（live binding，initConfig 后自动见到新值）；唯一纪律：
-// **不得在模块顶层（导入期）消费这些常量**——那会在 initConfig 前冻结缺省值
-// （mcp-manage 的排错清单是先例，已改惰性构造；contract.test.ts 哨兵锁定本机制）。
+// docs/21 §3.3 / docs/23 D2 起**导入期不读该文件**：生效阈值收敛在单一 const 对象
+// THRESHOLDS（docs/40 阶段三——纯缺省初始化），由 initConfig() 以 Object.assign 原地重绑
+// ——server.ts bootstrap 调用一次；测试与直调入口因此不受真机 harness.json 感染
+// （npm test 确定性；要测覆盖行为就显式 initConfig({...})）。
+// 消费方一律 THRESHOLDS.xxx 调用期访问（对象身份恒定，initConfig 后自动见到新值）；
+// 唯一纪律：**不得在模块顶层（导入期）解构 THRESHOLDS 字段**——那会在 initConfig 前
+// 冻结缺省值（agent-task schema minimum 冻结是历史实例；mcp-manage 惰性构造是正确先例；
+// contract.test.ts 哨兵锁定本机制）。
 // 解析仍是 lenient：文件缺失/JSON 损坏 → 全缺省，字段非法 → 逐项忽略，均告警不阻止启动。
 // 模块启停在 server.ts bootstrap 消费 HARNESS_CONFIG.disabledModules 过滤组合清单
 // （依赖校验仍由 loadModules 承担：被保留模块依赖被禁模块 → 启动失败并指名）。
 
-/** 阈值生效值：key 与本文件导出的常量一一对应（camelCase）。 */
+/** 阈值生效值（THRESHOLDS 单对象的形状；docs/40 阶段三起 key 即消费面字段名）。 */
 export interface EffectiveThresholds {
   /** 上下文压缩触发阈值（(0,1]）。docs/21 §2.2-④：键名由 compectionPressure（拼写错误）
    *  更名为 compactionPressure，解析层双读兼容旧键（旧键告警更名提示）。 */
@@ -97,9 +99,13 @@ export interface EffectiveThresholds {
   readFileDefaultLines: number;
   /** read_file 单次返回字符上限（>0 整数；注册表修剪前先自行收口） */
   readFileMaxChars: number;
+  /** 阅读类工具（read_file/read_archive/load_skill）的注册表修剪预算（>0 整数字符）。
+   *  docs/40 阶段二：与 run_pwsh/MCP 的 toolResultMaxChars 分离——大文档单次可读量不再被
+   *  通用预算锁死（Tool.resultBudget 挂钩按工具取预算，注册表兜底口径同步）。 */
+  readToolResultMaxChars: number;
   /** agent_task/followup 可申请超时的最小值（≥1000ms；schema/校验/提示词三处共用） */
   subagentTimeoutMinMs: number;
-  /** 压缩摘要输入预算（>0 整数字符；超长会话的摘要质量上限，超出截头部） */
+  /** 压缩摘要输入预算（>0 整数字符；超长会话的摘要质量上限，超出头+尾保留——尾部 10% 是最近上下文，docs/40） */
   compactionSummaryMaxChars: number;
   /** HTTP 请求体上限（整数字节；**不得低于图片消息 base64 地板值**——规则校验强制，
    *  历史 bug：1MB 上限曾先于图片校验拦截全部图片上传） */
@@ -230,6 +236,10 @@ export const THRESHOLD_RULES: Readonly<Record<keyof EffectiveThresholds, Thresho
     hint: ">0 的整数字符数", desc: "read_file 单次返回字符上限——进注册表修剪前先自行收口", group: "general",
     range: { integer: true, exclusiveMin: 0 },
   },
+  readToolResultMaxChars: {
+    hint: ">0 的整数字符数", desc: "阅读类工具（read_file/read_archive/load_skill）的修剪预算——大文档单次可读量，独立于 run_pwsh/MCP 的通用预算", group: "general",
+    range: { integer: true, exclusiveMin: 0 },
+  },
   httpBodyMaxBytes: {
     hint: `≥${Math.round(HTTP_BODY_FLOOR_BYTES / 1024 / 1024)}MB 的整数字节数`, desc: "HTTP 请求体上限——不得低于图片消息 base64 地板值（防图片上传被提前拦截）", group: "general",
     range: { integer: true, min: HTTP_BODY_FLOOR_BYTES },
@@ -255,7 +265,7 @@ export const THRESHOLD_RULES: Readonly<Record<keyof EffectiveThresholds, Thresho
     range: { integer: true, min: 1 },
   },
   compactionSummaryMaxChars: {
-    hint: ">0 的整数字符数", desc: "压缩摘要输入预算——超长会话的摘要质量上限（超出截头部，备份里仍有全文）", group: "compaction",
+    hint: ">0 的整数字符数", desc: "压缩摘要输入预算——超长会话的摘要质量上限（超出头+尾保留：尾部 10% 预算是最近上下文不能丢，docs/40；备份里仍有全文）", group: "compaction",
     range: { integer: true, exclusiveMin: 0 },
   },
   pwshTimeoutMs: {
@@ -499,7 +509,8 @@ export function resolveThresholds(t: ThresholdOverrides): EffectiveThresholds {
     subagentMaxConcurrent: t.subagentMaxConcurrent ?? 3,
     subagentMaxTotal: t.subagentMaxTotal ?? 24,
     subagentMaxToolRounds: t.subagentMaxToolRounds ?? 40,
-    subagentResultMaxChars: t.subagentResultMaxChars ?? 16_000,
+    // docs/40 阶段二：16k→32k——委托阅读的主要瓶颈是报告预算；不在提示词插值，golden 不受影响
+    subagentResultMaxChars: t.subagentResultMaxChars ?? 32_000,
     subagentMaxTasks: t.subagentMaxTasks ?? 12,
     subagentFollowupContextPct: t.subagentFollowupContextPct ?? 35,
     subagentWarnContextPct: t.subagentWarnContextPct ?? 25,
@@ -518,6 +529,7 @@ export function resolveThresholds(t: ThresholdOverrides): EffectiveThresholds {
     textFileMaxBytes: t.textFileMaxBytes ?? 5 * 1024 * 1024,
     readFileDefaultLines: t.readFileDefaultLines ?? 4_000,
     readFileMaxChars: t.readFileMaxChars ?? 200_000,
+    readToolResultMaxChars: t.readToolResultMaxChars ?? 120_000,
     subagentTimeoutMinMs: t.subagentTimeoutMinMs ?? 60_000,
     subagentStatusHistoryMax: t.subagentStatusHistoryMax ?? 20,
     compactionSummaryMaxChars: t.compactionSummaryMaxChars ?? 300_000,
@@ -598,184 +610,41 @@ export function loadHarnessConfig(path = harnessFilePath()): HarnessConfig {
   return config;
 }
 
-/** 生效常量的纯缺省初值（导入期不读任何环境文件——initConfig 前的确定状态）。 */
+/** 生效阈值的纯缺省初值（导入期不读任何环境文件——initConfig 前的确定状态）。 */
 const DEFAULT_EFFECTIVE = resolveThresholds({});
+
+// ---- 生效阈值单一对象（docs/40 阶段三：30+ 个 export let 常量收敛于此） ----
+
+/**
+ * 全部生效阈值的唯一消费面。initConfig 以 **Object.assign 原地重绑字段**——对象身份恒定，
+ * 即使模块顶层捕获了对象引用，字段更新依旧可见（旧「export let live binding」模式下
+ * 导入期捕获数值即冻结的整类 bug 从根上消除；agent-task schema minimum 冻结是实例）。
+ * 唯一残余纪律：**不得在模块顶层解构原始值字段**（解构出的原始值会在 initConfig 前冻结）——
+ * contract.test.ts 哨兵锁定；字段级用途文档见 EffectiveThresholds 接口。
+ */
+export const THRESHOLDS: EffectiveThresholds = resolveThresholds({});
 
 /** harness.json 装载结果（initConfig 重绑；导入期 = 空配置）：server.ts bootstrap 用
  *  disabledModules 过滤组合清单（P8）。 */
 export let HARNESS_CONFIG: HarnessConfig = { disabledModules: [], thresholds: {} };
 
-export let DEFAULTS = {
-  maxToolRounds: DEFAULT_EFFECTIVE.maxToolRounds,
-  pwshTimeoutMs: DEFAULT_EFFECTIVE.pwshTimeoutMs,
-  pwshMaxTimeoutMs: DEFAULT_EFFECTIVE.pwshMaxTimeoutMs,
-  /** 注册表级工具结果修剪预算（字符）：对 run_pwsh 与所有 mcp__ 工具统一生效 */
-  toolResultMaxChars: DEFAULT_EFFECTIVE.toolResultMaxChars,
-};
-
-/** 上下文压缩触发阈值：contextPressure >= 该值时先压缩再跑轮（UI 同步预警高亮，阈值随 meta 下发）。 */
-export let COMPACTION_PRESSURE = DEFAULT_EFFECTIVE.compactionPressure;
-// spillThreshold 已废弃（docs/10 R2）：修剪改为「只保留头部 + 触发即全文落盘」，无门槛；
-// 键仅为兼容旧 harness.json 保留解析（见 EffectiveThresholds 注释），不再导出常量。
-
-/** 压缩保留预算：尾部完整轮次保留约 30% 上下文窗口的 token（自动触发/溢出兜底用）。 */
-export let COMPACTION_KEEP_RATIO = DEFAULT_EFFECTIVE.compactionKeepRatio;
-
 /**
- * 手动压缩（/api/compact）的保留预算（token）：用户主动 /compact 的预期是"立即显著变小"。
- * 取 0 = 不保留尾部轮次，全部历史进摘要（知识由摘要承载，压缩前有 precompact 备份兜底）。
- * 若沿用 KEEP_RATIO × 上下文长度（1M 提供方=30 万 token），切点算法"保留最多"会几乎切不动
- * （实测表现即"压缩后上下文没变"）；即便设 4k，短对话仍会只摘要一条消息、上下文不降反升。
- * 自动触发/溢出兜底仍走 KEEP_RATIO（保留工作集），语义分开。
- */
-export let COMPACTION_MANUAL_KEEP_TOKENS = DEFAULT_EFFECTIVE.compactionManualKeepTokens;
-
-/** 上下文长度的缺省值（提供方表单缺省、前端占比显示兜底）：随 /api/meta 下发，前端不再硬编码。 */
-export let DEFAULT_CONTEXT_LENGTH = DEFAULT_EFFECTIVE.defaultContextLength;
-
-/** 子代理（worker）并发上限：并行派发（docs/15：同轮多个 agent_task 调用）超出部分立即报错回传（不排队）。 */
-export let SUBAGENT_MAX_CONCURRENT = DEFAULT_EFFECTIVE.subagentMaxConcurrent;
-
-/** 每会话子代理累计上限：超出立即报错回传（防大型任务成本失控）。 */
-export let SUBAGENT_MAX_TOTAL = DEFAULT_EFFECTIVE.subagentMaxTotal;
-
-/** 子代理（worker）工具调用轮次上限：沿用 Agent 的"达上限收尾总结"机制。 */
-export let SUBAGENT_MAX_TOOL_ROUNDS = DEFAULT_EFFECTIVE.subagentMaxToolRounds;
-
-/** 子代理最终报告字符预算：超出修剪为预算内文本 + spill 全文引用。 */
-export let SUBAGENT_RESULT_MAX_CHARS = DEFAULT_EFFECTIVE.subagentResultMaxChars;
-
-/** 可复用子代理每实例任务数上限（docs/9）：超出 agent_followup 立即报错回传（防无限追加成本失控）。 */
-export let SUBAGENT_MAX_TASKS = DEFAULT_EFFECTIVE.subagentMaxTasks;
-
-/** 可复用子代理的 followup 上下文门槛（docs/10 R1，默认 35%）：上次任务收尾时上下文占用
- *  ≥ 该值则 agent_followup 直接拒绝（上下文过长易幻觉；服务端硬闸，不依赖模型自觉）。 */
-export let SUBAGENT_FOLLOWUP_CONTEXT_PCT = DEFAULT_EFFECTIVE.subagentFollowupContextPct;
-
-/** 子代理上下文过长预警线（docs/10 R1 修订，默认 25%）：任务收尾占用 > 该值时结果文本/
- *  待命提示附「上下文过长」预警（>30 预警、≥35 拒收、>50 强制归档三档的前档）。 */
-export let SUBAGENT_WARN_CONTEXT_PCT = DEFAULT_EFFECTIVE.subagentWarnContextPct;
-
-/** 可复用子代理的强制归档线（docs/10 R1，默认 50%）：任务完成时上下文占用 > 该值则不转
- *  待命、直接归档（继续驻留只会诱导协调者向高幻觉风险实例追加任务）。 */
-export let SUBAGENT_ARCHIVE_CONTEXT_PCT = DEFAULT_EFFECTIVE.subagentArchiveContextPct;
-
-/** read_archive 存档渲染字符预算（docs/17，默认 160k）：JSON→可读文本超出截为头部 + 省略标记
- *  （pruneToolResult 同款），防整份多任务存档一次性灌满接收方上下文。 */
-export let ARCHIVE_RENDER_MAX_CHARS = DEFAULT_EFFECTIVE.archiveRenderMaxChars;
-
-// ---- 阶段 B 第一批（docs/21 §2.3 前 8 键，docs/22 §4.2）：全部经 harness.json thresholds 可覆盖 ----
-
-/** 会话级审批升级额度（默认 8）：沙箱拒绝后带 justification 转人工的累计上限（pwsh.ts 消费）。 */
-export let ESCALATION_MAX = DEFAULT_EFFECTIVE.escalationMax;
-
-/** 两级 AGENTS.md 注入截断预算（默认 16000 字符；workspace.ts 消费）。 */
-export let AGENTS_MD_MAX_CHARS = DEFAULT_EFFECTIVE.agentsMdMaxChars;
-
-/** run_pwsh 输出采集软上限（默认 1MB）：超过停止采集防撑爆内存，输出修剪由注册表层统一负责。 */
-export let PWSH_CAPTURE_MAX_BYTES = DEFAULT_EFFECTIVE.pwshCaptureMaxBytes;
-
-/** precompact 压缩备份保留份数（默认 3）：backupBeforeCompact 环形覆写——写第 n+1 份前删最老。 */
-export let PRECOMPACT_KEEP = DEFAULT_EFFECTIVE.precompactKeep;
-
-/** spill 目录年龄清扫阈值（默认 168h=7 天）：启动时 sweepStaleSpill 清理超龄会话 spill 目录。 */
-export let SPILL_MAX_AGE_HOURS = DEFAULT_EFFECTIVE.spillMaxAgeHours;
-
-/** 沙箱 tmp 目录年龄清扫阈值（默认 24h）：启动时 sweepStaleSandboxTmp 传参生效值。 */
-export let SANDBOX_TMP_MAX_AGE_HOURS = DEFAULT_EFFECTIVE.sandboxTmpMaxAgeHours;
-
-/** MCP stdio 握手超时（默认 20s；transport 与 mcp-manage 提示词共用——文案插值自动跟随覆盖值）。 */
-export let MCP_HANDSHAKE_TIMEOUT_MS = DEFAULT_EFFECTIVE.mcpHandshakeTimeoutMs;
-
-/** MCP 工具调用缺省超时（默认 60s；manager 不传参时全部 mcp__ 工具生效此值）。 */
-export let MCP_CALL_TIMEOUT_MS = DEFAULT_EFFECTIVE.mcpCallTimeoutMs;
-
-// ---- 阶段 B 第二批（docs/21 §2.3 后 9 键；文件大小/读取行数/超时/估算口径的边界类） ----
-
-/** view_image 视觉分析超时（默认 120s——图片理解普遍慢于纯文本）。 */
-export let VISION_TIMEOUT_MS = DEFAULT_EFFECTIVE.visionTimeoutMs;
-
-/** 提供方「测试连接」超时（默认 20s）。 */
-export let PROVIDER_TEST_TIMEOUT_MS = DEFAULT_EFFECTIVE.providerTestTimeoutMs;
-
-/** 文件三工具（read/write/edit）的适用文件大小边界（默认 5MB；file-tools 消费并 re-export）。 */
-export let TEXT_FILE_MAX_BYTES = DEFAULT_EFFECTIVE.textFileMaxBytes;
-
-/** read_file 缺省读取行数（默认 4000）。 */
-export let READ_FILE_DEFAULT_LINES = DEFAULT_EFFECTIVE.readFileDefaultLines;
-
-/** read_file 单次返回字符上限（默认 200k——注册表修剪前先自行收口）。 */
-export let READ_FILE_MAX_CHARS = DEFAULT_EFFECTIVE.readFileMaxChars;
-
-/** 压缩摘要输入预算（默认 300k 字符；超出截头部，备份里仍有全文）。 */
-export let COMPACTION_SUMMARY_MAX_CHARS = DEFAULT_EFFECTIVE.compactionSummaryMaxChars;
-
-/** HTTP 请求体上限（默认 32MB；校验强制 ≥ HTTP_BODY_FLOOR_BYTES——core/http 消费并 re-export）。 */
-export let HTTP_BODY_MAX_BYTES = DEFAULT_EFFECTIVE.httpBodyMaxBytes;
-
-/** 每张图片的 token 固定估算（默认 800；tokens.ts 消费并 re-export）。 */
-export let IMAGE_TOKEN_EST = DEFAULT_EFFECTIVE.imageTokenEst;
-
-/**
- * 显式装载 harness.json 并重绑全部生效常量（docs/21 §3.3 / docs/23 D2）：
+ * 显式装载 harness.json 并重绑生效阈值（docs/21 §3.3 / docs/23 D2 / docs/40 阶段三）：
  * - server.ts bootstrap 调用一次（缺省参读规范位置文件，lenient）；
  * - 测试/直调入口**不调用**即保持纯缺省（导入态不受真机 ~/.ZQQ-harness/harness.json 感染）；
  *   要验证覆盖行为就显式传 cfg（如 initConfig({ disabledModules: [], thresholds: {...}) }），
  *   重置回缺省传空配置即可——可重复调用，最后一次生效。
- * 前置纪律：调用前不得有模块在导入期消费过生效常量（那会冻结初值，见文件头注释）。
+ * - 原地 Object.assign（对象身份恒定）：全部消费点（THRESHOLDS.xxx 调用期读取）下一次
+ *   访问即见新值，/api/meta 随之反映——包括运行中会话的工具轮次上限（live getter 直读）。
+ * 前置纪律：调用前不得有模块在导入期解构 THRESHOLDS 字段（冻结原始值，见 THRESHOLDS 注释）。
  */
 export function initConfig(cfg: HarnessConfig = loadHarnessConfig()): HarnessConfig {
   HARNESS_CONFIG = cfg;
-  const eff = resolveThresholds(cfg.thresholds);
-  DEFAULTS = {
-    maxToolRounds: eff.maxToolRounds,
-    pwshTimeoutMs: eff.pwshTimeoutMs,
-    pwshMaxTimeoutMs: eff.pwshMaxTimeoutMs,
-    toolResultMaxChars: eff.toolResultMaxChars,
-  };
-  COMPACTION_PRESSURE = eff.compactionPressure;
-  COMPACTION_KEEP_RATIO = eff.compactionKeepRatio;
-  COMPACTION_MANUAL_KEEP_TOKENS = eff.compactionManualKeepTokens;
-  DEFAULT_CONTEXT_LENGTH = eff.defaultContextLength;
-  SUBAGENT_MAX_CONCURRENT = eff.subagentMaxConcurrent;
-  SUBAGENT_MAX_TOTAL = eff.subagentMaxTotal;
-  SUBAGENT_MAX_TOOL_ROUNDS = eff.subagentMaxToolRounds;
-  SUBAGENT_RESULT_MAX_CHARS = eff.subagentResultMaxChars;
-  SUBAGENT_MAX_TASKS = eff.subagentMaxTasks;
-  SUBAGENT_FOLLOWUP_CONTEXT_PCT = eff.subagentFollowupContextPct;
-  SUBAGENT_WARN_CONTEXT_PCT = eff.subagentWarnContextPct;
-  SUBAGENT_ARCHIVE_CONTEXT_PCT = eff.subagentArchiveContextPct;
-  ARCHIVE_RENDER_MAX_CHARS = eff.archiveRenderMaxChars;
-  ESCALATION_MAX = eff.escalationMax;
-  AGENTS_MD_MAX_CHARS = eff.agentsMdMaxChars;
-  PWSH_CAPTURE_MAX_BYTES = eff.pwshCaptureMaxBytes;
-  PRECOMPACT_KEEP = eff.precompactKeep;
-  SPILL_MAX_AGE_HOURS = eff.spillMaxAgeHours;
-  SANDBOX_TMP_MAX_AGE_HOURS = eff.sandboxTmpMaxAgeHours;
-  MCP_HANDSHAKE_TIMEOUT_MS = eff.mcpHandshakeTimeoutMs;
-  MCP_CALL_TIMEOUT_MS = eff.mcpCallTimeoutMs;
-  VISION_TIMEOUT_MS = eff.visionTimeoutMs;
-  PROVIDER_TEST_TIMEOUT_MS = eff.providerTestTimeoutMs;
-  TEXT_FILE_MAX_BYTES = eff.textFileMaxBytes;
-  READ_FILE_DEFAULT_LINES = eff.readFileDefaultLines;
-  READ_FILE_MAX_CHARS = eff.readFileMaxChars;
-  SUBAGENT_TIMEOUT_MIN_MS = eff.subagentTimeoutMinMs;
-  SUBAGENT_STATUS_HISTORY_MAX = eff.subagentStatusHistoryMax;
-  COMPACTION_SUMMARY_MAX_CHARS = eff.compactionSummaryMaxChars;
-  HTTP_BODY_MAX_BYTES = eff.httpBodyMaxBytes;
-  IMAGE_TOKEN_EST = eff.imageTokenEst;
+  Object.assign(THRESHOLDS, resolveThresholds(cfg.thresholds));
   return cfg;
 }
 
 // ---- 跨文件共享的运行常量（docs/21 §2.2/§2.4：单一出处，消重复定义） ----
-
-/** 子代理任务 timeoutMs 的最小值（agent-task schema/校验/提示词三处共用同一出处；
- *  阶段 B 第二批已配置化——阈值键 subagentTimeoutMinMs，initConfig 重绑） */
-export let SUBAGENT_TIMEOUT_MIN_MS = DEFAULT_EFFECTIVE.subagentTimeoutMinMs;
-
-/** subagent_status 状态表 all=true 附带的历史记录条数上限（最近 N 条；docs/32，
- *  阈值键 subagentStatusHistoryMax——工具描述/提示词文案同源插值，initConfig 重绑热生效） */
-export let SUBAGENT_STATUS_HISTORY_MAX = DEFAULT_EFFECTIVE.subagentStatusHistoryMax;
 
 /**
  * 前端设置项唯一出处（模块化架构重构 §4.11/§5）：随 /api/meta 下发，
@@ -859,8 +728,8 @@ export function loadApiKey(credentialFilePaths: string[]): string {
 /** 运行参数（pwsh 超时、工具轮次上限）。提供方连接信息在 providers.json 管理。 */
 export function loadConfig(_cwd?: string): AppConfig {
   return {
-    maxToolRounds: DEFAULTS.maxToolRounds,
-    pwshTimeoutMs: DEFAULTS.pwshTimeoutMs,
-    pwshMaxTimeoutMs: DEFAULTS.pwshMaxTimeoutMs,
+    maxToolRounds: THRESHOLDS.maxToolRounds,
+    pwshTimeoutMs: THRESHOLDS.pwshTimeoutMs,
+    pwshMaxTimeoutMs: THRESHOLDS.pwshMaxTimeoutMs,
   };
 }

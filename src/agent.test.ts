@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Agent, runSubagent, type AgentSettings, type AgentUi } from "./agent.ts";
 import type { ChatMessage, ChatParams, ChatResult, EffortSetting, LLMProvider } from "./llm/provider.ts";
 import { estTokens, messageTokens } from "./tokens.ts";
-import { initConfig, isThinkingEffort, reasoningPassbackEnabled } from "./config.ts";
+import { THRESHOLDS, initConfig, isThinkingEffort, reasoningPassbackEnabled } from "./config.ts";
 import { ToolRegistry, type Tool } from "./tools/registry.ts";
 import { createWorkspace } from "./workspace.ts";
 
@@ -92,7 +92,7 @@ function makeAgent(
     ui: stubUi(sink),
     requestApproval: async () => "allowed-once",
     settings: { alwaysConfirm: false, effort: "high", ...settingsOver },
-    // "live" = 不传该字段：Agent 每轮 live 读 DEFAULTS.maxToolRounds（主会话真实形态，docs/24）
+    // "live" = 不传该字段：Agent 每轮 live 读 THRESHOLDS.maxToolRounds（主会话真实形态，docs/24）
     ...(maxToolRounds === "live" ? {} : { maxToolRounds }),
   });
   return { agent, provider, sink };

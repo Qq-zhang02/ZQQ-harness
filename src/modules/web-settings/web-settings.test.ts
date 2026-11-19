@@ -10,14 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildContext } from "../../core/context.ts";
-import {
-  COMPACTION_PRESSURE,
-  HARNESS_CONFIG,
-  initConfig,
-  loadConfig,
-  resolveThresholds,
-  stripJsonComments,
-} from "../../config.ts";
+import { THRESHOLDS, HARNESS_CONFIG, initConfig, loadConfig, resolveThresholds, stripJsonComments } from "../../config.ts";
 import { webSettings } from "./index.ts";
 import type { ServerRequest } from "../../core/http.ts";
 
@@ -55,7 +48,7 @@ test("GET：schema 35 键七组、effective=缺省（导入态）、fileExists=f
     const g = await s.call("/api/settings/harness", {});
     assert.equal(g.status, 200);
     const d = g.data as { config: unknown; effective: Record<string, number>; schema: { entries: unknown[]; groups: unknown[] }; fileExists: boolean };
-    assert.equal(d.schema.entries.length, 35);
+    assert.equal(d.schema.entries.length, 36);
     assert.equal(d.schema.groups.length, 7);
     assert.equal(d.effective.compactionPressure, resolveThresholds({}).compactionPressure);
     assert.equal(d.fileExists, false, "临时目录无 harness.json");
@@ -83,7 +76,7 @@ test("POST：合法保存 → 纯 JSON 落盘 + initConfig 热应用 + disabledM
     assert.deepEqual(d.config.disabledModules, ["demo.x"], "disabledModules 原样透传");
     assert.equal(d.effective.subagentMaxConcurrent, 5);
     // 热应用：live binding 立即见新值（initConfig 是唯一出口，POST 内部调用）
-    assert.equal(COMPACTION_PRESSURE, 0.5);
+    assert.equal(THRESHOLDS.compactionPressure, 0.5);
     assert.deepEqual(HARNESS_CONFIG, d.config);
     // 落盘：纯 JSON（无需剥注释即可解析）且内容一致
     const text = readFileSync(s.harnessFile, "utf8");
@@ -110,7 +103,7 @@ test("POST：越界/未知键 → 400 指名该键、文件与内存配置均未
     assert.ok(d.error.includes("subagentMaxConcurrent"), "顶层 error 指名非法键");
     // 整体拒绝：合法键 0.5 未被部分采纳，文件未创建，内存仍为 0.9
     assert.equal(existsSync(s.harnessFile), false, "校验失败不落盘");
-    assert.equal(COMPACTION_PRESSURE, 0.9);
+    assert.equal(THRESHOLDS.compactionPressure, 0.9);
     const unk = await s.call("/api/settings/harness/save", { thresholds: { nope: 1 } });
     assert.equal(unk.status, 400);
     assert.ok(((unk.data as { errors: Array<{ key: string }> }).errors[0]!.key) === "nope");

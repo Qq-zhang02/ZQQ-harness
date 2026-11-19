@@ -122,3 +122,61 @@ test("注册表层修剪：spillDir 透传（executeWithMeta 触发落盘）", a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- docs/40 阶段二：头+尾保留模式（opts.tailChars）——压缩摘要输入专用 ----
+
+test("pruneToolResult：头+尾保留——中段省略、头尾完整、长度≈预算", () => {
+  // 中段里埋哨兵串（位置在会被剪掉的区间内）：头/尾各含合法的长 M 串，断言只看哨兵
+  const s = "H".repeat(20_000) + "M".repeat(252_000) + "SENTINEL_中段" + "M".repeat(12_989) + "T".repeat(20_000);
+  const r = pruneToolResult(s, 300_000, undefined, { tailChars: 30_000 });
+  assert.ok(r.text.startsWith("H"), "头部保留");
+  assert.ok(r.text.endsWith("T"), "尾部保留（压缩摘要输入的尾部=最近上下文）");
+  assert.ok(r.text.includes("中段已省略"), "中段省略标记");
+  assert.ok(!r.text.includes("SENTINEL_中段"), "中段哨兵被剪");
+  assert.ok(r.prunedChars > 0);
+  assert.ok(r.text.length <= 300_000 + 8, `输出 ${r.text.length} 应≈预算 300000`);
+  assert.ok(!r.text.includes("后文已省略"), "头+尾模式不出现纯头部标记");
+});
+
+test("pruneToolResult：头+尾模式尾部 capped 预算 1/4（防尾部挤占头部）", () => {
+  const s = "A".repeat(10_000) + "B".repeat(10_000);
+  // 请求尾留 10 万字符 > 预算 4000 的 1/4 → 实际尾留 1000
+  const r = pruneToolResult(s, 4_000, undefined, { tailChars: 100_000 });
+  assert.ok(r.text.startsWith("A"));
+  assert.ok(r.text.endsWith("B"));
+  assert.ok(r.text.length <= 4_000 + 8);
+});
+
+test("pruneToolResult：头+尾模式切点不劈代理对（头尾两端独立回退）", () => {
+  // emoji 块故意横跨理论头切点（74_972 附近落在 😀 块内）与尾切点（124_975 落在尾部 😀 块内）
+  const s = "x".repeat(74_970) + "😀".repeat(10) + "m".repeat(49_970) + "😀".repeat(10) + "z".repeat(24_995);
+  const r = pruneToolResult(s, 100_000, undefined, { tailChars: 25_000 });
+  for (let i = 0; i < r.text.length; i++) {
+    const c = r.text.charCodeAt(i);
+    const isLow = c >= 0xdc00 && c <= 0xdfff;
+    const prevHigh = i > 0 && r.text.charCodeAt(i - 1) >= 0xd800 && r.text.charCodeAt(i - 1) <= 0xdbff;
+    assert.ok(!isLow || prevHigh, `位置 ${i} 出现孤立低代理项`);
+  }
+  assert.ok(r.text.includes("中段已省略"));
+});
+
+test("pruneToolResult：头+尾模式 spill 同样全文落盘、标记附检索提示", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-spill-tail-"));
+  try {
+    const s = "常量正文行\n".repeat(2_000);
+    const r = pruneToolResult(s, 4_000, { dir }, { tailChars: 500 });
+    assert.ok(r.spilled, "头+尾模式触发修剪同样落盘");
+    assert.equal(readFileSync(r.spilled!, "utf8"), s, "全文保底");
+    assert.ok(r.text.includes("完整输出已存盘"));
+    assert.ok(r.text.endsWith("常量正文行\n"), "尾部保留");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("pruneToolResult：不超预算时 tailChars 无副作用", () => {
+  const s = "短文本";
+  const r = pruneToolResult(s, 100, undefined, { tailChars: 50 });
+  assert.equal(r.text, s);
+  assert.equal(r.prunedChars, 0);
+});

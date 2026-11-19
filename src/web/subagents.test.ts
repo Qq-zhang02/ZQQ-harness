@@ -16,9 +16,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildContext } from "../core/context.ts";
-import { loadConfig } from "../config.ts";
+import { THRESHOLDS, TOOL_EVENT_ARGS_MAX_CHARS, loadConfig } from "../config.ts";
 import { createFileLedger } from "../core/file-tools.ts";
-import { SUBAGENT_MAX_CONCURRENT, SUBAGENT_MAX_TASKS, SUBAGENT_MAX_TOTAL } from "../config.ts";
 import { toolAgentTask } from "../modules/tools/agent-task/index.ts";
 import { McpManager } from "../mcp/manager.ts";
 import type { McpTransportDef, SystemToolDef } from "../core/types.ts";
@@ -28,7 +27,6 @@ import { SessionStore } from "./sessions.ts";
 import { AttachmentStore } from "./attachments.ts";
 import { runWorker, subagentServiceFor, applySubagentControl, archiveSourceOf, subagentStatusText, WORKER_ROLE_SECTION } from "./subagents.ts";
 import { makeWorkerUi } from "./subagent-worker.ts";
-import { TOOL_EVENT_ARGS_MAX_CHARS } from "../config.ts";
 import type { WorkerSession } from "./subagent-records.ts";
 import { isAutoReport, takeCoordinatorTurnText } from "./session-lifecycle.ts";
 import type { SessionShell } from "./session-runtime.ts";
@@ -329,11 +327,11 @@ test("runWorker：effort 缺省继承父会话当前档位；req.effort 覆盖",
 });
 
 test("runWorker：报告超 subagentResultMaxChars 预算被修剪（含省略标记）", async () => {
-  const long = "报告头。\n" + "x".repeat(20_000) + "\n报告尾。";
+  const long = "报告头。\n" + "x".repeat(40_000) + "\n报告尾。"; // docs/40：缺省 16k→32k，夹具同步加大到 40k
   const h = makeHarness([{ content: long, toolCalls: [], usage: null }]);
   const r = await runWorker(h.sh, h.rt, { task: "t" }, { seq: 1 });
   assert.ok(r.ok);
-  assert.ok(r.text.length < 17_000, `修剪后应 ≤ 预算量级（缺省 16k，真机待办上调），实际 ${r.text.length}`);
+  assert.ok(r.text.length < 33_000, `修剪后应 ≤ 预算量级（缺省 32k，docs/40 上调），实际 ${r.text.length}`);
   assert.ok(r.text.includes("省略"), "应带省略标记");
 });
 
@@ -396,7 +394,7 @@ test("并发上限：同时运行第 4 个任务（上限 3）立即拒绝回执
 
 test("累计上限：subagentTotal 达 subagentMaxTotal 后新任务立即报错（C7 累计闸）", async () => {
   const h = makeHarness([{ content: "ok", toolCalls: [], usage: null }]);
-  h.rt.subagentTotal = SUBAGENT_MAX_TOTAL;
+  h.rt.subagentTotal = THRESHOLDS.subagentMaxTotal;
   const r = await runWorker(h.sh, h.rt, { task: "t" }, { seq: 1 });
   assert.equal(r.ok, false);
   assert.ok(r.error?.includes("累计上限"), r.error);
@@ -580,7 +578,7 @@ test("SA4 审计记录：成功/失败都写 rt.subagents（name/ok/rounds/usage
   assert.ok(rec2!.error?.includes("空回复"));
   assert.ok(!("description" in rec2!), "无 description 不写字段");
 
-  h.rt.subagentTotal = SUBAGENT_MAX_TOTAL; // 顶到累计上限 → 下一个被拒
+  h.rt.subagentTotal = THRESHOLDS.subagentMaxTotal; // 顶到累计上限 → 下一个被拒
   const rejected = await runWorker(h.sh, h.rt, { task: "t3" }, { seq: 3 });
   assert.equal(rejected.ok, false);
   assert.equal(h.rt.subagents.length, 2, "被拒任务未启动，不产生审计记录");
@@ -1217,17 +1215,17 @@ test("docs/17 archiveSourceOf：subId→子代理存档 / sessionId→主对话�
 });
 
 test("docs/9 maxTasks：追加任务达上限（subagentMaxTasks）后 followup 立即拒绝（不排队；docs/16 同步回执）", async () => {
-  const llm = new ScriptProvider(Array.from({ length: SUBAGENT_MAX_TASKS + 2 }, () => ({ content: "ok 报告", toolCalls: [], usage: null })));
+  const llm = new ScriptProvider(Array.from({ length: THRESHOLDS.subagentMaxTasks + 2 }, () => ({ content: "ok 报告", toolCalls: [], usage: null })));
   const h = makeHarness([], { llm });
   const svc = subagentServiceFor(h.sh, h.rt);
   assert.ok(svc.dispatch({ task: "首任务", description: "d", reusable: true }).ok);
   await waitForInbox(h.rt);
-  for (let i = 0; i < SUBAGENT_MAX_TASKS - 1; i++) {
+  for (let i = 0; i < THRESHOLDS.subagentMaxTasks - 1; i++) {
     const r = svc.followup({ subId: 1 }, { task: `追加${i}` });
     if (!r.ok) assert.fail(`第 ${i + 2} 次派发应受理：${r.error}`);
     await waitForInbox(h.rt, i + 2); // 等上一次任务结算（idle 后才能再追加）
   }
-  assert.equal(h.rt.subagents[0]!.tasks, SUBAGENT_MAX_TASKS);
+  assert.equal(h.rt.subagents[0]!.tasks, THRESHOLDS.subagentMaxTasks);
   const capped = svc.followup({ subId: 1 }, { task: "超限" });
   assert.ok(!capped.ok && capped.error.includes("任务次数上限"), "超限派发立即拒绝");
 });
@@ -1749,7 +1747,7 @@ test("makeWorkerUi（docs/28 P2-1/P2-2）：delta 节流批 + ml 锚点 + 工具
 
 // ---------- docs/32：subagent_status 历史记录条数上限（阈值键 subagentStatusHistoryMax，默认 20） ----------
 
-test("subagentStatusText：all=true 只附最近 SUBAGENT_STATUS_HISTORY_MAX 条（默认 20），表头带总数、all=false 提示可传", () => {
+test("subagentStatusText：all=true 只附最近 THRESHOLDS.subagentStatusHistoryMax 条（默认 20），表头带总数、all=false 提示可传", () => {
   const h = makeHarness([], {});
   for (let i = 1; i <= 25; i++) {
     h.rt.subagents.push({ subId: i, name: `s${i}`, ok: true, state: "archived", at: `2026-11-17T20:${String(i % 60).padStart(2, "0")}:00` });

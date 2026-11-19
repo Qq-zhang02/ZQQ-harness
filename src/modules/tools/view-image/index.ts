@@ -14,7 +14,7 @@ import { resolveTarget } from "../../../core/file-tools.ts";
 import { createProvider } from "../../../providers/store.ts";
 import type { ChatImage } from "../../../llm/provider.ts";
 // 视觉分析超时（阶段 B 第二批阈值键 visionTimeoutMs）：config.ts 单一出处（initConfig 热重绑）
-import { VISION_TIMEOUT_MS } from "../../../config.ts";
+import { THRESHOLDS } from "../../../config.ts";
 
 /** 单图大小上限：base64 后 ~10.7MB，请求体可控。 */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -84,7 +84,7 @@ const def: SystemToolDef = {
           const r = await provider.chat({
             messages: [{ role: "user", content: `请分析这张图片并回答。问题：${question}`, images: [image] }],
             effort: visionCfg.effort === "off" ? "off" : "default", // 遵循该提供方自身配置；仅显式 off 保持关
-            signal: AbortSignal.timeout(VISION_TIMEOUT_MS),
+            signal: AbortSignal.timeout(THRESHOLDS.visionTimeoutMs),
           });
           const text = r.content.trim();
           if (!text) return "错误：视觉模型返回了空回复，请重试或换一张更清晰的图片。";

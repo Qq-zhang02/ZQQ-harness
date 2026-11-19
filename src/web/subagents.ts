@@ -17,7 +17,7 @@
  * 消息与派发回执文本——SSE 事件不进协调者历史。
  */
 import { join } from "node:path";
-import { SUBAGENT_MAX_CONCURRENT, SUBAGENT_MAX_TASKS, SUBAGENT_MAX_TOTAL, SUBAGENT_FOLLOWUP_CONTEXT_PCT } from "../config.ts";
+import { THRESHOLDS } from "../config.ts";
 import { readAgentsMd } from "../workspace.ts";
 import type { ProviderConfig } from "../providers/store.ts";
 import { Registry } from "../core/registry.ts";
@@ -104,18 +104,18 @@ function tryStartWorker(
   req: SubagentRequest,
   opts: { seq: number; signal?: AbortSignal; reusables?: Map<number, WorkerSession> },
 ): SubagentDispatch & { task?: Promise<SubagentResult> } {
-  if (rt.workers.size >= SUBAGENT_MAX_CONCURRENT) {
+  if (rt.workers.size >= THRESHOLDS.subagentMaxConcurrent) {
     return {
       ok: false,
       error:
-        `并发上限已达 ${SUBAGENT_MAX_CONCURRENT}（subagentMaxConcurrent）：本会话同时运行的子代理已满，` +
+        `并发上限已达 ${THRESHOLDS.subagentMaxConcurrent}（subagentMaxConcurrent）：本会话同时运行的子代理已满，` +
         "该任务未启动。请等现有子代理完成后再派（一次派发的任务数不要超过并发上限）。",
     };
   }
-  if (rt.subagentTotal >= SUBAGENT_MAX_TOTAL) {
+  if (rt.subagentTotal >= THRESHOLDS.subagentMaxTotal) {
     return {
       ok: false,
-      error: `累计上限已达 ${SUBAGENT_MAX_TOTAL}（subagentMaxTotal）：本会话派出的子代理总数已满，该任务未启动。`,
+      error: `累计上限已达 ${THRESHOLDS.subagentMaxTotal}（subagentMaxTotal）：本会话派出的子代理总数已满，该任务未启动。`,
     };
   }
   rt.subagentTotal++;
@@ -307,21 +307,21 @@ export function subagentServiceFor(sh: SessionShell, rt: SessionRuntime): Subage
       // docs/17：待命记录仍在、实例不在线、有过程存档 → 自动唤醒（同 subId 复活后追加任务）
       if ("revivable" in found) return reviveFollowup(sh, rt, reusables, found.revivable, freq, signal, deliver);
       const ws = found;
-      if (ws.tasks >= SUBAGENT_MAX_TASKS) {
+      if (ws.tasks >= THRESHOLDS.subagentMaxTasks) {
         return {
           ok: false,
-          error: `任务次数上限已达 ${SUBAGENT_MAX_TASKS}（subagentMaxTasks）：子代理 ${ws.name}#${ws.subId} 的累计任务数已满。请用 archive_subagent 归档后重新 agent_task 派发。`,
+          error: `任务次数上限已达 ${THRESHOLDS.subagentMaxTasks}（subagentMaxTasks）：子代理 ${ws.name}#${ws.subId} 的累计任务数已满。请用 archive_subagent 归档后重新 agent_task 派发。`,
         };
       }
       // docs/10 R1：上下文门槛（默认 35%）——上下文过长的子代理继续任务容易产生幻觉，
       // 服务端硬闸拒绝（不依赖模型自觉读数）；指引归档重派 + read_archive 存档接续。
-      if (ws.contextPct !== undefined && ws.contextPct >= SUBAGENT_FOLLOWUP_CONTEXT_PCT) {
+      if (ws.contextPct !== undefined && ws.contextPct >= THRESHOLDS.subagentFollowupContextPct) {
         return { ok: false, error: followupContextReject(ws.name, ws.subId, ws.contextPct) };
       }
-      if (rt.workers.size >= SUBAGENT_MAX_CONCURRENT) {
+      if (rt.workers.size >= THRESHOLDS.subagentMaxConcurrent) {
         return {
           ok: false,
-          error: `并发上限已达 ${SUBAGENT_MAX_CONCURRENT}（subagentMaxConcurrent）：本会话同时运行的子代理已满，该任务未启动。请等现有子代理完成后再派。`,
+          error: `并发上限已达 ${THRESHOLDS.subagentMaxConcurrent}（subagentMaxConcurrent）：本会话同时运行的子代理已满，该任务未启动。请等现有子代理完成后再派。`,
         };
       }
       const desc = freq.description?.trim();

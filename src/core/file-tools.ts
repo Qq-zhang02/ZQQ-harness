@@ -159,11 +159,10 @@ export type ReadOutcome =
  *  （此前两处各自写死 5MB，会漂移）；错误文案经 maxBytes 动态拼接。 */
 /** 文件三工具的适用文件大小边界（阶段 B 第二批阈值键 textFileMaxBytes——config.ts 单一
  *  出处，initConfig 热重绑；此处 re-export 供既有 import 路径不变）。 */
-export { TEXT_FILE_MAX_BYTES } from "../config.ts";
-import { TEXT_FILE_MAX_BYTES } from "../config.ts";
+import { THRESHOLDS } from "../config.ts";
 
 /** 读一个文本文件（UTF-8）：不存在/目录/超大/疑似二进制都返回可读错误，不抛异常。 */
-export function readTextFile(abs: string, maxBytes = TEXT_FILE_MAX_BYTES): ReadOutcome {
+export function readTextFile(abs: string, maxBytes = THRESHOLDS.textFileMaxBytes): ReadOutcome {
   let st: ReturnType<typeof statSync>;
   try {
     st = statSync(abs);

@@ -356,12 +356,12 @@ test("哨兵（P6 已启用；docs/25 DT0 调整 250→270；2026-11-16 真机�
   assert.ok(lines <= 282, `server.ts 应只剩 bootstrap/静态/SSE/meta/分发/进程生命周期（DT0 优雅停机 + 端口绑定回退），当前 ${lines} 行`);
 });
 
-test("哨兵（P8 已启用；docs/23 D2 改显式装载）：阈值常量经 initConfig() 重绑的生效值，导入期不读 harness.json", () => {
+test("哨兵（P8 已启用；docs/40 阶段三改 THRESHOLDS 单对象）：生效阈值经 initConfig() 原地 Object.assign 重绑，导入期不读 harness.json", () => {
   const configSrc = readFileSync(join(HERE, "..", "config.ts"), "utf8");
   assert.ok(
     /export function initConfig\(cfg: HarnessConfig = loadHarnessConfig\(\)\)/.test(configSrc) &&
-      /const eff = resolveThresholds\(cfg\.thresholds\)/.test(configSrc),
-    "生效常量必须由 initConfig() 以 resolveThresholds(cfg.thresholds) 重绑（harness.json 覆盖的唯一出口）",
+      /Object\.assign\(THRESHOLDS, resolveThresholds\(cfg\.thresholds\)\)/.test(configSrc),
+    "生效阈值必须由 initConfig() 以 Object.assign(THRESHOLDS, resolveThresholds(cfg.thresholds)) 原地重绑（harness.json 覆盖的唯一出口）",
   );
   assert.equal(
     configSrc.split("loadHarnessConfig()").length - 1,
@@ -369,9 +369,10 @@ test("哨兵（P8 已启用；docs/23 D2 改显式装载）：阈值常量经 in
     "loadHarnessConfig() 只允许出现在 initConfig 缺省参——导入期禁读 ~/.ZQQ-harness/harness.json（测试确定性）",
   );
   assert.ok(
-    /export let (HARNESS_CONFIG|DEFAULTS|COMPACTION_PRESSURE|SUBAGENT_MAX_CONCURRENT|MCP_HANDSHAKE_TIMEOUT_MS)/.test(configSrc),
-    "生效常量应为 export let（live binding，initConfig 后消费方自动见到新值）",
+    /export const THRESHOLDS: EffectiveThresholds = resolveThresholds\(\{\}\)/.test(configSrc),
+    "生效阈值应收敛为单一 const 对象 THRESHOLDS（对象身份恒定，docs/40 阶段三）",
   );
+  assert.ok(!/export let DEFAULTS/.test(configSrc), "旧 DEFAULTS 快照应已删除（并入 THRESHOLDS 字段）");
   assert.ok(serverSrc.includes("initConfig();"), "server.ts bootstrap 应在消费生效常量前显式 initConfig()");
   const storeSrc = readFileSync(join(HERE, "..", "providers", "store.ts"), "utf8");
   assert.ok(
@@ -382,6 +383,31 @@ test("哨兵（P8 已启用；docs/23 D2 改显式装载）：阈值常量经 in
     serverSrc.includes("HARNESS_CONFIG") && serverSrc.includes("loadExternalModules"),
     "server.ts bootstrap 应消费 harness.json 的模块禁用清单与外部模块目录",
   );
+});
+
+test("哨兵（docs/40 阶段三已启用）：THRESHOLDS 单对象纪律——全库禁旧常量名 import、禁顶层解构字段（冻结原始值）", () => {
+  const all = listTsFiles(join(HERE, "..")); // 递归扫全部 src（.test.ts 除外；scripts 同扫）
+  const offenders: string[] = [];
+  for (const f of all) {
+    const src = readFileSync(f, "utf8");
+    // ① 旧 SCREAMING 常量已删除：任何 import / 具名引用都应不存在（类型层面由 tsc 把关，此处防回潮）
+    for (const name of [
+      "COMPACTION_PRESSURE", "COMPACTION_KEEP_RATIO", "COMPACTION_MANUAL_KEEP_TOKENS", "COMPACTION_SUMMARY_MAX_CHARS",
+      "DEFAULT_CONTEXT_LENGTH", "SUBAGENT_MAX_CONCURRENT", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_TOOL_ROUNDS",
+      "SUBAGENT_RESULT_MAX_CHARS", "SUBAGENT_MAX_TASKS", "SUBAGENT_FOLLOWUP_CONTEXT_PCT", "SUBAGENT_WARN_CONTEXT_PCT",
+      "SUBAGENT_ARCHIVE_CONTEXT_PCT", "SUBAGENT_TIMEOUT_MIN_MS", "SUBAGENT_STATUS_HISTORY_MAX", "ARCHIVE_RENDER_MAX_CHARS",
+      "ESCALATION_MAX", "AGENTS_MD_MAX_CHARS", "PWSH_CAPTURE_MAX_BYTES", "PRECOMPACT_KEEP", "SPILL_MAX_AGE_HOURS",
+      "SANDBOX_TMP_MAX_AGE_HOURS", "MCP_HANDSHAKE_TIMEOUT_MS", "MCP_CALL_TIMEOUT_MS", "VISION_TIMEOUT_MS",
+      "PROVIDER_TEST_TIMEOUT_MS", "TEXT_FILE_MAX_BYTES", "READ_FILE_DEFAULT_LINES", "READ_FILE_MAX_CHARS",
+      "READ_TOOL_RESULT_MAX_CHARS", "HTTP_BODY_MAX_BYTES", "IMAGE_TOKEN_EST",
+    ]) {
+      if (new RegExp(`\\b${name}\\b`).test(src)) offenders.push(`${f}: ${name}`);
+    }
+    // ② 顶层解构 THRESHOLDS 字段会冻结原始值（对象引用捕获不受影响——身份恒定）——禁止
+    if (/const\s*\{[^}]*\}\s*=\s*THRESHOLDS/.test(src)) offenders.push(`${f}: 顶层解构 THRESHOLDS`);
+    if (/\bDEFAULTS\b/.test(src)) offenders.push(`${f}: 残留 DEFAULTS 引用`);
+  }
+  assert.equal(offenders.length, 0, `THRESHOLDS 纪律违例：\n${offenders.join("\n")}`);
 });
 
 // ---------- 哨兵（阶段 C，docs/21 §2.4/§3.2：常量收敛 + 协议解耦 + 前端 CFG/XSS 机制化） ----------
@@ -447,7 +473,7 @@ test("哨兵（阶段 D1 已启用；docs/32 增至六文件）：子代理家�
 
 test("哨兵（docs/24 已启用）：前端零硬编码阈值——键名/文案/默认值只经 schema 下发；写路由热应用必经 initConfig", () => {
   const schema = thresholdSchema();
-  assert.equal(schema.entries.length, 35, "schema 应为 35 个活跃阈值键（新增键需同步登记规则表与计数）");
+  assert.equal(schema.entries.length, 36, "schema 应为 36 个活跃阈值键（新增键需同步登记规则表与计数）");
   // ① 设置模态区域（HTML 块留 index.html + JS 段在 app/modals.js——F4 拆分后两处）不写死任何
   //    阈值键名——说明/范围/默认值/分组的唯一来源 = GET /api/settings/harness 的 schema。
   //    全文件检查不可行：defaultContextLength 等键名是 meta 契约的合法消费（metaOf().defaultContextLength），

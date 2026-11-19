@@ -1,6 +1,6 @@
 import { isAbsolute, normalize, relative, resolve } from "node:path";
 import { readFileSync } from "node:fs";
-import { AGENTS_MD_MAX_CHARS } from "./config.ts";
+import { THRESHOLDS } from "./config.ts";
 
 export interface Workspace {
   /** 工作区根目录（绝对路径）。agent 的文件操作默认只应发生在这里。 */
@@ -12,13 +12,13 @@ export function createWorkspace(root: string): Workspace {
 }
 
 /** 读取工作区的 AGENTS.md 作为附加系统指令；不存在返回 null，过长截断
- *  （预算 = config.AGENTS_MD_MAX_CHARS，harness.json agentsMdMaxChars 可覆盖）。 */
+ *  （预算 = config.THRESHOLDS.agentsMdMaxChars，harness.json agentsMdMaxChars 可覆盖）。 */
 export function readAgentsMd(root: string): string | null {
   try {
     const text = readFileSync(resolve(root, "AGENTS.md"), "utf8");
     if (!text.trim()) return null;
-    return text.length > AGENTS_MD_MAX_CHARS
-      ? text.slice(0, AGENTS_MD_MAX_CHARS) + "\n…（AGENTS.md 过长已截断）"
+    return text.length > THRESHOLDS.agentsMdMaxChars
+      ? text.slice(0, THRESHOLDS.agentsMdMaxChars) + "\n…（AGENTS.md 过长已截断）"
       : text;
   } catch {
     return null;

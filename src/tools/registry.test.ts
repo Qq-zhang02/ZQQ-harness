@@ -55,3 +55,33 @@ test("schemas 输出可交给 LLM 的工具定义", () => {
   assert.equal(s[0].name, "echo_tool");
   assert.ok((s[0].parameters as { properties?: unknown }).properties);
 });
+
+// ---- docs/40 阶段二：resultBudget 挂钩——工具声明的预算优先于 ctx/DEFAULTS ----
+
+test("executeWithMeta：resultBudget 声明优先于 ctx.toolResultMaxChars 与 DEFAULTS（阅读类独立预算）", async () => {
+  const big = "A".repeat(30_000) + "B".repeat(30_000);
+  const r = new ToolRegistry();
+  r.register({
+    name: "reader",
+    description: "声明大预算的阅读类工具",
+    parameters: { type: "object", properties: {} },
+    execute: async () => big,
+    resultBudget: () => 100_000,
+  });
+  r.register({
+    name: "plain",
+    description: "无声明的普通工具",
+    parameters: { type: "object", properties: {} },
+    execute: async () => big,
+  });
+  // reader：声明预算 100k > 输出 40k → 不修剪；plain：走缺省（DEFAULTS.toolResultMaxChars=48k）→ 修剪
+  const resReader = await r.executeWithMeta("reader", "{}", makeCtx());
+  assert.equal(resReader.prunedChars, 0, "声明预算内不修剪");
+  const resPlain = await r.executeWithMeta("plain", "{}", makeCtx());
+  assert.ok(resPlain.prunedChars > 0, "无声明走缺省预算被修剪");
+  // ctx 显式传入的预算 reader 仍以声明优先
+  const resReader2 = await r.executeWithMeta("reader", "{}", { ...makeCtx(), toolResultMaxChars: 100 });
+  assert.equal(resReader2.prunedChars, 0, "工具声明 > ctx 传入");
+  const resPlain2 = await r.executeWithMeta("plain", "{}", { ...makeCtx(), toolResultMaxChars: 100 });
+  assert.ok(resPlain2.prunedChars > 0, "ctx 传入对无声明工具生效");
+});

@@ -11,7 +11,7 @@ import {
   saveProviderFile,
   type ProviderConfig,
 } from "../../providers/store.ts";
-import { DEFAULT_CONTEXT_LENGTH, PROVIDER_TEST_TIMEOUT_MS } from "../../config.ts";
+import { THRESHOLDS } from "../../config.ts";
 import type { HarnessModule } from "../../core/module.ts";
 
 export const webProviders: HarnessModule = {
@@ -201,7 +201,7 @@ export const webProviders: HarnessModule = {
             model: String(p.model).trim(),
             effort: normalizeEffort(effortRaw) ?? fmtDef.defaultEffort(),
             // docs/21 §2.2-②：缺省经 config.ts 单一出处（harness.json 可覆盖），不再重复写死 1M
-            contextLength: Number(p.contextLength) > 0 ? Number(p.contextLength) : DEFAULT_CONTEXT_LENGTH,
+            contextLength: Number(p.contextLength) > 0 ? Number(p.contextLength) : THRESHOLDS.defaultContextLength,
             maxTokens: null,
           };
         } else {
@@ -216,7 +216,7 @@ export const webProviders: HarnessModule = {
           // 按提供方自己的思考档位测试（default=不添加思考参数），验证的就是真实配置
           const res = await prov.chat({
             messages: [{ role: "user", content: "请只回复两个字：收到" }],
-            signal: AbortSignal.timeout(PROVIDER_TEST_TIMEOUT_MS), // 阈值键 providerTestTimeoutMs（热重绑）
+            signal: AbortSignal.timeout(THRESHOLDS.providerTestTimeoutMs), // 阈值键 providerTestTimeoutMs（热重绑）
           });
           r.json(200, { ok: res.finishReason !== null || res.content.trim().length > 0, sample: res.content.trim().slice(0, 60) });
         } catch (e) {

@@ -2,7 +2,7 @@ import type { ChatImage, ToolSchema } from "../llm/provider.ts";
 import type { Workspace } from "../workspace.ts";
 import type { ApprovalDecision, ApprovalRequest } from "../approval/types.ts";
 import type { SandboxMode } from "../sandbox/types.ts";
-import { DEFAULTS } from "../config.ts";
+import { THRESHOLDS } from "../config.ts";
 import { pruneToolResult } from "./prune.ts";
 
 export interface ToolContext {
@@ -13,7 +13,7 @@ export interface ToolContext {
   alwaysConfirm?: boolean;
   /** 沙箱模式（随会话存档）；Phase A 无后端时受约束模式 fail-closed 拒绝 */
   sandboxMode?: SandboxMode;
-  /** 工具结果统一修剪预算（字符）；缺省 DEFAULTS.toolResultMaxChars */
+  /** 工具结果统一修剪预算（字符）；缺省 THRESHOLDS.toolResultMaxChars */
   toolResultMaxChars?: number;
   /** 超长输出全文落盘目录（spill，按会话）；缺省不落盘 */
   spillDir?: string;
@@ -34,6 +34,11 @@ export interface Tool {
   /** JSON Schema（object 类型） */
   parameters: Record<string, unknown>;
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<string>;
+  /** 可选：本工具的注册表修剪预算（字符）——缺省 ctx.toolResultMaxChars ?? THRESHOLDS.toolResultMaxChars。
+   *  阅读类工具（read_file/read_archive/load_skill）经它取独立预算 readToolResultMaxChars
+   *  （docs/40 阶段二）。实现必须是调用期求值（闭包直读 config 导出的 live binding）——
+   *  工厂导入期捕获数值会冻结缺省值（同 config.ts 文件头纪律）。 */
+  resultBudget?(ctx: ToolContext): number;
   /** 可选：带图像块返回（docs/34 read_image——图像作为 tool 消息的 images 进入对话）。
    *  实现时 execute 只作注册表回退兜底（executeWithMeta **优先本方法、二者只执行其一**）；
    *  带图返回只在会话模型有视觉能力时有意义（工具层用 selfVision 闸门，纯文本模型
@@ -115,9 +120,11 @@ export class ToolRegistry {
       full = `工具执行出错：${e instanceof Error ? e.message : String(e)}`;
       return { text: full, full, prunedChars: 0 };
     }
-    // 注册表级统一修剪：所有工具（run_pwsh、mcp__、read_file、load_skill 等）一致生效
-    // —— executeWithMeta 是唯一执行入口（工具自身的采集上限仍由各自负责）
-    const pr = pruneToolResult(full, ctx.toolResultMaxChars ?? DEFAULTS.toolResultMaxChars, ctx.spillDir ? { dir: ctx.spillDir } : undefined);
+    // 注册表级统一修剪：所有工具一致生效——executeWithMeta 是唯一执行入口（工具自身的采集
+    // 上限仍由各自负责）。预算解析：工具声明（resultBudget，如阅读类 readToolResultMaxChars）
+    // > ctx 显式传入 > THRESHOLDS.toolResultMaxChars 缺省（docs/40 阶段二）
+    const budget = tool.resultBudget?.(ctx) ?? ctx.toolResultMaxChars ?? THRESHOLDS.toolResultMaxChars;
+    const pr = pruneToolResult(full, budget, ctx.spillDir ? { dir: ctx.spillDir } : undefined);
     return { text: pr.text, full, prunedChars: pr.prunedChars, ...(pr.spilled ? { spilled: pr.spilled } : {}), ...(images?.length ? { images } : {}) };
   }
 

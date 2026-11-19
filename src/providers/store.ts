@@ -12,7 +12,7 @@ import type { EffortSetting, LLMProvider } from "../llm/provider.ts";
 import type { ProviderFormatDef } from "../core/types.ts";
 
 export type { EffortSetting };
-import { parseCredentialsYaml, EFFORT_OPTIONS, DEFAULT_CONTEXT_LENGTH } from "../config.ts";
+import { THRESHOLDS, parseCredentialsYaml, EFFORT_OPTIONS } from "../config.ts";
 
 /**
  * 接口格式（模块化架构重构 §4.6）：不再是类型联合——合法值 = ctx.providerFormats
@@ -66,7 +66,7 @@ export interface ProviderFile {
   data: ProviderStore;
 }
 
-// DEFAULT_CONTEXT_LENGTH 自 P8 起从 config.ts 导入（harness.json 可覆盖），本地重复定义已消灭
+// THRESHOLDS.defaultContextLength 自 P8 起从 config.ts 导入（harness.json 可覆盖），本地重复定义已消灭
 
 /** 首启种子提供方（docs/21 §2.4 常量收敛）：id/名称/格式/接口地址/模型/思考档位集中一处，
  *  首启生成与旧档回填（validateProvider 的 deepseek 特例）共用，防漂移。 */
@@ -101,7 +101,7 @@ function legacyDeepseek(cwd: string, userDir: string): Pick<ProviderConfig, "api
     apiKey,
     model,
     maxTokens: Number.isFinite(maxEnv) && maxEnv > 0 ? maxEnv : null,
-    contextLength: Number.isFinite(ctxEnv) && ctxEnv > 0 ? ctxEnv : DEFAULT_CONTEXT_LENGTH,
+    contextLength: Number.isFinite(ctxEnv) && ctxEnv > 0 ? ctxEnv : THRESHOLDS.defaultContextLength,
   };
 }
 

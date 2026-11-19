@@ -3,32 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  DEFAULTS,
-  HARNESS_CONFIG,
-  COMPACTION_PRESSURE,
-  ESCALATION_MAX,
-  initConfig,
-  isThinkingEffort,
-  loadApiKey,
-  loadHarnessConfig,
-  parseHarnessConfig,
-  parseCredentialsYaml,
-  reasoningPassbackEnabled,
-  resolveThresholds,
-  stripJsonComments,
-  SUBAGENT_MAX_CONCURRENT,
-  SUBAGENT_MAX_TOTAL,
-  SUBAGENT_MAX_TOOL_ROUNDS,
-  SUBAGENT_RESULT_MAX_CHARS,
-  thresholdSchema,
-  validateThresholdsStrict,
-  HTTP_BODY_FLOOR_BYTES,
-  IMAGE_RULES,
-  IMAGE_TOKEN_EST,
-  READ_FILE_DEFAULT_LINES,
-  SUBAGENT_TIMEOUT_MIN_MS,
-} from "./config.ts";
+import { THRESHOLDS, HARNESS_CONFIG, initConfig, isThinkingEffort, loadApiKey, loadHarnessConfig, parseHarnessConfig, parseCredentialsYaml, reasoningPassbackEnabled, resolveThresholds, stripJsonComments, thresholdSchema, validateThresholdsStrict, HTTP_BODY_FLOOR_BYTES, IMAGE_RULES } from "./config.ts";
 import type { EffortSetting } from "./llm/provider.ts";
 
 test("解析极简 credentials yaml", () => {
@@ -188,12 +163,12 @@ test("parseHarnessConfig：旧拼写键的非法值走新键名校验（告警�
 
 // ---- 子代理阈值（docs/5 SA0：键名拼写即 API，测试锁缺省/覆盖/校验规则） ----
 
-test("resolveThresholds：子代理四阈值缺省 3/24/40/16000，覆盖生效", () => {
+test("resolveThresholds：子代理四阈值缺省 3/24/40/32000，覆盖生效", () => {
   const d = resolveThresholds({});
   assert.equal(d.subagentMaxConcurrent, 3);
   assert.equal(d.subagentMaxTotal, 24);
   assert.equal(d.subagentMaxToolRounds, 40);
-  assert.equal(d.subagentResultMaxChars, 16_000);
+  assert.equal(d.subagentResultMaxChars, 32_000); // docs/40 阶段二：16k→32k（委托阅读的回报瓶颈）
   const o = resolveThresholds({
     subagentMaxConcurrent: 5,
     subagentMaxTotal: 10,
@@ -230,33 +205,66 @@ test("parseHarnessConfig：子代理报告预算须 >0 整数，0 被忽略、�
 
 test("子代理阈值生效常量与 resolveThresholds 缺省同源（harness.json 覆盖的唯一出口）", () => {
   const d = resolveThresholds({});
-  assert.equal(SUBAGENT_MAX_CONCURRENT, d.subagentMaxConcurrent);
-  assert.equal(SUBAGENT_MAX_TOTAL, d.subagentMaxTotal);
-  assert.equal(SUBAGENT_MAX_TOOL_ROUNDS, d.subagentMaxToolRounds);
-  assert.equal(SUBAGENT_RESULT_MAX_CHARS, d.subagentResultMaxChars);
+  assert.equal(THRESHOLDS.subagentMaxConcurrent, d.subagentMaxConcurrent);
+  assert.equal(THRESHOLDS.subagentMaxTotal, d.subagentMaxTotal);
+  assert.equal(THRESHOLDS.subagentMaxToolRounds, d.subagentMaxToolRounds);
+  assert.equal(THRESHOLDS.subagentResultMaxChars, d.subagentResultMaxChars);
+});
+
+// ---- docs/40 阶段二：readToolResultMaxChars（阅读类工具独立预算）缺省/覆盖/非法三态 ----
+
+test("resolveThresholds：readToolResultMaxChars 缺省 120k，覆盖生效", () => {
+  const d = resolveThresholds({});
+  assert.equal(d.readToolResultMaxChars, 120_000);
+  assert.equal(resolveThresholds({ readToolResultMaxChars: 200_000 }).readToolResultMaxChars, 200_000);
+});
+
+test("parseHarnessConfig/validateThresholdsStrict：readToolResultMaxChars 须 >0 整数，0 双路拒绝", () => {
+  const bad = parseHarnessConfig({ thresholds: { readToolResultMaxChars: 0 } });
+  assert.equal(bad.config.thresholds.readToolResultMaxChars, undefined, "0 越界忽略");
+  assert.ok(bad.warnings.some((w) => w.includes("readToolResultMaxChars")));
+  assert.equal(resolveThresholds({}).readToolResultMaxChars, 120_000, "缺省 120k");
+  const strict = validateThresholdsStrict({ readToolResultMaxChars: -1 });
+  assert.equal(strict.ok, false);
+  if (!strict.ok) assert.equal(strict.errors[0].key, "readToolResultMaxChars");
 });
 
 test("initConfig：显式装载重绑全部生效常量，空配置重置回缺省（docs/21 §3.3 / docs/23 D2）", () => {
   try {
     // 导入态 = 纯缺省（不读真机 harness.json——本测试在任何机器上都必须同值通过）
     const d = resolveThresholds({});
-    assert.equal(COMPACTION_PRESSURE, d.compactionPressure);
-    assert.equal(ESCALATION_MAX, d.escalationMax);
-    assert.equal(DEFAULTS.pwshTimeoutMs, d.pwshTimeoutMs);
-    // 显式装载覆盖值 → live binding 立即生效（含 DEFAULTS 整对象替换与交叉校验）
+    assert.equal(THRESHOLDS.compactionPressure, d.compactionPressure);
+    assert.equal(THRESHOLDS.escalationMax, d.escalationMax);
+    assert.equal(THRESHOLDS.pwshTimeoutMs, d.pwshTimeoutMs);
+    // 显式装载覆盖值 → THRESHOLDS 字段原地更新立即生效（含交叉校验）
     const cfg = initConfig({ disabledModules: ["demo.x"], thresholds: { subagentMaxConcurrent: 7, compactionPressure: 0.5, pwshTimeoutMs: 120_000, pwshMaxTimeoutMs: 90_000 } });
     assert.deepEqual(cfg, HARNESS_CONFIG);
-    assert.equal(SUBAGENT_MAX_CONCURRENT, 7);
-    assert.equal(COMPACTION_PRESSURE, 0.5);
-    assert.equal(DEFAULTS.pwshTimeoutMs, 120_000);
-    assert.equal(DEFAULTS.pwshMaxTimeoutMs, 120_000); // 交叉校验：最大 < 缺省时抬到缺省
+    assert.equal(THRESHOLDS.subagentMaxConcurrent, 7);
+    assert.equal(THRESHOLDS.compactionPressure, 0.5);
+    assert.equal(THRESHOLDS.pwshTimeoutMs, 120_000);
+    assert.equal(THRESHOLDS.pwshMaxTimeoutMs, 120_000); // 交叉校验：最大 < 缺省时抬到缺省
     // 空配置重置回纯缺省（可重复调用，最后一次生效）
     initConfig({ disabledModules: [], thresholds: {} });
-    assert.equal(SUBAGENT_MAX_CONCURRENT, d.subagentMaxConcurrent);
-    assert.equal(COMPACTION_PRESSURE, d.compactionPressure);
+    assert.equal(THRESHOLDS.subagentMaxConcurrent, d.subagentMaxConcurrent);
+    assert.equal(THRESHOLDS.compactionPressure, d.compactionPressure);
     assert.deepEqual(HARNESS_CONFIG, { disabledModules: [], thresholds: {} });
   } finally {
     initConfig({ disabledModules: [], thresholds: {} }); // 恢复导入态，不泄漏给同文件后续测试
+  }
+});
+
+test("initConfig：Object.assign 原地重绑——顶层捕获的 THRESHOLDS 对象引用仍见新值（docs/40 阶段三核心不变量）", () => {
+  try {
+    const d = resolveThresholds({});
+    // 模块顶层捕获对象引用（旧 export let 模式下这是冻结类 bug 的根源；单对象模式下合法）
+    const captured: typeof THRESHOLDS = THRESHOLDS;
+    assert.equal(captured.subagentMaxConcurrent, d.subagentMaxConcurrent);
+    initConfig({ disabledModules: [], thresholds: { subagentMaxConcurrent: 9, readToolResultMaxChars: 150_000 } });
+    assert.equal(captured.subagentMaxConcurrent, 9, "捕获引用见新值（对象身份恒定）");
+    assert.equal(captured.readToolResultMaxChars, 150_000, "新键字段同样原地更新");
+    assert.ok(THRESHOLDS === captured, "THRESHOLDS 对象身份在重绑前后不变");
+  } finally {
+    initConfig({ disabledModules: [], thresholds: {} });
   }
 });
 
@@ -417,9 +425,9 @@ test("parseHarnessConfig/resolveThresholds：阶段 B 8 键覆盖生效、非法
 
 // ---- docs/24：thresholdSchema（前端设置页单一出处）与严格写校验 ----
 
-test("thresholdSchema：35 活跃键全覆盖（无废弃键）、七组不重不漏、def 与 resolveThresholds({}) 同源、清扫两键标 restart", () => {
+test("thresholdSchema：36 活跃键全覆盖（无废弃键）、七组不重不漏、def 与 resolveThresholds({}) 同源、清扫两键标 restart", () => {
   const s = thresholdSchema();
-  assert.equal(s.entries.length, 35, "活跃键 = 35（25 + 阶段 B 第二批 9 + docs/32 subagentStatusHistoryMax；spillThreshold 废弃不入表）");
+  assert.equal(s.entries.length, 36, "活跃键 = 36（35 + docs/40 readToolResultMaxChars；spillThreshold 废弃不入表）");
   assert.ok(s.entries.every((e) => e.key !== "spillThreshold"), "废弃键不下发");
   assert.deepEqual(s.groups.map((g) => g.key), ["general", "compaction", "pwsh", "subagent", "mcp", "vision", "sweep"]);
   const d = resolveThresholds({});
@@ -513,9 +521,9 @@ test("阶段 B 第二批 9 键：缺省值（120s/20s/5MB/4000/200k/60s/300k/32M
   assert.equal(d.imageTokenEst, 800);
   try {
     initConfig({ disabledModules: [], thresholds: { readFileDefaultLines: 500, imageTokenEst: 1200, subagentTimeoutMinMs: 30_000 } });
-    assert.equal(READ_FILE_DEFAULT_LINES, 500, "read-file 行数 live 重绑");
-    assert.equal(IMAGE_TOKEN_EST, 1200, "图片 token 估算 live 重绑");
-    assert.equal(SUBAGENT_TIMEOUT_MIN_MS, 30_000, "agent-task 最小超时 live 重绑（const→let 过渡透明）");
+    assert.equal(THRESHOLDS.readFileDefaultLines, 500, "read-file 行数 live 重绑");
+    assert.equal(THRESHOLDS.imageTokenEst, 1200, "图片 token 估算 live 重绑");
+    assert.equal(THRESHOLDS.subagentTimeoutMinMs, 30_000, "agent-task 最小超时 live 重绑（THRESHOLDS 字段原地更新）");
   } finally {
     initConfig({ disabledModules: [], thresholds: {} });
   }

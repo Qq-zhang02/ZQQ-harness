@@ -5,7 +5,7 @@
  */
 import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { COMPACTION_MANUAL_KEEP_TOKENS, IMAGE_RULES } from "../../config.ts";
+import { THRESHOLDS, IMAGE_RULES } from "../../config.ts";
 import { normalizeEffort } from "../../providers/store.ts";
 import { rememberWorkspace, sameDir, workspacesFilePath } from "../../web/workspaces.ts";
 import { applySubagentControl } from "../../web/subagents.ts";
@@ -496,7 +496,7 @@ export const webSessions: HarnessModule = {
           return;
         }
         // 手动压缩用小保留预算（用户预期"立刻变小"；KEEP_RATIO×上下文长度会几乎切不动）
-        const outcome = await host.compact(rt, { keepTokens: COMPACTION_MANUAL_KEEP_TOKENS });
+        const outcome = await host.compact(rt, { keepTokens: THRESHOLDS.compactionManualKeepTokens });
         r.json(200, outcome);
       },
     });
