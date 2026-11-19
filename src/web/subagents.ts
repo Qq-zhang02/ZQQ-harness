@@ -337,15 +337,15 @@ export function subagentServiceFor(sh: SessionShell, rt: SessionRuntime): Subage
   };
 }
 
-/** followup 目标解析结果（docs/17 起结构化）：在线空闲实例 / 可唤醒记录（待命记录仍在、
- *  实例不在线、有过程存档——followup 自动走复活路径） / 明确错误文案。 */
+/** followup 目标解析结果（docs/17 起结构化）：在线空闲实例 / 可唤醒记录（记录仍在、
+ *  实例不在线、有过程存档——idle 休眠与 archived 归档同通道自动唤醒复活，docs/41） / 明确错误文案。 */
 type FindReusableResult = WorkerSession | { revivable: SubagentRecord } | { error: string };
 
-/** followup 目标解析（docs/9；docs/17 修订唤醒语义）：按 subId（优先）或 name（存活可复用
- *  中必须唯一）定位空闲待命的 WorkerSession；各种不可派状态（不存在/已归档/同名歧义/
- *  执行中）各给明确文案；「记录在、实例不在线」的 idle 可复用子代理有存档即返回
- *  revivable（自动唤醒），无存档才报失效。归档过的驻留已从 Map 与 activeSubagents 注销
- *  ——这里查到的在线的都是存活的。 */
+/** followup 目标解析（docs/9；docs/17 唤醒 / docs/41 归档复活）：按 subId（优先）或 name
+ *  （存活可复用中必须唯一）定位空闲待命的 WorkerSession；各种不可派状态（不存在/同名歧义/
+ *  执行中）各给明确文案；「记录在、实例不在线」的子代理（idle 休眠或 archived 归档，可复用
+ *  与一次性一视同仁）有存档即返回 revivable（自动唤醒复活，一次性转正为可复用），无存档才
+ *  报失效。归档过的驻留已从 Map 与 activeSubagents 注销——这里查到的在线的都是存活的。 */
 function findReusable(
   rt: SessionRuntime,
   reusables: Map<number, WorkerSession>,
@@ -366,18 +366,17 @@ function findReusable(
           ? [...rt.subagents].reverse().find((r) => r.name === target.name)
           : undefined;
     if (rec) {
-      if (rec.state === "idle") {
-        // docs/17：待命记录仍在、运行实例不在线（服务重启）——有过程存档即可唤醒
-        if (rec.reusable && rec.transcript) return { revivable: rec };
+      if (rec.state === "idle" || rec.state === "archived") {
+        // docs/17 待命唤醒 / docs/41 归档复活：有过程存档即可唤醒——可复用原样延续；
+        // 一次性转正为可复用（reviveFollowup 创建即 reusable=true）。超时/打断的半成品由此接续
+        if (rec.transcript) return { revivable: rec };
         return {
           error:
-            `子代理 ${rec.name}#${rec.subId} 的待命记录仍在，但其运行实例已不在线，且没有可唤醒的过程存档（未落盘成功或已被清理）。` +
+            `子代理 ${rec.name}#${rec.subId} 的记录仍在，但其运行实例已不在线，且没有可唤醒的过程存档（未落盘成功或已被清理）。` +
             `请用 agent_task 重新派发；任务书可让它先用 read_archive（subId=${rec.subId}）读过程存档接续上下文（存档也不可用时无法接续）。`,
         };
       }
-      return {
-        error: `子代理 ${rec.name}#${rec.subId} 已归档，不可再派任务${rec.reusable ? "" : "（一次性子代理用完即归档）"}。请用 agent_task 重新派发。`,
-      };
+      return { error: `子代理 ${rec.name}#${rec.subId} 状态异常（${rec.state}），请用 agent_task 重新派发。` };
     }
     const idleList = alive.filter((w) => w.active.status === "idle").map((w) => `${w.name}#${w.subId}`).join("、");
     return {

@@ -121,24 +121,25 @@ export function requestArchiveWorker(
   if (ws.cur) {
     ws.cur.pendingArchive = true;
     ws.cur.ctl.abort();
-    return `已请求归档：子代理 ${ws.name}#${ws.subId} 的当前任务将被中止，并在其结束后归档（之后不可再派任务）。`;
+    return `已请求归档：子代理 ${ws.name}#${ws.subId} 的当前任务将被中止，并在其结束后归档（归档后仍可用 agent_followup 从存档唤醒复活继续）。`;
   }
   if (!ws.agent) {
     ws.archiveRequested = true; // 装配窗口：startWorker 装配完成后直接归档收尾
-    return `已请求归档：子代理 ${ws.name}#${ws.subId} 尚在装配，将不执行任务直接归档（之后不可再派任务）。`;
+    return `已请求归档：子代理 ${ws.name}#${ws.subId} 尚在装配，将不执行任务直接归档（归档后仍可用 agent_followup 从存档唤醒复活继续）。`;
   }
   const archiveNotice =
     ws.transcript !== undefined
-      ? `可复用子代理 ${ws.name}#${ws.subId} 已被用户归档（不可再用 agent_followup 追加任务；需要继续该方向的工作时用 agent_task 重新派发，任务书可让它先用 read_archive（subId=${ws.subId}）读过程存档接续上下文 [[过程档案#${ws.subId}]]）。`
-      : `可复用子代理 ${ws.name}#${ws.subId} 已被用户归档（不可再用 agent_followup 追加任务；需要继续该方向的工作时用 agent_task 重新派发）。`;
+      ? `可复用子代理 ${ws.name}#${ws.subId} 已被用户归档（需要继续该方向的工作时用 agent_followup 从存档唤醒复活，或 agent_task 重新派发——任务书可让新实例先用 read_archive（subId=${ws.subId}）读过程存档接续上下文 [[过程档案#${ws.subId}]]）。`
+      : `可复用子代理 ${ws.name}#${ws.subId} 已被用户归档（无过程存档，唤醒复活不可用；需要继续该方向的工作时用 agent_task 重新派发）。`;
   finalizeArchive(sh, rt, ws, reusables);
   if (via === "ui") deliverToCoordinator(sh, rt, `${AUTO_DELIVERY_PREFIXES.status} ${archiveNotice}`);
-  return `已归档子代理：${ws.name}#${ws.subId}（共完成 ${ws.tasks} 次任务）。归档后仅可查看过程存档，不可再派任务。`;
+  return `已归档子代理：${ws.name}#${ws.subId}（共完成 ${ws.tasks} 次任务）。归档不是终结：需要继续时用 agent_followup 从存档唤醒复活，或 read_archive 查看过程后重新派发。`;
 }
 
 /**
- * 重启唤醒（docs/17）：followup 命中「待命记录仍在、运行实例不在线、有过程存档」的可复用
- * 子代理时走此路径——从存档回读完整历史（Agent.restore 与主对话恢复同口径），按存档 meta
+ * 唤醒/复活（docs/17 重启唤醒 + docs/41 归档复活）：followup 命中「记录仍在、运行实例
+ * 不在线、有过程存档」的子代理时走此路径（idle 休眠与 archived 归档同通道；一次性转正
+ * 为可复用）——从存档回读完整历史（Agent.restore 与主对话恢复同口径），按存档 meta
  * 重装 Agent（scope/effort/system 沿用首次派发；旧格式存档无 meta 时继承会话缺省），同
  * subId 复活后执行追加任务（task 事件起跑、报告自动送达，与在线 followup 完全同口径）。
  * 同步段完成存档读取/闸门复查/句柄登记（防插队）；装配与任务异步推进；唤醒装配失败按

@@ -56,9 +56,9 @@ export interface SubagentRecord {
   contextPct?: number;
   /** 累计运行毫秒（可复用=跨任务累计；一次性=单任务用时；空不写，旧档缺省=无记录） */
   elapsedMs?: number;
-  /** 生命周期（docs/9；docs/17 修订重启语义）：idle=可复用待命（运行实例在内存；重启后
-   *  实例不在线，agent_followup 自动从过程存档唤醒）；archived=已归档只读（不可再派，
-   *  接续用 read_archive）；旧档缺省＝一次性已完成（=archived 语义）。 */
+  /** 生命周期（docs/9；docs/17 唤醒 / docs/41 归档复活）：idle=可复用待命（运行实例在内存；
+   *  重启后实例不在线，agent_followup 自动从过程存档唤醒）；archived=已归档（仍可 followup
+   *  从存档唤醒复活，一次性转正为可复用）；旧档缺省＝一次性已完成（=archived 语义）。 */
   state?: "idle" | "archived";
   /** 完成时间（ISO；可复用子代理为最近一次任务结束/归档时间） */
   at: string;

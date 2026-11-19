@@ -118,12 +118,12 @@ export function formatWorkerResult(r: SubagentResult, name: string, thresholds?:
     const readArchiveHint = `任务书可让它先用 read_archive（subId=${r.subId}）读过程存档接续上下文 [[过程档案#${r.subId}]]`;
     if (r.archived === "request") {
       standby =
-        `\n（该子代理已按归档请求归档（当前任务被中止）——不可再用 agent_followup 追加任务。` +
-        `需要继续该方向的工作时用 agent_task 重新派发${r.transcript !== undefined ? `，${readArchiveHint}` : ""}。）`;
+        `\n（该子代理已按归档请求归档（当前任务被中止）——需要继续该方向的工作时用 agent_followup 从存档唤醒复活（同 subId 延续上下文与过程）。` +
+        `也可用 agent_task 重新派发${r.transcript !== undefined ? `，${readArchiveHint}` : ""}。）`;
     } else if (r.forceArchived || r.archived === "context") {
       standby =
-        `\n（该子代理的上下文占用已达 ${r.contextPct ?? "?"}%（超过上限，易因上下文过长产生幻觉），已自动归档——不可再用 agent_followup 追加任务。` +
-        `需要继续工作时用 agent_task 重新派发，${readArchiveHint}。）`;
+        `\n（该子代理的上下文占用已达 ${r.contextPct ?? "?"}%（超过上限，易因上下文过长产生幻觉），已自动归档——上下文过满，followup 唤醒复活会被拒收。` +
+        `需要继续工作时用 agent_task 重新派发（全新实例），${readArchiveHint}。）`;
     } else if (r.contextPct !== undefined && r.contextPct >= followupPct) {
       standby =
         `\n（该子代理可复用：${name}#${r.subId} 已保留待命，但其上下文占用 ${r.contextPct}% 已达追加上限（${followupPct}%）——agent_followup 将被拒绝；` +
@@ -142,7 +142,14 @@ export function formatWorkerResult(r: SubagentResult, name: string, thresholds?:
   }
   const why = r.error ?? "未知原因";
   const tail = stats.length > 0 ? `[子代理 ${name} 失败] ${why}（${stats.join(" · ")}）` : `[子代理 ${name} 失败] ${why}`;
-  return tail + transcriptTag(r) + standby;
+  // docs/41：残局速览 + 接续指引——半成品不轻易放弃（一次性失败此前没有 read_archive 指引，一并修复）
+  const digest = r.progressDigest ? `\n死前进展：\n${r.progressDigest}` : "";
+  const guide =
+    r.subId !== undefined && r.transcript !== undefined
+      ? `\n（半成品已保留：read_archive（subId=${r.subId}）可读全程过程；已归档的可复用与一次性子代理都可用 agent_followup 从存档唤醒复活继续` +
+        `（一次性转正为可复用，上下文与过程无缝延续；上下文超线的例外——复活会被拒收，改用 agent_task 重派）。）`
+      : "";
+  return tail + digest + guide + transcriptTag(r) + standby;
 }
 
 /** 派发受理回执（docs/16）：agent_task/agent_followup 的返回文本——派发即返回、不等待；
@@ -229,7 +236,9 @@ export function createAgentFollowupTool(deps: SystemToolDeps): Tool {
     description:
       "向一个空闲待命的可复用子代理（agent_task 带 reusable=true 派出的）追加新任务，立即返回派发回执（非阻塞——本调用不等待其完成）。" +
       "它保留之前全部任务的历史上下文——任务书可引用之前的进展（如「继续上次的重构，接着处理 X」），但新目标与期望产出要写清。" +
-      "只接受空闲待命状态；已归档或一次性子代理不可追加，请改用 agent_task。任务结算（完成/失败/打断/归档）后，" +
+      "目标也可以是已归档或一次性子代理（agent_task 派出、用完即归档的那种）：只要留有过程存档，followup 会自动从存档唤醒复活继续" +
+      "（同 subId、同上下文无缝延续，provider 缓存不失效；一次性复活后转正为可复用，后续可直接再 followup）——超时/打断做了一半的任务优先考虑复活而非重派。" +
+      "只有正在执行任务中的实例不接受追加（等其报告送达后再追加）；连过程存档都没有的才需改用 agent_task 全新派发。任务结算（完成/失败/打断/归档）后，" +
       "其报告会以「" + AUTO_DELIVERY_PREFIXES.report + "」开头的消息自动送达本会话。",
     parameters: {
       type: "object",
@@ -293,12 +302,13 @@ export function createSubagentStatusTool(deps: SystemToolDeps): Tool {
 }
 
 /** archive_subagent（docs/9）：归档可复用子代理——空闲待命且确定不再使用时调用；执行中
- *  归档会中止其当前任务。归档后仅可查看过程存档，不可再派任务。一次性子代理无需归档。 */
+ *  归档会中止其当前任务。归档不是终结——需要继续时用 agent_followup 从存档唤醒复活。
+ *  一次性子代理无需归档。 */
 export function createArchiveSubagentTool(deps: SystemToolDeps): Tool {
   return {
     name: "archive_subagent",
     description:
-      "归档一个可复用子代理：归档后仅可查看其过程存档，不可再用 agent_followup 派任务。它空闲待命且确定不再使用时调用；" +
+      "归档一个可复用子代理：归档不是终结——需要继续时用 agent_followup 从存档唤醒复活（同 subId 延续上下文与过程）。它空闲待命且确定不再使用时调用；" +
       "若它正在执行任务，归档会先中止其当前任务（立即终止也可用 stop_subagent 打断——它转空闲待命不归档）。一次性子代理任务结束即自动归档，无需（也不支持）本工具。",
     parameters: {
       type: "object",

@@ -266,6 +266,9 @@ export interface SubagentResult {
    *  工具路径已有返回文案，再送失败报告即一次操作两条消息；记录/事件/用量照常。 */
   stopped?: true;
   archived?: "request" | "context";
+  /** 失败时的残局速览（docs/41）：从 worker 活历史尾部提取——已完成工具调用统计/涉及
+   *  写入文件/最近动作/最后助手文本，让协调者知道「做到哪」；成功路径不生成。 */
+  progressDigest?: string;
 }
 
 /**

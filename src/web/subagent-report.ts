@@ -13,6 +13,7 @@ import { AUTO_DELIVERY_PREFIXES, SSE_EVENTS } from "../core/events.ts";
 import { formatWorkerResult } from "../modules/tools/agent-task/agent-task.ts";
 import type { SessionRuntime } from "../core/host.ts";
 import type { SubagentResult } from "../core/types.ts";
+import type { ChatMessage, ToolCallRequest } from "../llm/provider.ts";
 import type { ProviderConfig } from "../providers/store.ts";
 import { cfgOf, requestApprovalFor, settleCoordinatorClock, type SessionShell } from "./session-runtime.ts";
 import { dumpTranscript } from "./subagent-archive.ts";
@@ -80,6 +81,51 @@ function failureWhy(
           ? e.message
           : String(e)
         : "子代理未能给出最终报告（空回复）";
+}
+
+/** 工具调用的「关键参数摘要」：write_file/edit_file 取 path，run_pwsh 取 command 截 60 字，
+ *  其余取第一个字符串参数值截 40 字（宽容解析——arguments 是原始 JSON 串，损坏就空）。 */
+function toolCallDigest(c: ToolCallRequest): string {
+  let path = "";
+  let extra = "";
+  try {
+    const a = JSON.parse(c.arguments) as Record<string, unknown>;
+    if (typeof a.path === "string") path = a.path;
+    if (typeof a.command === "string") extra = a.command.slice(0, 60);
+    if (!path && !extra) {
+      const firstStr = Object.values(a).find((v) => typeof v === "string");
+      if (typeof firstStr === "string") extra = firstStr.slice(0, 40);
+    }
+  } catch {
+    /* arguments 非合法 JSON：只报工具名 */
+  }
+  return `${c.name}${path ? ` ${path}` : extra ? ` ${extra}` : ""}`;
+}
+
+/**
+ * 残局速览（docs/41）：失败结算时从 worker 活历史尾部提取「做到哪」——只统计已完成轮
+ * （半截流式消息不入 history，agent.ts 入档顺序保证）。内容 = 统计行（已完成工具调用数 /
+ * 写入文件清单）+ 最近 3 个动作 + 最后一条助手文本（截 600 字）。历史里除任务书外没有任何
+ * 实际进展（如超时发生在首轮 LLM 调用中）返回 undefined——不造假速览。
+ */
+export function progressDigestOf(messages: readonly ChatMessage[]): string | undefined {
+  const body = messages.filter((m) => m.role !== "system");
+  const toolResults = body.filter((m) => m.role === "tool").length;
+  const assistants = body.filter((m): m is Extract<ChatMessage, { role: "assistant" }> => m.role === "assistant");
+  const calls: ToolCallRequest[] = assistants.flatMap((m) => m.toolCalls);
+  const lastText = [...assistants].reverse().find((m) => (m.content ?? "").trim())?.content?.trim();
+  if (toolResults === 0 && calls.length === 0 && !lastText) return undefined;
+  const written = [...new Set(calls.filter((c) => c.name === "write_file" || c.name === "edit_file").map((c) => toolCallDigest(c).replace(/^(write_file|edit_file) /, "")))];
+  const lines: string[] = [];
+  lines.push(`已完成 ${toolResults} 个工具调用${calls.length > 0 ? `（发起 ${calls.length} 个）` : ""}${written.length > 0 ? `；写入文件 ${written.length} 个：${written.slice(0, 5).join("、")}${written.length > 5 ? ` 等 ${written.length} 个` : ""}` : "；无文件写入"}。`);
+  if (calls.length > 0) {
+    lines.push(
+      "最近动作：" +
+        calls.slice(-3).map((c) => `\n- ${toolCallDigest(c)}`).join(""),
+    );
+  }
+  if (lastText) lines.push(`最后进展：${lastText.length > 600 ? `${lastText.slice(0, 600)}…（截断）` : lastText}`);
+  return lines.join("\n");
 }
 
 /**
@@ -153,6 +199,9 @@ export async function runOneTask(
     reportAggregated(sh, rt, ws.cur.usage);
     res = { ok: false, text: "", error: failureWhy(outerSignal, timeoutSignal, opts.timeoutMs, e, ws.cur.pendingArchive, ws.stopRequested), rounds };
   }
+  // 残局速览（docs/41）：失败时从活历史尾部提取「做到哪」——半截流式消息不入档，取到的是
+  // 已完成轮；装配窗口失败（agent 未就绪）无历史可提，自然返回 undefined
+  if (!res.ok) res.progressDigest = progressDigestOf(ws.agent?.messages ?? []);
   const cur = ws.cur!;
   ws.cur = null;
   // 任务用时折算：本次耗时并入累计，结果/记录/事件携带

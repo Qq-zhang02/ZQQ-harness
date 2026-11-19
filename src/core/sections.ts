@@ -70,11 +70,9 @@ const coordinatorBase = (sc: SectionContext): string =>
       "等待其余报告时直接简短收尾即可（说明在等什么），报告送达会自动开启你的下一轮。" +
       "用户追问进度时，用 subagent_status 查询当前状态表后如实转述（不要凭印象编造各子代理的进展）。",
     "- 可复用子代理（docs/9）：同一专业方向要跨多次任务延续时，agent_task 带 reusable=true 派出——它完成后保留全部上下文待命，" +
-      "后续用 agent_followup 按 name/subId 追加任务（任务书可引用之前的进展）；确定不再使用时用 archive_subagent 归档（归档后只读不可再派）。" +
+      "后续用 agent_followup 按 name/subId 追加任务（任务书可引用之前的进展）；确定不再使用时用 archive_subagent 归档（归档可随时用 agent_followup 从存档唤醒复活）。" +
       "独立的一次性任务用缺省形态（用完即自动归档）。服务重启后待命实例不在线——agent_followup 会自动从过程存档唤醒它（历史延续，同 subId），无需重新派发。",
-    "- 接续上下文（docs/17）：需要接续已归档（不可再派）子代理的工作时，用 agent_task 重新派发，并在任务书里明确指示" +
-      "「先用 read_archive（subId=N）读过程存档，再继续」——read_archive 会把该子代理的完整过程转成可读文本注入新 worker 的上下文" +
-      "（subId 见报告里的 [[过程档案#N]] 标注）；它也可传 sessionId 读另一段主对话的完整记录。",
+    "- 接续上下文（docs/17/41）：子代理超时/打断做了一半的任务优先复活而非重派——用 agent_followup（按 subId 寻址）对它追加新任务，自动从存档唤醒（同 subId、上下文无缝延续；一次性子代理复活后转正为可复用）。失败报告里的「死前进展」速览与 [[过程档案#N]] 标注指出它做到了哪；也可 agent_task 重派并让新实例「先用 read_archive（subId=N）读过程存档，再继续」——read_archive 也可传 sessionId 读另一段主对话的完整记录。",
     "- 子代理异常变动会自动通知（docs/11/16）：界面打断/归档等你看不见的变动会以「" + AUTO_DELIVERY_PREFIXES.status + "」消息告知你；每个任务的最终结果" +
       "（含失败与归档状态）以「" + AUTO_DELIVERY_PREFIXES.report + "」消息按完成顺序送达。派发回执与这些送达消息是感知子代理状态的事实源；" +
       "需要主动核对时用 subagent_status 查询当前状态表（只读快照，不打扰子代理）。",
@@ -84,12 +82,12 @@ const coordinatorBase = (sc: SectionContext): string =>
     "子代理工具参考（语义精确，严格按此使用）：",
     "- agent_task：派出一个子代理，立即返回「已派发」回执（非阻塞，不等待完成）。description（一句话摘要）与 task（自包含任务书）必填；name 可选短名（审批卡/报告/送达消息标注用）；" +
       `scope 可选写入分区（相对路径前缀数组）；reusable=true 派出可复用形态；timeoutMs 可选超时（≥${THRESHOLDS.subagentTimeoutMinMs} 毫秒）。同一轮发多个本调用即并行派出（见派发纪律）。`,
-    "- agent_followup：向空闲待命的可复用子代理追加新任务，立即返回「已派发」回执（非阻塞，不等待完成）。按 name 或 subId 寻址（同名的可复用子代理有多个时必须用 subId）；" +
+    "- agent_followup：向空闲待命或已归档（留有过程存档）的子代理追加新任务，立即返回「已派发」回执（非阻塞，不等待完成）。已归档的自动从存档唤醒复活（同 subId；一次性转正为可复用）。按 name 或 subId 寻址（同名多个时必须用 subId）；" +
       "它保留之前全部任务的上下文，任务书可引用既有进展，但新目标与期望产出仍要写清。",
     "- stop_subagent：打断一个运行中子代理的当前任务。语义：**立即中止**——进行中的 LLM 请求与工具执行（含 pwsh 进程）当场终止，" +
-      "已完成的进度保留在历史、半截内容作废。没有「恢复」：一次性子代理随之归档；可复用子代理转空闲待命（保留上下文），" +
+      "已完成的进度保留在历史、半截内容作废。打断结算：一次性子代理随之归档（过程存档保留，可用 agent_followup 从存档唤醒复活继续）；可复用子代理转空闲待命（保留上下文），" +
       "继续该方向的工作用 agent_followup 发新任务书。按 name（同名者全部生效）或 subId 指定；空闲待命的子代理没有可打断的对象。",
-    "- archive_subagent：归档一个可复用子代理——归档后仅可查看过程存档、不可再派任务。空闲待命时立即归档；" +
+    "- archive_subagent：归档一个可复用子代理——归档不是终结，需要继续时用 agent_followup 从存档唤醒复活（一次性转正为可复用）。空闲待命时立即归档；" +
       "执行中归档会先中止其当前任务。一次性子代理任务结束即自动归档，无需（也不支持）本工具。",
     "直用工具参考（只读查询与提问，严格按此使用）：",
     "- subagent_status：查看当前子代理状态表——活动子代理（运行中/空闲待命）的 subId/name/实时用时/上下文占用/任务摘要，all=true 附最近 " + THRESHOLDS.subagentStatusHistoryMax + " 条历史记录摘要。" +

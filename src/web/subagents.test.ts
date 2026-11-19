@@ -26,6 +26,8 @@ import type { SessionRuntime } from "../core/host.ts";
 import { SessionStore } from "./sessions.ts";
 import { AttachmentStore } from "./attachments.ts";
 import { runWorker, subagentServiceFor, applySubagentControl, archiveSourceOf, subagentStatusText, WORKER_ROLE_SECTION } from "./subagents.ts";
+import { progressDigestOf } from "./subagent-report.ts";
+import type { ChatMessage } from "../llm/provider.ts";
 import { makeWorkerUi } from "./subagent-worker.ts";
 import type { WorkerSession } from "./subagent-records.ts";
 import { isAutoReport, takeCoordinatorTurnText } from "./session-lifecycle.ts";
@@ -960,10 +962,11 @@ const subPhases = (h: Harness, subId: number): string[] =>
     .filter((b) => b.event === "subagent" && (b.data as { subId?: number }).subId === subId)
     .map((b) => (b.data as { phase: string }).phase);
 
-test("docs/9 可复用生命周期：reusable 派发→idle（记录 upsert state:idle/tasks）→followup 历史延续（第 2 次任务）→archive 定格→再派被拒", async () => {
+test("docs/9 可复用生命周期：reusable 派发→idle→followup 历史延续→archive 定格→followup 复活继续（docs/41，原「再派被拒」）", async () => {
   const llm = new ScriptProvider([
     { content: "报告：任务一完成", toolCalls: [], usage: null },
     { content: "报告：任务二完成", toolCalls: [], usage: null },
+    { content: "报告：任务三（复活后）完成", toolCalls: [], usage: null },
   ]);
   const h = makeHarness([], { llm });
   const svc = subagentServiceFor(h.sh, h.rt);
@@ -1009,7 +1012,7 @@ test("docs/9 可复用生命周期：reusable 派发→idle（记录 upsert stat
   assert.ok(parsed.messages.some((m) => m.role === "user" && m.content === "任务二"));
   assert.equal(h.rt.subagents.length, 1, "同 subId 记录 upsert（不追加）");
 
-  // 归档：记录定格 archived、句柄注销、archived 事件；归档后再派被拒
+  // 归档：记录定格 archived、句柄注销、archived 事件；归档后 followup 复活继续（docs/41）
   const msg = applySubagentControl(h.rt, { subId: 1 }, "archive");
   assert.ok(msg.includes("已归档子代理：spec#1"), msg);
   assert.ok(msg.includes("共完成 2 次任务"), msg);
@@ -1017,9 +1020,13 @@ test("docs/9 可复用生命周期：reusable 派发→idle（记录 upsert stat
   assert.equal(h.rt.subagents[0]!.tasks, 2);
   assert.equal(h.rt.activeSubagents.size, 0);
   assert.deepEqual(subPhases(h, 1), ["spawned", "idle", "task", "idle", "archived"]);
+  // docs/41：archived + 有存档 → followup 复活（同 subId 延续），第三次任务送达后回 idle
   const d3 = svc.followup({ subId: 1 }, { task: "任务三" });
-  assert.equal(d3.ok, false);
-  assert.ok(d3.error!.includes("已归档"), d3.error);
+  assert.ok(d3.ok, `归档复活受理：${d3.ok ? "" : d3.error}`);
+  assert.equal(d3.subId, 1);
+  await waitForInbox(h.rt, 3);
+  assert.ok(((h.rt.inbox ?? [])[2] ?? "").includes("任务三"), "复活任务报告送达");
+  assert.equal(h.rt.subagents[0]!.state, "idle");
 });
 
 test("运行计时：任务用时进送达报告/记录/事件（报告带「用时」；可复用跨任务累计 + 句柄 liveElapsedMs）", async () => {
@@ -1062,8 +1069,11 @@ test("运行计时：任务用时进送达报告/记录/事件（报告带「用
   assert.ok((onceRec.elapsedMs ?? 0) >= 0, "一次性记录带用时");
 });
 
-test("docs/9 followup 拒绝态：不存在 / 一次性已完成（已归档）/ 重启失效（idle 记录无句柄）；一次性记录 state=archived 不带 reusable", async () => {
-  const h = makeHarness([{ content: "一次性完成", toolCalls: [], usage: null }]);
+test("docs/9 followup 拒绝态：不存在 / 重启失效（idle 记录无句柄无存档）；docs/41：一次性已归档 followup 复活转正（原拒绝态）", async () => {
+  const h = makeHarness([
+    { content: "一次性完成", toolCalls: [], usage: null },
+    { content: "报告：复活完成", toolCalls: [], usage: null },
+  ]);
   const svc = subagentServiceFor(h.sh, h.rt);
   assert.ok(svc.dispatch({ task: "一次性任务", description: "d", name: "once" }).ok);
   await waitForInbox(h.rt); // 等结算（收尾 = 记录/句柄定型）
@@ -1072,8 +1082,12 @@ test("docs/9 followup 拒绝态：不存在 / 一次性已完成（已归档）/
   assert.equal(rec.reusable, undefined);
   assert.equal(h.rt.activeSubagents.size, 0, "一次性收尾即注销句柄");
 
-  const rOnce = svc.followup({ subId: 1 }, { task: "x" });
-  assert.ok(!rOnce.ok && rOnce.error.includes("已归档"), "一次性已完成 → 已归档拒绝");
+  // docs/41：一次性已归档但有过程存档 → followup 复活转正（不再是拒绝态）
+  const rOnce = svc.followup({ subId: 1 }, { task: "复活接着做" });
+  assert.ok(rOnce.ok, `一次性归档复活受理：${rOnce.ok ? "" : rOnce.error}`);
+  await waitForInbox(h.rt, 2);
+  assert.ok(h.rt.subagents[0]!.reusable === true, "一次性转正为可复用");
+  assert.equal(h.rt.subagents[0]!.state, "idle");
   const rMiss = svc.followup({ name: "ghost" }, { task: "x" });
   assert.ok(!rMiss.ok && rMiss.error.includes("没有找到这个子代理"), "不存在的目标拒绝");
 
@@ -1156,14 +1170,97 @@ test("docs/17 唤醒闸门与降级：存档缺失 → 唤醒失败指引重派�
   });
   const rHot = svc.followup({ subId: 6 }, { task: "x" });
   assert.ok(!rHot.ok && rHot.error.includes("上下文占用已达 40%"), "唤醒前先查上下文门槛（docs/10 R1 沿用）");
-  // 归档记录照旧拒绝（不唤醒）
+  // 归档记录「无过程存档」→ 拒绝（docs/41：有存档即复活，见下方专测）
   h.rt.subagents.push({
     subId: 7, name: "done", ok: true, reusable: true, state: "archived", tasks: 1,
-    transcript: join("sub-7-done", "transcript.json"), at: new Date().toISOString(),
+    at: new Date().toISOString(),
   });
   const rDone = svc.followup({ subId: 7 }, { task: "x" });
-  assert.ok(!rDone.ok && rDone.error.includes("已归档"), "归档不可唤醒");
+  assert.ok(!rDone.ok && rDone.error.includes("没有可唤醒的过程存档"), "归档且无存档 → 拒绝（docs/41）");
   assert.equal(h.rt.activeSubagents.size, 0, "全部拒绝路径不注册句柄");
+});
+
+// ---------- docs/41：归档复活（archived 记录 followup 即复活；一次性转正为可复用） ----------
+
+test("docs/41 归档复活：archived 可复用记录 followup → 同 subId 复活继续（历史延续，与重启唤醒同通道）", async () => {
+  const llm = new ScriptProvider([
+    { content: "报告：任务一完成", toolCalls: [], usage: null },
+    { content: "报告：复活后任务二完成", toolCalls: [], usage: null },
+  ]);
+  const h = makeHarness([], { llm });
+  const svc = subagentServiceFor(h.sh, h.rt);
+  assert.ok(svc.dispatch({ task: "任务一", description: "首任务", name: "spec", reusable: true }).ok);
+  await waitForInbox(h.rt);
+  // 模拟归档终态：句柄注销 + 记录翻 archived（同 finalizeArchive 效果）
+  h.rt.activeSubagents.clear();
+  h.rt.subagents[0]!.state = "archived";
+
+  const d = svc.followup({ name: "spec" }, { task: "任务二", description: "归档后复活追加" });
+  if (!d.ok) assert.fail(`复活受理失败：${d.error}`);
+  assert.equal(d.subId, 1, "同 subId 复活");
+  await waitForInbox(h.rt, 2);
+  const report2 = (h.rt.inbox ?? [])[1] ?? "";
+  assert.ok(report2.includes("第 2 次任务"), report2);
+  const second = llm.calls[1]!;
+  assert.ok(second.messages.some((m) => m.role === "user" && m.content === "任务一"), "请求含存档中的首任务书（历史延续）");
+  assert.ok(second.messages.some((m) => m.role === "assistant" && m.content === "报告：任务一完成"), "请求含存档中的首任务报告");
+  // 记录复活翻转：archived → idle（同 subId upsert）
+  assert.equal(h.rt.subagents[0]!.state, "idle");
+});
+
+test("docs/41 归档复活：一次性子代理超时归档后 followup → 复活转正为可复用（后续可直接再追加）", async () => {
+  const llm = new ScriptProvider([
+    { content: "报告：做了一半", toolCalls: [], usage: null },
+    { content: "报告：复活后接着做", toolCalls: [], usage: null },
+    { content: "报告：转正后再追加", toolCalls: [], usage: null },
+  ]);
+  const h = makeHarness([], { llm });
+  const svc = subagentServiceFor(h.sh, h.rt);
+  // 一次性派发（缺省形态）→ 结算即归档（transcript 真实落盘）
+  assert.ok(svc.dispatch({ task: "做一半的活", description: "一次性" }).ok);
+  await waitForInbox(h.rt);
+  const rec1 = h.rt.subagents[0]!;
+  assert.equal(rec1.state, "archived", "一次性结算即归档");
+  assert.ok(rec1.transcript, "过程存档已落盘");
+  assert.ok(!rec1.reusable, "一次性记录");
+
+  // 归档后 followup → 复活 + 转正
+  const d = svc.followup({ subId: rec1.subId! }, { task: "接着做完", description: "复活续做" });
+  if (!d.ok) assert.fail(`一次性复活受理失败：${d.error}`);
+  assert.equal(d.subId, rec1.subId, "同 subId 复活");
+  await waitForInbox(h.rt, 2);
+  const second = llm.calls[1]!;
+  assert.ok(second.messages.some((m) => m.role === "user" && m.content === "做一半的活"), "复活请求含死前任务书（历史延续）");
+  const recAfter = h.rt.subagents.find((r) => r.subId === rec1.subId)!;
+  assert.equal(recAfter.state, "idle", "复活后转 idle 待命");
+  assert.ok(recAfter.reusable, "一次性转正为可复用（docs/41）");
+  // 转正后可直接再 followup（在线 idle 直派，无需再走唤醒）
+  const d2 = svc.followup({ subId: rec1.subId! }, { task: "转正后再追加" });
+  assert.ok(d2.ok, `转正后 followup 应直收：${d2.ok ? "" : d2.error}`);
+  await waitForInbox(h.rt, 3);
+});
+
+test("progressDigestOf：残局速览提取（docs/41）——统计/写入文件/最近动作/最后文本；空历史返回 undefined", () => {
+  const msgs = [
+    { role: "system", content: "sys" },
+    { role: "user", content: "任务书" },
+    { role: "assistant", content: "", toolCalls: [{ id: "1", name: "write_file", arguments: '{"path":"src/a.ts","content":"x"}' }] },
+    { role: "tool", toolCallId: "1", content: "ok" },
+    { role: "assistant", content: "正在跑测试，还差 e2e。", toolCalls: [{ id: "2", name: "run_pwsh", arguments: '{"command":"npm test"}' }] },
+    { role: "tool", toolCallId: "2", content: "tests pass" },
+  ] as unknown as readonly ChatMessage[];
+  const d = progressDigestOf(msgs)!;
+  assert.ok(d.includes("已完成 2 个工具调用"), d);
+  assert.ok(d.includes("写入文件 1 个：src/a.ts"), d);
+  assert.ok(d.includes("write_file src/a.ts"), d);
+  assert.ok(d.includes("run_pwsh npm test"), d);
+  assert.ok(d.includes("最后进展：正在跑测试，还差 e2e。"), d);
+  // 首轮 LLM 调用中就超时：无任何完成轮 → undefined（不造假速览）
+  const empty = [
+    { role: "system", content: "sys" },
+    { role: "user", content: "任务书" },
+  ] as unknown as readonly ChatMessage[];
+  assert.equal(progressDigestOf(empty), undefined);
 });
 
 test("docs/17 archiveSourceOf：subId→子代理存档 / sessionId→主对话档 / 缺参附清单 / 二选一 / 非法 id 拒绝", async () => {
@@ -1372,10 +1469,10 @@ test("docs/10 R1：上下文 > 归档线（50%）→ 任务完成后强制归档
   assert.equal(h.rt.activeSubagents.size, 0, "句柄注销");
   const phases = h.broadcasts.filter((b) => b.event === "subagent").map((b) => (b.data as { phase: string }).phase);
   assert.ok(phases.includes("archived") && !phases.includes("idle"), `事件序列应 spawned→archived：${phases}`);
-  // 归档后 followup 得到「已归档」文案（驻留已释放）
+  // 归档后 followup：上下文过满（100% ≥ 35%）→ 复活门槛拒收（docs/41：此场景引导重派而非唤醒）
   const f = svc.followup({ subId: 1 }, { task: "再干" });
   assert.ok(!f.ok);
-  assert.ok(f.error!.includes("已归档"), f.error);
+  assert.ok(f.error!.includes("上下文占用已达 100%"), f.error);
 });
 
 test("docs/10 R1：followup 对上下文 ≥35% 的待命实例拒绝（含指引与过程档案链接）", async () => {
@@ -1607,7 +1704,7 @@ test("docs/11 W1：界面归档空闲可复用子代理 → 状态通知送达�
   assert.ok(notice.startsWith("[子代理状态 · 自动送达]"), notice);
   assert.ok(notice.includes("s2#2"), notice);
   assert.ok(notice.includes("已被用户归档"), notice);
-  assert.ok(notice.includes("不可再用 agent_followup"), notice);
+  assert.ok(notice.includes("agent_followup 从存档唤醒复活"), notice);
 });
 
 test("docs/18：界面打断运行中子代理 → 状态通知送达且失败报告不送（协调者只收一条）；工具路径不重复送", async () => {

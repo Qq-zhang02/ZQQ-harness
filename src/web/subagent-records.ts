@@ -46,14 +46,14 @@ export function archiveDormantRecord(rt: SessionRuntime, rec: SubagentRecord, vi
   });
   if (via === "ui") {
     io?.deliver(
-      `${AUTO_DELIVERY_PREFIXES.status} 可复用子代理 ${rec.name}#${rec.subId} 已被用户归档（服务重启后的休眠待命记录；不可再用 agent_followup 追加任务）。` +
+      `${AUTO_DELIVERY_PREFIXES.status} 可复用子代理 ${rec.name}#${rec.subId} 已被用户归档（服务重启后的休眠待命记录；需要继续时用 agent_followup 从存档唤醒复活）。` +
         (rec.transcript
-          ? `需要继续该方向的工作时用 agent_task 重新派发，任务书可让它先用 read_archive（subId=${rec.subId}）读过程存档接续上下文 [[过程档案#${rec.subId}]]。`
-          : "需要继续该方向的工作时用 agent_task 重新派发。"),
+          ? `也可用 agent_task 重新派发，任务书可让新实例先用 read_archive（subId=${rec.subId}）读过程存档接续上下文 [[过程档案#${rec.subId}]]。`
+          : "也可用 agent_task 重新派发。"),
     );
   }
   io?.persist();
-  return `已归档子代理：${rec.name}#${rec.subId}（休眠待命——服务重启后运行实例不在线；共完成 ${rec.tasks ?? 0} 次任务）。归档后仅可查看过程存档，不可再派任务。`;
+  return `已归档子代理：${rec.name}#${rec.subId}（休眠待命——服务重启后运行实例不在线；共完成 ${rec.tasks ?? 0} 次任务）。归档不是终结：需要继续时用 agent_followup 从存档唤醒复活。`;
 }
 
 /** 可复用 worker 的驻留上下文（docs/9）：装配一次跨任务复用（Agent 与完整历史延续即复用

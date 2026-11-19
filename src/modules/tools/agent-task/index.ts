@@ -29,7 +29,7 @@ const agentFollowupDef: SystemToolDef = {
 
 const archiveSubagentDef: SystemToolDef = {
   name: "archive_subagent",
-  summary: "归档一个可复用子代理（归档后仅可查看存档，不可再派任务；执行中归档会先中止当前任务）",
+  summary: "归档一个可复用子代理（归档不是终结：可随时用 agent_followup 从存档唤醒复活；执行中归档会先中止当前任务）",
   audience: "coordinator",
   create: createArchiveSubagentTool,
 };

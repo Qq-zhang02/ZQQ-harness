@@ -90,6 +90,23 @@ test("agent_task：服务缺失（非协调者会话装配）返回防御错误"
   assert.equal(out, "错误：子代理服务不可用（本会话不是协调者会话）。");
 });
 
+test("formatWorkerResult：失败带残局速览与复活/接续指引（docs/41；一次性也带 read_archive 指引）", () => {
+  const r = {
+    ok: false, text: "", error: "子代理超时（300000ms）", rounds: 3, subId: 2,
+    transcript: "sub-2-demo/transcript.json",
+    progressDigest: "已完成 4 个工具调用；写入文件 2 个：src/a.ts、src/b.ts。\n最后进展：正在跑 e2e…",
+  };
+  const out = formatWorkerResult(r, "demo");
+  assert.ok(out.includes("[子代理 demo 失败] 子代理超时（300000ms）（3 轮）"), out);
+  assert.ok(out.includes("死前进展："), "残局速览段");
+  assert.ok(out.includes("已完成 4 个工具调用"), "速览内容");
+  assert.ok(out.includes("read_archive（subId=2）"), "一次性失败也带 read_archive 指引（docs/41 修复）");
+  assert.ok(out.includes("agent_followup 从存档唤醒复活"), "复活指引");
+  assert.ok(out.includes("[[过程档案#2]]"), "过程档案标记");
+  // 无速览/无 transcript 的失败保持原样（不加空指引）
+  assert.equal(formatWorkerResult({ ok: false, text: "", error: "失败" }, "n"), "[子代理 n 失败] 失败");
+});
+
 test("formatWorkerResult：无 rounds/usage 时不输出统计段", () => {
   assert.equal(formatWorkerResult({ ok: true, text: "报告" }, "n"), "[子代理 n 完成]\n---\n报告");
   assert.equal(formatWorkerResult({ ok: false, text: "", error: "失败" }, "n"), "[子代理 n 失败] 失败");
