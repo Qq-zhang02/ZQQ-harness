@@ -353,6 +353,12 @@ function addHistoryThink(g, text) {
 
 function applyState() {
   $("#modelBadge").textContent = C.state.model;
+  const ver = metaOf().version; // 版号徽标（package.json，随 meta 下发；首次会话快照到达即显示）
+  if (ver) {
+    const vb = $("#verBadge");
+    vb.textContent = "v" + ver;
+    vb.classList.remove("hidden");
+  }
   $("#kindBadge").classList.toggle("hidden", C.state.kind !== "coordinator"); // 协调者会话徽标（按会话记录）
   updateDrwBtn(); // 需求三：子代理抽屉开关按钮（协调者会话且有 worker 记录才显示）
   renderTree();
@@ -457,6 +463,12 @@ function renderTokPanel() {
     tokRow("MCP 工具", bd.mcp) +
     tokRow("消息（随对话增长）", bd.messages);
   if (bd.other > 0) h += tokRow("其他", bd.other);
+  // 修剪观测性（docs/40）：会话累计工具结果修剪统计——调参时能看见截断发生
+  const prune = C.state.prune;
+  if (prune && prune.count > 0) {
+    h += '<div class="tokrow"><span>修剪（会话累计）</span><b>' + prune.count + ' 次 · ' +
+      fmtTok(prune.chars) + ' 字符被剪 · 落盘 ' + (prune.spills || 0) + ' 份</b></div>';
+  }
   h += '<div class="tokrow total"><span>输入合计（会话累计）</span><b>' + fmtTok(C.state.totals.prompt) + '</b></div>';
   h += '<div class="tokrow"><span>输出合计（会话累计）</span><b>' + fmtTok(C.state.totals.completion) + '</b></div>';
   if (C.state.totals.cacheHit > 0) h += tokRow("缓存命中率（API 实测）", cacheRatePct(C.state.totals.cacheHit, C.state.totals.prompt));
