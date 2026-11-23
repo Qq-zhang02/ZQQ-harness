@@ -11,6 +11,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { THRESHOLDS } from "../config.ts";
 import { AUTO_DELIVERY_PREFIXES } from "../core/events.ts";
+import { progressDigestOf } from "../core/progress.ts";
 import type { Agent } from "../agent.ts";
 import type { ChatMessage } from "../llm/provider.ts";
 import type { SessionRuntime } from "../core/host.ts";
@@ -19,6 +20,7 @@ import type { SessionData, SubagentArchiveMeta, SubagentRecord } from "./session
 import type { SessionShell } from "./session-runtime.ts";
 import { finalizeArchive, type WorkerSession } from "./subagent-records.ts";
 import { deliverToCoordinator, followupContextReject, runOneTask } from "./subagent-report.ts";
+import { wakeBriefOf } from "./subagent-brief.ts";
 import { createWorkerSession, makeWorkerUi, mountWorkerAgent, workerDirTag } from "./subagent-worker.ts";
 
 /** 存档文件宽容解析（docs/17）：新格式 = SessionData 同构（kind:"subagent"，带 subagent 元
@@ -51,6 +53,8 @@ export function dumpTranscript(sh: SessionShell, rt: SessionRuntime, ws: WorkerS
     mkdirSync(ws.spillDir, { recursive: true });
     const messages = worker.messages.filter((m) => m.role !== "system");
     const u = ws.usage;
+    // docs/42：进展速览随存档落盘（旧档缺省 = 无；read_archive 摘要版/唤醒简报可直接取用）
+    const progress = progressDigestOf(messages);
     const data: SessionData = {
       id: rt.id,
       title: ws.description ? `${ws.name}·${ws.description}` : ws.name,
@@ -66,7 +70,7 @@ export function dumpTranscript(sh: SessionShell, rt: SessionRuntime, ws: WorkerS
         ...(u.cacheHit ? { cacheHit: u.cacheHit } : {}),
         ...(u.reasoning ? { reasoning: u.reasoning } : {}),
       },
-      subagent: archiveMetaOf(ws, state),
+      subagent: archiveMetaOf(ws, state, progress),
       messages,
     };
     writeFileSync(join(ws.spillDir, "transcript.json"), JSON.stringify(data, null, 2), "utf8");
@@ -78,7 +82,7 @@ export function dumpTranscript(sh: SessionShell, rt: SessionRuntime, ws: WorkerS
 
 /** 存档 meta 块（docs/17）：累计统计与 SubagentRecord 同口径（ok/error 属最近任务故不入档
  *  ——记录为准）+ 构造期参数（scope/effort/system，唤醒重装 Agent 用）。 */
-function archiveMetaOf(ws: WorkerSession, state: "idle" | "archived"): SubagentArchiveMeta {
+function archiveMetaOf(ws: WorkerSession, state: "idle" | "archived", progress?: string): SubagentArchiveMeta {
   const u = ws.usage;
   return {
     subId: ws.subId,
@@ -103,6 +107,8 @@ function archiveMetaOf(ws: WorkerSession, state: "idle" | "archived"): SubagentA
     ...(ws.effort ? { effort: ws.effort } : {}),
     ...(ws.scope && ws.scope.length > 0 ? { scope: ws.scope } : {}),
     ...(ws.system?.trim() ? { system: ws.system } : {}),
+    ...(ws.readOnly ? { readOnly: true } : {}),
+    ...(progress ? { progress } : {}),
   };
 }
 
@@ -220,7 +226,10 @@ export function reviveFollowup(
   if (archive.meta?.effort) ws.effort = archive.meta.effort;
   if (archive.meta?.scope && archive.meta.scope.length > 0) ws.scope = archive.meta.scope;
   if (archive.meta?.system?.trim()) ws.system = archive.meta.system;
+  if (archive.meta?.readOnly) ws.readOnly = true; // docs/42：只读约束随存档还原（须在装配前——装配据此裁剪工具）
   if (desc) ws.active.summary = desc; // 抽屉行摘要随最近任务更新
+  // 唤醒简报的磁盘变动基准 = 记录的最近收尾时刻（rec.at）；解析不出就不扫（不造假基准）
+  const sinceMs = Date.parse(rec.at);
   const p = (async (): Promise<SubagentResult> => {
     let worker: Agent;
     try {
@@ -243,7 +252,10 @@ export function reviveFollowup(
       finalizeArchive(sh, rt, ws, reusables);
       return res;
     }
-    return await runOneTask(sh, rt, ws, freq.task, { timeoutMs: freq.timeoutMs, description: desc, first: false }, signal, reusables);
+    // docs/42 唤醒简报：复活的新实例一睁眼就看到「做到哪 / 上次活动后范围内谁改了什么 / 看过哪些图」，
+    // 并回填「上次见过且未变动」文件的已读台账（此前复活后编辑自建文件必先重读一轮）
+    const brief = wakeBriefOf(rt.workspace?.root, ws.ledger, archive.messages, Number.isFinite(sinceMs) ? sinceMs : undefined, ws.scope, { rehydrate: true });
+    return await runOneTask(sh, rt, ws, freq.task, { timeoutMs: freq.timeoutMs, description: desc, first: false, brief }, signal, reusables);
   })().catch((e): SubagentResult => ({ ok: false, text: "", error: e instanceof Error ? e.message : String(e), subId: rec.subId, reusable: true, name: rec.name }));
   rt.workers.add(p); // 并发闸（C7）口径；句柄已在同步段登记
   void p.finally(() => rt.workers.delete(p)).catch(() => {});

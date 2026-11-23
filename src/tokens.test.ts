@@ -188,3 +188,37 @@ test("messageTokens：带图消息的对象身份缓存路径同样生效", () =
   assert.equal(a, b);
   assert.ok(a >= THRESHOLDS.imageTokenEst);
 });
+
+// ---------- docs/42 修订：文本模型的请求省略图像——计数口径与实际请求同源 ----------
+
+test("messageTokens/estimateBreakdown：omitImages 口径不计图像块；带图/省略两种口径独立缓存互不污染", () => {
+  const cnt = (s: string) => s.length;
+  const img = { mime: "image/png" as const, data: "A" };
+  const m: ChatMessage = { role: "tool", toolCallId: "c", content: "abcd", images: [img, img] };
+  const withImages = messageTokens(m, cnt);
+  const omitted = messageTokens(m, cnt, false, true);
+  assert.equal(withImages - omitted, 2 * THRESHOLDS.imageTokenEst);
+  assert.equal(messageTokens(m, cnt, false, true), omitted, "省略口径命中缓存");
+  assert.equal(messageTokens(m, cnt), withImages, "再取带图口径仍是旧值（两种口径互不污染）");
+  assert.equal(messageTokenCount(m, () => 0, false, true), 4, "省略口径只剩框架开销");
+  // 省略口径与思考回传口径正交：带思考的助手消息（无图）两种口径下 passback 增量一致
+  const am: ChatMessage = { role: "assistant", content: null, toolCalls: [{ id: "c", name: "t", arguments: "{}" }], thinking: { text: "abcd" } };
+  assert.equal(messageTokens(am, cnt, true, true) - messageTokens(am, cnt, false, true), 4);
+  // estimateBreakdown 用真实分词器：另建结构相同的新对象（逐对象缓存不区分注入的计数函数——
+  // 上面那个 m 已按 s.length 计过数）
+  const img2 = { mime: "image/png" as const, data: "A" };
+  const msgs: ChatMessage[] = [
+    { role: "system", content: "sys" },
+    { role: "tool", toolCallId: "c", content: "abcd", images: [img2, img2] },
+    { role: "user", content: "x", images: [img2] },
+  ];
+  const full = estimateBreakdown(msgs, []);
+  const thin = estimateBreakdown(msgs, [], [], null, undefined, true);
+  assert.equal(full.messages - thin.messages, 3 * THRESHOLDS.imageTokenEst);
+  // 省略口径与「本来就没有图」逐值相同
+  const bare = estimateBreakdown(
+    [{ role: "system", content: "sys" }, { role: "tool", toolCallId: "c", content: "abcd" }, { role: "user", content: "x" }],
+    [],
+  );
+  assert.equal(thin.messages, bare.messages);
+});

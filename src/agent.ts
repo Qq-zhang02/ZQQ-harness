@@ -88,6 +88,12 @@ export interface AgentDeps {
   compaction?: CompactionDeps;
   /** 系统提示 sections（可选；缺省用 core 内置六段）。宿主传入 ctx.promptSections 以支持扩展段。 */
   promptSections?: Registry<PromptSection, "name">;
+  /** 只读会话（可选，docs/42 只读子代理）：随工具上下文下发——文件写入工具硬拒、run_pwsh 按只读
+   *  沙箱执行且不可提权（「只报告不写文件」的结构性保证，不靠任务书文字约束）。 */
+  readOnly?: boolean;
+  /** 上下文预警线提示（可选，docs/42；子代理装配时注入）：占用越过 warnPct 的那一刻向历史注入
+   *  一次系统提示，让模型在还来得及的时候收敛行为（少读图/大文件、先落盘进展再收尾）。 */
+  contextWarn?: { contextLength(): number; warnPct: number };
 }
 
 function previewArgs(raw: string): string {
@@ -109,6 +115,20 @@ const INTERIM_TASK_STATUS =
  *  白名单外的调用（幻觉出的 agent_task、阻塞型的 ask_user 等）不执行、以错误文本回填——
  *  interim 不派发新任务、不发起阻塞提问。 */
 const INTERIM_CONTROL_TOOLS = new Set(["stop_subagent", "archive_subagent", "subagent_status"]);
+
+/** 图片预算移出后追加在所在消息文本尾部的说明（docs/42 修订；被移的图永久移除、不再随请求发送）。 */
+const imageOffloadedNote = (count: number): string =>
+  `[图片已移出上下文（${count} 张）：会话内图片超过预算上限，这是最早的一批，已永久移除、不再随请求发送。` +
+  "工具读取的图可按原路径重新 read_image；若预算仍被占满，重读的图还会被移出——需要看新图请让用户调大会话内图片预算]";
+
+/** 越过预算后一次移到预算的该比例以下（成批移出——每次移出都让前缀缓存从被移的那条起整段失效）。 */
+const IMAGE_BUDGET_TARGET = 0.75;
+
+/** base64 串对应的解码字节数（预算按解码后字节计，与 IMAGE_RULES 单张上限同口径；不计末尾填充，误差可忽略）。 */
+const decodedImageBytes = (b64: string): number => Math.floor((b64.length * 3) / 4);
+
+/** 预算字节的人类可读写法（UI 提示用）：≥1 MiB 用 MiB（一位小数），否则 KB。 */
+const fmtBudgetBytes = (b: number): string => (b >= 1024 * 1024 ? `${Math.round((b / 1024 / 1024) * 10) / 10} MiB` : `${Math.round(b / 1024)} KB`);
 
 /**
  * Agent 循环：用户输入 → LLM →（有 tool_calls 则执行并回填）→ LLM → … → 最终回答。
@@ -136,6 +156,12 @@ export class Agent {
    *  本地估算（固定部分变化时做差量校正）。history 被整体替换（compact/restore/clear）
    *  或换提供方（各家计量口径不同）时置 null，回退纯估算，下次请求重建。 */
   private usageAnchor: { promptTokens: number; len: number; lastMsg: ChatMessage; fixed: number } | null = null;
+  // ---- 图片预算（docs/42 修订） ----
+  /** 历史中模型已经「看到」的前缀长度（= 最近一次成功请求时的历史长度）：其后新增的带图消息
+   *  是模型还没看过的新图，预算移出时不先动它们。 */
+  private seenLen = 0;
+  /** 上下文预警线提示已发过（每个 Agent 生命周期至多一次；clear/restore 后随新历史复位语义自然解除） */
+  private contextWarned = false;
   // ---- 修剪观测性（docs/40 阶段二） ----
   /** 会话累计工具结果修剪统计：工具循环结算时经 notePrune 累加，state 载荷经
    *  pruneStats() 透出（前端 Token 面板一行展示）——调参时能看见截断发生。 */
@@ -242,12 +268,14 @@ export class Agent {
    *  other 归 0、总量取估算——宁高勿低，压力闸保守触发）。 */
   contextEstimate(): { total: number; breakdown: UsageBreakdown } {
     const passback = this.thinkingPassbackOf();
+    const omit = this.imagesOmitted();
     const breakdown = estimateBreakdown(
       this.history,
       this.deps.registry.schemas(),
       this.deps.skills ?? [],
       this.deps.mcpInstructions ?? null,
       passback,
+      omit,
     );
     const fixed = breakdown.systemPrompt + breakdown.skills + breakdown.systemTools + breakdown.mcp;
     const est = fixed + breakdown.messages; // 纯本地估算口径（回退值）
@@ -258,7 +286,7 @@ export class Agent {
       let appended = 0;
       for (let i = a.len; i < this.history.length; i++) {
         const m = this.history[i]!;
-        appended += messageTokens(m, estTokens, passback(m));
+        appended += messageTokens(m, estTokens, passback(m), omit);
       }
       total = Math.max(0, a.promptTokens + appended + fixed - a.fixed);
     }
@@ -285,6 +313,100 @@ export class Agent {
   clear(): void {
     this.history = [{ role: "system", content: this.buildSystemPrompt() }];
     this.usageAnchor = null;
+    this.contextWarned = false;
+    this.seenLen = 0;
+  }
+
+  /** 本次请求是否省略图像（docs/42 修订）：会话模型无视觉能力（deps.vision 未置）= 文本模型——
+   *  带图消息只发文本 + 省略说明（提供方投影 ChatParams.omitImages），历史不动；token 估算
+   *  同步不计图像块（计数口径与实际请求同源）。 */
+  private imagesOmitted(): boolean {
+    return !this.deps.vision;
+  }
+
+  /**
+   * 图片预算（docs/42 修订，DSH 口径）：图像块随历史常驻——模型可随时回看，前缀缓存不因读图
+   * 失效；只有同时留在上下文里的图片超出预算（张数 imageContextMaxCount / 总字节
+   * imageContextMaxBytes，任一超限）才把最早的移出：所在消息换成新对象（留下的图照带、内容
+   * 追加移出说明），被移的图永久生效、不再随请求发送。每次请求前调用；纯文本会话不发图——
+   * 不移出，换回视觉模型时原样恢复。一张图 = 一个移出单位（同一条消息里的图可以只移出一部分
+   * ——用户一次贴多张时不至于整条丢失）。移出顺序：
+   *   ① 已看过的工具读图（可按原路径重新 read_image）——一次移到预算的 IMAGE_BUDGET_TARGET
+   *      以下：被移的是最早的图，前缀缓存从它所在那条起整段失效，成批移出比每读一张移一张省；
+   *   ② 模型还没看过的工具读图、③ 用户贴图——仅当移完前一档仍超硬预算才动，且只移到硬预算
+   *      （用户贴图不能按路径重读，排在最后；用户贴图占满预算时新读的工具图会被移出）。
+   * 必须新建对象而非原地删字段：tokens 的逐对象计数缓存与 usageAnchor 的身份比对都按对象走。
+   */
+  private enforceImageBudget(): void {
+    if (!this.deps.vision) return;
+    const maxCount = THRESHOLDS.imageContextMaxCount;
+    const maxBytes = THRESHOLDS.imageContextMaxBytes;
+    const units: Array<{ i: number; j: number; kind: "tool" | "user"; seen: boolean; bytes: number; drop: boolean }> = [];
+    let count = 0;
+    let bytes = 0;
+    for (let i = 0; i < this.history.length; i++) {
+      const m = this.history[i]!;
+      if ((m.role !== "tool" && m.role !== "user") || !m.images?.length) continue;
+      m.images.forEach((img, j) => {
+        const b = decodedImageBytes(img.data);
+        units.push({ i, j, kind: m.role, seen: i < this.seenLen, bytes: b, drop: false });
+        count++;
+        bytes += b;
+      });
+    }
+    const over = (c: number, b: number): boolean => count > c || bytes > b;
+    if (!over(maxCount, maxBytes)) return;
+    const targetCount = Math.floor(maxCount * IMAGE_BUDGET_TARGET);
+    const targetBytes = Math.floor(maxBytes * IMAGE_BUDGET_TARGET);
+    const drop = (u: (typeof units)[number]): void => {
+      u.drop = true;
+      count--;
+      bytes -= u.bytes;
+    };
+    // units 按历史顺序排列（同一条消息内按图序）——逐档从头扫即「最早的先移」
+    for (const u of units) if (u.seen && u.kind === "tool" && over(targetCount, targetBytes)) drop(u);
+    for (const u of units) if (!u.seen && u.kind === "tool" && over(maxCount, maxBytes)) drop(u);
+    for (const u of units) if (u.seen && u.kind === "user" && over(maxCount, maxBytes)) drop(u);
+    for (const u of units) if (!u.seen && u.kind === "user" && over(maxCount, maxBytes)) drop(u);
+    const dropped = units.filter((u) => u.drop);
+    if (dropped.length === 0) return;
+    // 逐消息重建：只动真的被移了图的消息。消息下标 → 被移出的图在该消息 images 里的下标
+    const byMsg = new Map<number, number[]>();
+    for (const u of dropped) byMsg.set(u.i, [...(byMsg.get(u.i) ?? []), u.j]);
+    for (const [i, js] of byMsg) {
+      const m = this.history[i]!;
+      const imgs = m.role === "tool" || m.role === "user" ? (m.images ?? []) : [];
+      const kept = imgs.filter((_, j) => !js.includes(j));
+      const content = `${m.content}\n${imageOffloadedNote(js.length)}`;
+      const base = m.role === "tool" ? { role: "tool" as const, toolCallId: m.toolCallId } : { role: "user" as const };
+      this.history[i] = { ...base, content, ...(kept.length > 0 ? { images: kept } : {}) };
+    }
+    this.usageAnchor = null; // 历史前缀里的消息被替换——锚点的「前缀未变」前提不再成立，下次请求重建
+    this.deps.ui.printInfo(
+      `[图片预算] 会话内图片超过上限（${maxCount} 张 / ${fmtBudgetBytes(maxBytes)}），已把最早的 ${dropped.length} 张图片移出上下文（工具读取的图可按路径重新读取）`,
+    );
+  }
+
+  /**
+   * 上下文预警线提示（docs/42）：占用（API 实测锚定口径）越过 warnPct 时向历史注入一次系统提示
+   * ——与轮次上限的收尾提示同形（user 角色的括号提示），模型在还来得及收敛的时候收到：少读图/
+   * 大文件、先把进展落盘再收尾。每个 Agent 生命周期至多一次（后续任务不重复打扰）。调用点在
+   * 本轮 tool 消息全部入档之后——tool 消息后接 user 消息是合法序列（interim 合并点同款形状）。
+   */
+  private maybeWarnContext(): void {
+    const w = this.deps.contextWarn;
+    if (!w || this.contextWarned) return;
+    const pct = Math.round(this.contextPressure(w.contextLength()) * 100);
+    if (pct <= w.warnPct) return;
+    this.contextWarned = true;
+    this.deps.ui.printInfo(`[上下文 ${pct}% 已越过预警线 ${w.warnPct}%] 已提示模型精简操作并尽快收尾`);
+    this.history.push({
+      role: "user",
+      content:
+        `（系统提示：你的上下文占用已达 ${pct}%，超过预警线 ${w.warnPct}%。请立即精简操作：` +
+        "停止非必要的读图与大文件读取，把当前进展、关键结论与下一步先用文字写进产出文件，然后尽快收尾交报告；" +
+        "未完成的部分在报告里列清楚，留给后续任务接续。）",
+    });
   }
 
   /** 切换工作区：更新系统提示（含 AGENTS.md、技能清单与 MCP 说明），保留会话历史（任务运行中不要调用）。传 undefined 保持不变。 */
@@ -315,6 +437,8 @@ export class Agent {
         : { role: "system" as const, content: this.buildSystemPrompt() };
     this.history = [sys, ...messages];
     this.usageAnchor = null;
+    this.contextWarned = false;
+    this.seenLen = this.history.length; // 恢复档里的图都是此前会话发过的——预算移出时按「已看过」处理
   }
 
   /**
@@ -322,6 +446,8 @@ export class Agent {
    * fail-safe：摘要调用失败/超时/返回空 → 放弃压缩，history 原样保留。
    * opts.keepTokens 可覆盖保留预算：手动 /compact 传小预算（立即显著变小），
    * 缺省按提供方上下文的 THRESHOLDS.compactionKeepRatio（自动触发/溢出兜底语义）。
+   * 图像块（docs/42 修订）：落在被摘要替换区间里的图随消息移除、不再进请求（read_image 的
+   * 结果文本带路径，摘要按路径可重读）；保留尾部里的图照常携带。
    */
   async compact(opts?: { keepTokens?: number }): Promise<CompactOutcome> {
     const compaction = this.deps.compaction;
@@ -330,7 +456,7 @@ export class Agent {
     const tokensBefore = this.contextEstimate().total;
     const keepTokens = opts?.keepTokens ?? Math.round(compaction.contextLength() * THRESHOLDS.compactionKeepRatio);
     const passback = this.thinkingPassbackOf();
-    const cut = chooseCutIndex(history, keepTokens, (m) => messageTokens(m, estTokens, passback(m)));
+    const cut = chooseCutIndex(history, keepTokens, (m) => messageTokens(m, estTokens, passback(m), this.imagesOmitted()));
     if (cut < 2) return { ok: false, reason: "没有可压缩的历史（找不到安全的轮边界切点）" };
     const toSummarize = history.slice(1, cut);
     if (toSummarize.length === 0) return { ok: false, reason: "没有可压缩的历史" };
@@ -345,6 +471,7 @@ export class Agent {
       };
       this.history = [history[0], summaryMsg, ...history.slice(cut)];
       this.usageAnchor = null; // history 整体替换，实测锚点失效（tokensAfter 为估算口径，下次请求重建）
+      this.seenLen = this.history.length; // 保留尾部里的图都是模型看过的
       const record: CompactionRecord = {
         at: new Date().toISOString(),
         cutIndex: cut,
@@ -403,8 +530,9 @@ export class Agent {
       { role: "user", content: text },
     ];
     const controlTools = registry.schemas().filter((t) => INTERIM_CONTROL_TOOLS.has(t.name)); // 普通会话恒空 → 行为不变
+    const omit = this.imagesOmitted();
     const breakdown = estimateBreakdown(
-      messages, controlTools, this.deps.skills ?? [], this.deps.mcpInstructions ?? null, this.thinkingPassbackOf(),
+      messages, controlTools, this.deps.skills ?? [], this.deps.mcpInstructions ?? null, this.thinkingPassbackOf(), omit,
     );
     const p = (async (): Promise<"ok" | "failed"> => {
       try {
@@ -412,6 +540,7 @@ export class Agent {
           messages,
           ...(controlTools.length > 0 ? { tools: controlTools } : {}), // 无控制工具时不带 tools（收尾轮先例，字节不变）
           effort: settings.effort,
+          ...(omit ? { omitImages: true } : {}),
           onReasoningDelta: (t) => ui.printReasoningDelta(t),
           onTextDelta: (t) => ui.printTextDelta(t),
           signal: this.runSignal,
@@ -429,6 +558,7 @@ export class Agent {
           workspace: this.deps.workspace,
           requestApproval: this.deps.requestApproval,
           alwaysConfirm: settings.alwaysConfirm,
+          ...(this.deps.readOnly ? { readOnly: true } : {}),
           signal: this.runSignal ?? undefined,
         };
         for (const call of r.toolCalls) {
@@ -443,11 +573,12 @@ export class Agent {
         // 收尾应答（不带工具）：让模型基于控制结果组织给用户的回复
         const messages2: ChatMessage[] = [...messages, ...seq];
         const breakdown2 = estimateBreakdown(
-          messages2, [], this.deps.skills ?? [], this.deps.mcpInstructions ?? null, this.thinkingPassbackOf(),
+          messages2, [], this.deps.skills ?? [], this.deps.mcpInstructions ?? null, this.thinkingPassbackOf(), omit,
         );
         const r2 = await provider.chat({
           messages: messages2,
           effort: settings.effort,
+          ...(omit ? { omitImages: true } : {}),
           onReasoningDelta: (t) => ui.printReasoningDelta(t),
           onTextDelta: (t) => ui.printTextDelta(t),
           signal: this.runSignal,
@@ -507,16 +638,19 @@ export class Agent {
     let rounds = 0; // 入档的助手消息数 = 实际请求轮数（供子代理报告 rounds）
 
     for (let round = 0; round < this.maxToolRounds; round++) {
+      this.enforceImageBudget(); // docs/42 修订：图片预算——超限才把最早的移出（每轮请求前统一执行）
       // 每轮重取工具 schema：manage_mcp 热重载后新 MCP 工具下一轮即可调用（token 估算随之间源）
       const tools = registry.schemas();
       // 输入 token 分类估算：按本次实际请求的消息、工具 schema、技能与 MCP 说明计算
       const passback = this.thinkingPassbackOf();
+      const omit = this.imagesOmitted();
       const breakdown = estimateBreakdown(
         this.history,
         tools,
         this.deps.skills ?? [],
         this.deps.mcpInstructions ?? null,
         passback,
+        omit,
       );
       const reqLen = this.history.length; // 请求 payload 形状（实测锚点用；chat 期间 history 不变）
       let result;
@@ -525,6 +659,7 @@ export class Agent {
           messages: [...this.history],
           tools,
           effort: settings.effort,
+          ...(omit ? { omitImages: true } : {}),
           onReasoningDelta: (t) => ui.printReasoningDelta(t),
           onReplayDegrade: (reason, src) => {
             // 同一思考块在多轮工具循环中反复发送，签名缺失只告警一次
@@ -551,6 +686,7 @@ export class Agent {
         }
         throw e;
       }
+      this.seenLen = reqLen; // docs/42 修订：请求成功 = 这段历史模型已看过（其后新增的图是未看过的新图）
       if (result.usage) {
         // API 实测锚点：contextEstimate 的总量以此为准（本地估算只补锚点后的新增部分）
         this.anchorUsage(
@@ -597,6 +733,7 @@ export class Agent {
         spillDir: this.deps.spillDir?.(),
         privateTempDir: this.deps.privateTempDir?.(),
         ...(this.deps.writeScope ? { writeScope: this.deps.writeScope } : {}),
+        ...(this.deps.readOnly ? { readOnly: true } : {}),
         signal,
       };
       // W2-L2：工具循环 = 唯一接受 interim 的窗口（agent_task 等阻塞在 executeWithMeta）。
@@ -639,6 +776,7 @@ export class Agent {
       // 同样经过这里（缓冲不丢）。必须等在飞的 interim 完成，否则那对消息错过本轮合并。
       await this.interimFlight?.catch(() => {});
       this.mergeInterimQueue();
+      this.maybeWarnContext(); // docs/42：越过预警线一次性提示（tool 消息后的 user 消息是合法形状）
       if (signal?.aborted) {
         ui.printInfo("[本轮已被用户中断]");
         return null;
@@ -651,11 +789,14 @@ export class Agent {
       role: "user",
       content: "（系统提示：工具调用轮次已达上限，请不要再调用工具，直接基于已获得的信息给出最终回答。）",
     });
-    const finalBreakdown = estimateBreakdown(this.history, [], this.deps.skills ?? [], this.deps.mcpInstructions ?? null, this.thinkingPassbackOf()); // 收尾请求不带工具
+    this.enforceImageBudget(); // docs/42 修订：收尾请求前同样过一遍预算
+    const omit = this.imagesOmitted();
+    const finalBreakdown = estimateBreakdown(this.history, [], this.deps.skills ?? [], this.deps.mcpInstructions ?? null, this.thinkingPassbackOf(), omit); // 收尾请求不带工具
     const finalReqLen = this.history.length; // 实测锚点用（收尾请求 payload 形状）
     const final = await provider.chat({
       messages: [...this.history],
       effort: settings.effort,
+      ...(omit ? { omitImages: true } : {}),
       onReasoningDelta: (t) => ui.printReasoningDelta(t),
       onReplayDegrade: (reason, src) => {
         if (!this.replayDegradeWarned.has(src)) {
@@ -666,6 +807,7 @@ export class Agent {
       onTextDelta: (t) => ui.printTextDelta(t),
       signal,
     });
+    this.seenLen = finalReqLen;
     if (final.usage) {
       // 实测锚点（fixed 不含工具 schema——收尾请求没带；下次请求重新带上时由差量校正补回）
       this.anchorUsage(

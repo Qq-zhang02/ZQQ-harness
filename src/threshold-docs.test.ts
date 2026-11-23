@@ -19,8 +19,8 @@ test("防漂移（docs/40）：README 阈值段覆盖全部活跃阈值键，键
     0,
     `README 阈值段（harness.json 示例块）缺键：${missing.map((m) => m.key).join("、")}——新增阈值键必须同步 README 示例与说明段（三件套惯例）`,
   );
-  // 历史漂移实例的回归哨兵：总数字数文案过期即红（当前 36 活跃键）
-  for (const stale of ["三十四个运行阈值", "三十个运行阈值"]) {
+  // 历史漂移实例的回归哨兵：总数字数文案过期即红（当前 38 活跃键；三十七 = docs/42 初版口径，修订后 +1）
+  for (const stale of ["三十四个运行阈值", "三十个运行阈值", "三十七个运行阈值"]) {
     assert.ok(!readme.includes(stale), `README 阈值键数口径过期：「${stale}」（当前 ${schema.entries.length} 活跃键）`);
   }
 });

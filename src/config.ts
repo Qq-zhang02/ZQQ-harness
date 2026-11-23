@@ -112,6 +112,12 @@ export interface EffectiveThresholds {
   httpBodyMaxBytes: number;
   /** 每张图片的 token 固定估算（≥1 整数；换视觉模型后可校准口径） */
   imageTokenEst: number;
+  /** 会话内图片预算·张数（≥1 整数；docs/42 修订）：图像块随历史常驻（模型可随时回看），
+   *  同时在上下文里的图片超过该数即把最早的移出（永久换成占位文本，不再随请求发送）。 */
+  imageContextMaxCount: number;
+  /** 会话内图片预算·总字节（>0 整数字节；docs/42 修订）：与张数同为移出判据——大图场景
+   *  由它兜住单次请求的图片载荷（每轮请求都会重发全部常驻图片）。 */
+  imageContextMaxBytes: number;
 }
 
 /** harness.json thresholds 的覆盖项：键可省略 = 用缺省。 */
@@ -340,6 +346,14 @@ export const THRESHOLD_RULES: Readonly<Record<keyof EffectiveThresholds, Thresho
     hint: "≥1 的整数 token", desc: "每张图片的 token 固定估算——仅影响用量估算显示与压缩判定，换视觉模型后可校准", group: "vision",
     range: { integer: true, min: 1 },
   },
+  imageContextMaxCount: {
+    hint: "≥1 的整数张数", desc: "会话内图片预算（张数）——图片随历史常驻、可随时回看；同时在上下文里的图片超过该数即把最早的移出（永久换成占位文本，工具读的图可按路径重读）。调大=保留更多图，单次请求更重（docs/42）", group: "vision",
+    range: { integer: true, min: 1 },
+  },
+  imageContextMaxBytes: {
+    hint: ">0 的整数字节数", desc: "会话内图片预算（字节）——常驻图片总字节超过该值即把最早的移出；兜住单次请求的图片载荷（每轮请求都重发全部常驻图片），默认 16 MiB（docs/42）", group: "vision",
+    range: { integer: true, exclusiveMin: 0 },
+  },
   spillMaxAgeHours: {
     hint: "≥1 的整数小时", desc: "spill 过程档案清扫年龄（小时）——启动时删除超龄的会话 spill 目录", group: "sweep",
     range: { integer: true, min: 1 }, restart: true,
@@ -535,6 +549,10 @@ export function resolveThresholds(t: ThresholdOverrides): EffectiveThresholds {
     compactionSummaryMaxChars: t.compactionSummaryMaxChars ?? 300_000,
     httpBodyMaxBytes: t.httpBodyMaxBytes ?? 32 * 1024 * 1024,
     imageTokenEst: t.imageTokenEst ?? 800,
+    // docs/42 修订：图片预算——图像块常驻，超预算才把最早的移出（缺省 40 张 / 16 MiB：
+    // 16 MiB 解码后 base64 约 21 MiB，单次请求的图片载荷留有余量）
+    imageContextMaxCount: t.imageContextMaxCount ?? 40,
+    imageContextMaxBytes: t.imageContextMaxBytes ?? 16 * 1024 * 1024,
   };
   if (out.pwshMaxTimeoutMs < out.pwshTimeoutMs) out.pwshMaxTimeoutMs = out.pwshTimeoutMs;
   return out;

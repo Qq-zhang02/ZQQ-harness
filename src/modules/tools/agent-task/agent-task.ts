@@ -35,6 +35,12 @@ export function taskItemProperties(): Record<string, unknown> {
         "可选，可复用子代理（docs/9）：任务完成后保留待命（完整上下文延续），后续用 agent_followup 按 name/subId 追加任务、不再使用时 archive_subagent 归档。" +
         "同一专业方向要跨多次任务延续时才用；缺省 false=一次性（用完即自动归档）。",
     },
+    readOnly: {
+      type: "boolean",
+      description:
+        "可选，只读子代理：不装配 write_file/edit_file 与 MCP 工具，run_pwsh 按只读沙箱执行且不可提权——用于「只调查/核对/报告、不写文件」的任务" +
+        "（结构性保证，比在任务书里写「不要写文件」可靠；需要落盘的内容它会写进报告）。",
+    },
   };
 }
 
@@ -69,6 +75,10 @@ export function parseTaskItem(args: Record<string, unknown>): { error: string } 
   if (args.reusable !== undefined && args.reusable !== null && args.reusable !== false) {
     if (args.reusable !== true) return { error: "错误：reusable 只能是布尔值（true=可复用；缺省 false=一次性）。" };
     req.reusable = true;
+  }
+  if (args.readOnly !== undefined && args.readOnly !== null && args.readOnly !== false) {
+    if (args.readOnly !== true) return { error: "错误：readOnly 只能是布尔值（true=只读；缺省 false=可写）。" };
+    req.readOnly = true;
   }
   return req;
 }
@@ -129,9 +139,13 @@ export function formatWorkerResult(r: SubagentResult, name: string, thresholds?:
         `\n（该子代理可复用：${name}#${r.subId} 已保留待命，但其上下文占用 ${r.contextPct}% 已达追加上限（${followupPct}%）——agent_followup 将被拒绝；` +
         `需要继续工作时用 archive_subagent 归档后 agent_task 重新派发（${readArchiveHint}）。）`;
     } else if (r.contextPct !== undefined && r.contextPct > warnPct) {
+      // docs/42：预警 ≠ 必须重派——两种处置并列，按用户意愿选；用户要求保留原实例时不要再派新实例
+      // 写同一目录（真机教训：接手的新实例在旧实例恢复前改写了它的脚本与产出）
       standby =
         `\n（该子代理可复用：${name}#${r.subId} 已保留待命，后续任务用 agent_followup 按 name/subId 追加。` +
-        `⚠ 上下文过长预警：其上下文占用 ${r.contextPct}% 已超过 ${warnPct}%——上下文过长的子代理继续任务容易产生幻觉，建议尽快用 archive_subagent 归档并 agent_task 重新派发（新${readArchiveHint}）；达到 ${followupPct}% 后追加将被拒绝。）`;
+        `⚠ 上下文过长预警：其上下文占用 ${r.contextPct}% 已超过 ${warnPct}%——上下文过长的子代理继续任务容易产生幻觉。两种处置按用户意愿选：` +
+        `①保留它继续——agent_followup 追加时在任务书里要求精简操作（合并脚本、少读图、只写文档），用户明确要求保留原实例时选此，且不要再派新实例写同一目录；` +
+        `②archive_subagent 归档后 agent_task 重新派发（${readArchiveHint}）。达到 ${followupPct}% 后追加将被拒绝。）`;
     } else {
       standby = `\n（该子代理可复用：${name}#${r.subId} 已保留待命，后续任务用 agent_followup 按 name/subId 追加；不再使用时用 archive_subagent 归档。）`;
     }
@@ -144,22 +158,32 @@ export function formatWorkerResult(r: SubagentResult, name: string, thresholds?:
   const tail = stats.length > 0 ? `[子代理 ${name} 失败] ${why}（${stats.join(" · ")}）` : `[子代理 ${name} 失败] ${why}`;
   // docs/41：残局速览 + 接续指引——半成品不轻易放弃（一次性失败此前没有 read_archive 指引，一并修复）
   const digest = r.progressDigest ? `\n死前进展：\n${r.progressDigest}` : "";
+  // docs/42：提供方限流按类给建议。两类的半成品都已保留——首选复活同一实例续做，而不是重派
+  // 新实例把已完成的工作再做一遍（速率限制还会被新实例的并发请求再次触发）
+  const limitAdvice =
+    r.limitKind === "rate"
+      ? "\n⚠ 提供方速率限制（同一时间并发请求过多）：请降低并发——调小 subagentMaxConcurrent 或改串行推进，稍候再用 agent_followup 复活同一子代理续做（已完成的部分不必重做）。"
+      : r.limitKind === "cap"
+        ? "\n⚠ 提供方用量上限：须等额度重置后才能继续，立即重试无益；重置后用 agent_followup 复活同一子代理续做，不要重派新实例重复已完成的工作。"
+        : "";
   const guide =
     r.subId !== undefined && r.transcript !== undefined
-      ? `\n（半成品已保留：read_archive（subId=${r.subId}）可读全程过程；已归档的可复用与一次性子代理都可用 agent_followup 从存档唤醒复活继续` +
-        `（一次性转正为可复用，上下文与过程无缝延续；上下文超线的例外——复活会被拒收，改用 agent_task 重派）。）`
+      ? `\n（半成品已保留：read_archive（subId=${r.subId}，可加 summary=true 先读摘要版）可读全程过程；已归档的可复用与一次性子代理都可用 agent_followup 从存档唤醒复活继续` +
+        `（一次性转正为可复用，上下文与过程无缝延续；唤醒时它会收到系统生成的唤醒简报，知道自己做到哪、哪些文件被改过；上下文超线的例外——复活会被拒收，改用 agent_task 重派）。）`
       : "";
-  return tail + digest + guide + transcriptTag(r) + standby;
+  return tail + limitAdvice + digest + guide + transcriptTag(r) + standby;
 }
 
 /** 派发受理回执（docs/16）：agent_task/agent_followup 的返回文本——派发即返回、不等待；
- *  指引「报告自动送达后再处理」，防协调者在本轮编造或提前汇总尚未完成的结果。 */
-export function dispatchAck(name: string, subId: number, reusable: boolean): string {
+ *  指引「报告自动送达后再处理」，防协调者在本轮编造或提前汇总尚未完成的结果。
+ *  note（docs/42）：服务层附注（同范围已有可唤醒实例/并发占用/近期限流），原样附在回执尾。 */
+export function dispatchAck(name: string, subId: number, reusable: boolean, note?: string): string {
   return (
     `[子代理 ${name}#${subId} 已派发] 任务已在后台启动；本调用立即返回、不等待其完成。` +
     `它结算（完成/失败/打断/归档）后，报告会以「${AUTO_DELIVERY_PREFIXES.report}」开头的消息自动送达本会话，收到后再处理。` +
     `本轮可直接向用户说明派发情况；全部报告到齐前不要编造或提前汇总结果。` +
-    (reusable ? `\n（可复用子代理：任务完成后驻留待命，后续用 agent_followup 按 name=${name} 或 subId=${subId} 追加任务。）` : "")
+    (reusable ? `\n（可复用子代理：任务完成后驻留待命，后续用 agent_followup 按 name=${name} 或 subId=${subId} 追加任务。）` : "") +
+    (note ? `\n${note}` : "")
   );
 }
 
@@ -175,7 +199,9 @@ export function createAgentTaskTool(deps: SystemToolDeps): Tool {
       "互不依赖、写入范围不重叠的任务，在同一轮里发多个 agent_task 调用即可并行派出（超出并发上限的调用立即报错回执、不排队）。" +
       "任务结算（完成/失败/打断/归档）后，其报告会以「" + AUTO_DELIVERY_PREFIXES.report + "」开头的消息按完成顺序自动送达本会话，到齐后再汇总交付。" +
       "同一专业方向要跨多次任务延续时给 reusable=true" +
-      "（它完成后保留全部上下文待命，后续 agent_followup 追加任务、archive_subagent 归档；缺省一次性用完即归档）。",
+      "（它完成后保留全部上下文待命，后续 agent_followup 追加任务、archive_subagent 归档；缺省一次性用完即归档）。" +
+      "只调查/核对/报告、不需要写文件的任务给 readOnly=true（它没有写入工具，run_pwsh 只读——结构性保证）。" +
+      "回执可能附「写入范围重叠」提示：同范围已有待命/归档且留有过程存档的子代理时，接续它的工作优先 agent_followup 唤醒而非新派。",
     parameters: { type: "object", properties: taskItemProperties(), required: ["description", "task"] },
     async execute(args, ctx) {
       const svc = deps.subagent;
@@ -184,7 +210,7 @@ export function createAgentTaskTool(deps: SystemToolDeps): Tool {
       if ("error" in parsed) return parsed.error;
       const r = svc.dispatch(parsed, ctx.signal);
       if (!r.ok) return r.error;
-      return dispatchAck(r.name, r.subId, parsed.reusable === true);
+      return dispatchAck(r.name, r.subId, parsed.reusable === true, r.note);
     },
   };
 }

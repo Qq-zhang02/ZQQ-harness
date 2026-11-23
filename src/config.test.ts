@@ -425,9 +425,9 @@ test("parseHarnessConfig/resolveThresholds：阶段 B 8 键覆盖生效、非法
 
 // ---- docs/24：thresholdSchema（前端设置页单一出处）与严格写校验 ----
 
-test("thresholdSchema：36 活跃键全覆盖（无废弃键）、七组不重不漏、def 与 resolveThresholds({}) 同源、清扫两键标 restart", () => {
+test("thresholdSchema：38 活跃键全覆盖（无废弃键）、七组不重不漏、def 与 resolveThresholds({}) 同源、清扫两键标 restart", () => {
   const s = thresholdSchema();
-  assert.equal(s.entries.length, 36, "活跃键 = 36（35 + docs/40 readToolResultMaxChars；spillThreshold 废弃不入表）");
+  assert.equal(s.entries.length, 38, "活跃键 = 38（36 + docs/42 修订图片预算两键 imageContextMaxCount / imageContextMaxBytes；spillThreshold 废弃不入表）");
   assert.ok(s.entries.every((e) => e.key !== "spillThreshold"), "废弃键不下发");
   assert.deepEqual(s.groups.map((g) => g.key), ["general", "compaction", "pwsh", "subagent", "mcp", "vision", "sweep"]);
   const d = resolveThresholds({});
@@ -563,4 +563,28 @@ test("阶段 B 第二批 9 键：非法值 lenient 忽略并告警（三态之�
     assert.equal((bad.config.thresholds as Record<string, number | undefined>)[k], undefined, `${k} 非法应忽略`);
     assert.ok(bad.warnings.some((w) => w.includes(`"${k}"`)), `${k} 应有告警`);
   }
+});
+
+// ---- docs/42 修订：图片预算两键（imageContextMaxCount / imageContextMaxBytes）三态 ----
+
+test("docs/42 修订 图片预算：缺省 40 张 / 16 MiB、覆盖生效、initConfig 原地重绑；非法值 lenient 忽略并告警、严格写拒绝", () => {
+  assert.equal(resolveThresholds({}).imageContextMaxCount, 40, "缺省 40 张");
+  assert.equal(resolveThresholds({}).imageContextMaxBytes, 16 * 1024 * 1024, "缺省 16 MiB");
+  assert.equal(resolveThresholds({ imageContextMaxCount: 5, imageContextMaxBytes: 2_000_000 }).imageContextMaxBytes, 2_000_000, "覆盖生效");
+  try {
+    initConfig({ disabledModules: [], thresholds: { imageContextMaxCount: 3, imageContextMaxBytes: 300_000 } });
+    assert.equal(THRESHOLDS.imageContextMaxCount, 3, "THRESHOLDS 字段原地重绑（消费方调用期读取即见新值）");
+    assert.equal(THRESHOLDS.imageContextMaxBytes, 300_000);
+  } finally {
+    initConfig({ disabledModules: [], thresholds: {} });
+  }
+  assert.equal(THRESHOLDS.imageContextMaxCount, 40, "空配置重置回缺省");
+  const bad = parseHarnessConfig({ thresholds: { imageContextMaxCount: 0, imageContextMaxBytes: 0 } });
+  assert.equal(bad.config.thresholds.imageContextMaxCount, undefined, "0 张非法（≥1）被忽略");
+  assert.equal(bad.config.thresholds.imageContextMaxBytes, undefined, "0 字节非法（>0）被忽略");
+  for (const k of ["imageContextMaxCount", "imageContextMaxBytes"]) assert.ok(bad.warnings.some((w) => w.includes(`"${k}"`)), `${k} 应有告警`);
+  assert.equal(validateThresholdsStrict({ imageContextMaxCount: 1.5 }).ok, false, "非整数严格写拒绝");
+  assert.equal(validateThresholdsStrict({ imageContextMaxBytes: -1 }).ok, false, "负字节数严格写拒绝");
+  assert.equal(validateThresholdsStrict({ imageContextMaxCount: 1, imageContextMaxBytes: 1 }).ok, true);
+  assert.equal("imageVisibleRequests" in resolveThresholds({}), false, "「看过即退役」的键已撤销（未发布过，不留兼容别名）");
 });

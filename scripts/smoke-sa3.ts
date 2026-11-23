@@ -482,12 +482,13 @@ try {
     );
   }
 
-  // ---------- 10) docs/9 可复用子代理：reusable 派发 → idle 待命（记录 upsert）→ followup 追加（历史延续）→ 归档 → 再派被拒 ----------
+  // ---------- 10) docs/9 可复用子代理：reusable 派发 → idle 待命（记录 upsert）→ followup 追加（历史延续）→ 归档 → 归档后 followup 自动唤醒复活（docs/41） ----------
   {
     const broadcasts: { event: string; data: unknown }[] = [];
     (sh as { broadcast: (e: string, d: unknown) => void }).broadcast = (event, data) => broadcasts.push({ event, data });
     scripted.addScript("场景10首任务", [final("场景10首任务报告：产出 A")]);
     scripted.addScript("场景10追加任务", [final("场景10追加报告：产出 B")]);
+    scripted.addScript("场景10再派", [final("场景10复活报告：产出 C")]); // docs/41：归档后 followup = 从存档唤醒复活
     const agentTask = rt.registry.list().find((t) => t.name === "agent_task")!;
     const followup = rt.registry.list().find((t) => t.name === "agent_followup")!;
     const archiveTool = rt.registry.list().find((t) => t.name === "archive_subagent")!;
@@ -536,27 +537,31 @@ try {
       rec2?.tasks === 2 &&
       rt.activeSubagents.get(subId!)?.status === "idle";
 
-    // 归档：记录定格 state:"archived"、句柄注销、archived 事件；归档后再派被拒
+    // 归档：记录定格 state:"archived"、句柄注销、archived 事件；归档后 followup → 自动从存档唤醒复活（docs/41）。
+    // 此前这里断言「再派被拒」——docs/41 把语义改为复活时漏改本冒烟，sa3 自 v0.3.15 起恒为 10/11（docs/42 修正）
     const archMsg = await archiveTool.execute({ subId }, toolCtx());
     const rec3 = rt.subagents.find((r) => r.subId === subId);
+    const archivedOk = rec3?.state === "archived" && rec3?.tasks === 2 && !rt.activeSubagents.has(subId!); // 归档定格（复活之前的快照）
     const r3 = await followup.execute({ subId, task: "场景10再派" }, toolCtx());
+    await waitReports(1); // 复活后的任务结算（报告送达后记录翻回 idle、tasks=3）
     const miss = await followup.execute({ name: "不存在的", task: "场景10幽灵" }, toolCtx());
+    const rec4 = rt.subagents.find((r) => r.subId === subId);
     const phaseAll = broadcasts
       .filter((b) => b.event === "subagent" && (b.data as { subId?: number }).subId === subId)
       .map((b) => (b.data as { phase: string }).phase);
     const archOk =
       archMsg.includes("已归档子代理：spec#") &&
       archMsg.includes("共完成 2 次任务") &&
-      rec3?.state === "archived" &&
-      rec3?.tasks === 2 &&
-      !rt.activeSubagents.has(subId!) &&
-      r3.includes("已归档") &&
+      archivedOk &&
+      rec4?.state === "idle" && rec4?.tasks === 3 &&
+      rt.activeSubagents.get(subId!)?.status === "idle" && // 复活后句柄重新登记、空闲待命
+      r3.includes("已派发") &&
       miss.includes("没有找到这个子代理") &&
-      phaseAll.join("→") === "spawned→idle→task→idle→archived";
+      phaseAll.join("→") === "spawned→idle→task→idle→archived→task→idle"; // 复活：task 起跑 → idle 收尾（不重发 spawned）
     record(
-      "docs/9 可复用生命周期：reusable 派发→idle（记录 upsert state:idle/tasks）；followup 历史延续+第 2 次任务；归档定格 archived+句柄注销+再派被拒",
+      "docs/9 可复用生命周期：reusable 派发→idle（记录 upsert state:idle/tasks）；followup 历史延续+第 2 次任务；归档定格 archived+句柄注销；归档后 followup 自动唤醒复活并完成第 3 次任务（docs/41）",
       spawnOk && followupOk && archOk,
-      `派发=${spawnOk}；追加=${followupOk}（历史延续=${continuityOk}）；归档=${archOk}；phases=${phaseAll.join("→")}`,
+      `派发=${spawnOk}；追加=${followupOk}（历史延续=${continuityOk}）；归档=${archOk}【归档文案=${archMsg.includes("已归档子代理：spec#") && archMsg.includes("共完成 2 次任务")} 定格=${archivedOk} 复活受理=${r3.includes("已派发")} 复活后记录=${rec4?.state}/${rec4?.tasks} 幽灵寻址=${miss.includes("没有找到这个子代理")}】；phases=${phaseAll.join("→")}`,
     );
     (sh as { broadcast: (e: string, d: unknown) => void }).broadcast = () => {};
   }

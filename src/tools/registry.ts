@@ -23,6 +23,9 @@ export interface ToolContext {
    *  （不走审批——scope 是协调者的结构性决定）；run_pwsh 的守卫检测到引用区外路径时
    *  把「scope 越界」加入 reasons 强制弹卡由用户裁决（启发式，诚实边界）。缺省=整个工作区 */
   writeScope?: string[];
+  /** 只读会话（docs/42 只读子代理）：文件写入工具硬拒；run_pwsh 按只读沙箱执行且不可提权。
+   *  缺省 false（普通会话与可写子代理）。 */
+  readOnly?: boolean;
   signal?: AbortSignal;
 }
 

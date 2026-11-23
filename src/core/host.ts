@@ -19,6 +19,7 @@ import type { SkillInfo } from "./skills.ts";
 import type { SseEventName } from "./events.ts";
 import type { AskUserAnswer, SubagentResult } from "./types.ts";
 import type { FileLedger } from "./file-tools.ts";
+import type { ProviderLimitKind } from "./progress.ts";
 
 /** 活动子代理的控制句柄（W2-S，docs/18 起暂停/恢复机制退役）：由 web/subagents.ts 的
  *  runWorker 创建登记，stop_subagent 工具与 /api/subagent/control 路由经
@@ -30,6 +31,8 @@ export interface ActiveSubagent {
   name: string;
   /** 可复生子代理标记（docs/9）：句柄跨任务驻留；一次性子代理缺省不写 */
   reusable?: boolean;
+  /** 只读子代理（docs/42）：状态表标注「只读」 */
+  readOnly?: boolean;
   /** 生命周期（docs/9）：run=任务执行中；idle=可复用待命（无进行中任务）。一次性子代理只有 run。 */
   status: "run" | "idle";
   /** 任务摘要（可复用子代理 idle 行展示；随 followup 更新为最近任务摘要） */
@@ -140,6 +143,10 @@ export interface SessionRuntime {
    *  （worker 运行实例不跨重启存活；docs/17：可复用子代理重启后由 agent_followup 从过程存档
    *  自动唤醒）。 */
   activeSubagents: Map<number, ActiveSubagent>;
+  /** 本会话观察到的提供方限流（docs/42，瞬态不入档）：子代理任务因速率限制/用量上限失败时
+   *  记一笔——subagent_status 状态表与派发回执附注消费（提供方没有额度查询接口，限流发生后
+   *  如实记录是对协调者可见的那一半）。 */
+  subagentLimits?: Array<{ at: number; kind: ProviderLimitKind; message: string }>;
 }
 
 /** 会话列表载荷（GET /api/sessions 与 sessions 广播的形状）。 */

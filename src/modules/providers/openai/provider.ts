@@ -5,6 +5,7 @@
  */
 import OpenAI from "openai";
 import { isThinkingEffort, reasoningPassbackEnabled } from "../../../config.ts";
+import { imageOmittedNote } from "../../../llm/provider.ts";
 import type {
   ChatMessage,
   ChatParams,
@@ -36,11 +37,15 @@ function toSdkTool(tool: ToolSchema): OpenAI.Chat.Completions.ChatCompletionTool
  * 官方要求）；无工具调用的最终回答轮即使残留 thinking 也丢弃（API 反正忽略，省 token）。
  * user 消息带 images（docs/10 R3）时 content 转多模态数组（text + image_url data URI）；
  * 无图消息保持纯字符串（字节不变）。
+ * projection.omitImages（docs/42 修订）：文本模型的请求省略图像——带图消息只发文本 + 省略说明
+ * （不产生合成多模态消息）；历史不动，换回视觉模型即恢复。
  */
 export function toSdkMessages(
   messages: ChatMessage[],
   passback: boolean,
+  projection?: Pick<ChatParams, "omitImages">,
 ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+  const omit = projection?.omitImages === true;
   const mapped = messages.flatMap((m): Array<Record<string, unknown>> => {
     if (m.role === "assistant") {
       // 兜底：既无正文也无 tool_calls 的 assistant 消息会被 API 400 拒绝
@@ -62,6 +67,7 @@ export function toSdkMessages(
       // docs/34：read_image 的图像投影——tool role 在 OpenAI 兼容面只收文本，图像以紧随的
       // 合成 user 多模态消息投递（历史形状不变，路由兼容面最宽；紧邻 tool 结果语义连贯）
       if (m.images && m.images.length > 0) {
+        if (omit) return [{ role: "tool", tool_call_id: m.toolCallId, content: `${m.content}\n${imageOmittedNote(m.images.length)}` }];
         return [
           toolMsg,
           {
@@ -76,6 +82,7 @@ export function toSdkMessages(
       return [toolMsg];
     }
     if (m.role === "user" && m.images && m.images.length > 0) {
+      if (omit) return [{ role: "user", content: `${m.content}\n${imageOmittedNote(m.images.length)}` }];
       return [
         {
           role: "user",
@@ -128,7 +135,7 @@ export class OpenAICompatProvider implements LLMProvider {
     const passback = reasoningPassbackEnabled() && isThinkingEffort(effort);
     const body: Record<string, unknown> = {
       model: this.model,
-      messages: toSdkMessages(params.messages, passback),
+      messages: toSdkMessages(params.messages, passback, params),
       ...(params.tools && params.tools.length > 0 ? { tools: params.tools.map(toSdkTool) } : {}),
       ...(effort !== "default"
         ? {

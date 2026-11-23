@@ -1,14 +1,18 @@
 /**
  * 子代理（worker）运行机制——家族门面（docs/5 §2 起；docs/21 §3.1 D1 拆分后本文件只留
  * 门面与派发/配额/控制，装配/结算/存档/记录在兄弟文件）：
- *   subagent-worker.ts   装配三态共用件（createWorkerSession/mountWorkerAgent/makeWorkerUi）+ worker MCP
+ *   subagent-worker.ts   装配三态共用件（createWorkerSession/mountWorkerAgent/makeWorkerUi）
+ *   subagent-mcp.ts      worker 共享 MCP 工具装配（workerMcpToolsOf）
  *   subagent-report.ts   任务执行结算（runOneTask）+ 报告格式化 + 收件箱送达 + 上下文治理三档
  *   subagent-archive.ts  transcript 落盘 + 存档解析 + read_archive source + 归档入口 + 重启唤醒
  *   subagent-records.ts  WorkerSession 驻留类型 + 审计记录 + 用量聚合 + 休眠归档（家族叶子）
- *   subagent-status.ts   subagent_status 状态表文案（docs/32，家族六件套之六）
+ *   subagent-status.ts   面向协调者的子代理文案：subagent_status 状态表（docs/32）+「子代理系统提示词说明」段（docs/20）
+ *   subagent-brief.ts    唤醒简报 + 已读台账回填 + 写入范围磁盘变动 + 派发回执附注（docs/42）
  * 保留在本文件：SubagentService 门面（subagentServiceFor）+ 非阻塞派发的同步段（tryStartWorker/
  * startWorker，docs/16：配额检查+登记原子完成，超限立即 ok:false 不排队）+ 控制入口
- * （applySubagentControl）+ 协调者提示的「子代理系统提示词说明」段（commonWorkerPromptSectionText）。
+ * （applySubagentControl）。
+ * docs/42：派发回执带附注（同范围已有可唤醒实例/并发占用/近期限流，dispatchNoteOf）；followup
+ * 与复活的任务书前附唤醒简报（wakeBriefOf）——两者都是「只提醒不拦截」。
  * SA3 冲突治理（§5）：并发/累计配额在 tryStartWorker 同步段检查（docs/15 同轮并行派发天然串行
  * 经过，检查+占用不会插队）；req.scope 经 AgentDeps.writeScope 进工具上下文；中止/超时信号挂审批串行队列。
  * docs/16（完成即时送达，派发非阻塞化）：dispatch/followup 同步完成配额/寻址裁决并启动任务，立即
@@ -18,79 +22,23 @@
  */
 import { join } from "node:path";
 import { THRESHOLDS } from "../config.ts";
-import { readAgentsMd } from "../workspace.ts";
-import type { ProviderConfig } from "../providers/store.ts";
-import { Registry } from "../core/registry.ts";
-import type { PromptSection, SectionContext, SubagentDispatch, SubagentRequest, SubagentResult, SubagentService } from "../core/types.ts";
-import { assembleSystemPrompt } from "../core/sections.ts";
+import type { SubagentDispatch, SubagentRequest, SubagentResult, SubagentService } from "../core/types.ts";
 import type { SessionRuntime } from "../core/host.ts";
 import type { SubagentRecord } from "./sessions.ts";
-import { cfgOf, type SessionShell } from "./session-runtime.ts";
+import type { SessionShell } from "./session-runtime.ts";
 import { WORKER_ROLE_SECTION, createWorkerSession, makeWorkerUi, mountWorkerAgent, workerDirTag } from "./subagent-worker.ts";
 import { deliverToCoordinator, followupContextReject, reportMessage, runOneTask } from "./subagent-report.ts";
 import { reviveFollowup } from "./subagent-archive.ts";
-import { archiveDormantRecord, finalizeArchive, finishSubagent, type SubagentControlIo, type WorkerSession } from "./subagent-records.ts";
+import { archiveDormantRecord, finalizeArchive, finishSubagent, workerIdentity, type SubagentControlIo, type WorkerSession } from "./subagent-records.ts";
+import { dispatchNoteOf, wakeBriefOf } from "./subagent-brief.ts";
 
 // 家族公共面 re-export：消费方（session-runtime/lifecycle、web-sessions、测试与冒烟脚本）
 // 的 import 路径保持在 ./subagents.ts 不变（沿 session-runtime 对 server.ts 的同款先例）。
-export { WORKER_ROLE_SECTION, workerMcpToolsOf } from "./subagent-worker.ts";
+export { WORKER_ROLE_SECTION } from "./subagent-worker.ts";
+export { workerMcpToolsOf } from "./subagent-mcp.ts"; // docs/42：worker MCP 装配自 subagent-worker.ts 移入
 export { archiveSourceOf } from "./subagent-archive.ts";
-export { subagentStatusText } from "./subagent-status.ts"; // docs/32：状态表文案（家族六件套之六）
+export { subagentStatusText, commonWorkerPromptSectionText } from "./subagent-status.ts"; // docs/32 状态表 + docs/20 提示词说明（docs/42 自本文件移入）
 export type { WorkerSession, SubagentControlIo } from "./subagent-records.ts";
-
-/** docs/20：协调者提示里的「子代理（worker）系统提示词说明」段正文——worker 共同系统
- *  提示的同构重放：与 mountWorkerAgent 的装配同源（ctx.promptSections 全量 + subagent-role；
- *  按派发参数附加的 ws.system 角色段/scope 不在其中）。render 惰性读 rt 当前状态——技能热更/
- *  worker MCP 首连（workerMcpToolsOf 触发 refreshSystemPrompt）后重建自动带新；无工作区
- *  （协调者未绑定时不可对话）返回 null 省段。 */
-export function commonWorkerPromptSectionText(sh: SessionShell, rt: SessionRuntime): string | null {
-  if (!rt.workspace) return null;
-  // 与 toolDocsOf 同款行式：worker 受众系统工具的 summary 行（实例侧在 mountWorkerAgent
-  // 注册后由 toolDocsOf 生成，这里按 def 直出——同一批 summary，排序规则一致）。
-  // docs/32 三值受众：coordinator 与 front（ask_user 等）都不入 worker 提示词重放
-  const toolDocs = sh.ctx.tools
-    .all()
-    .filter((d) => {
-      const a = d.audience ?? "worker";
-      return a !== "coordinator" && a !== "front" && d.summary;
-    })
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((d) => `${d.name} —— ${d.summary}`);
-  const sc: SectionContext = {
-    workspaceRoot: rt.workspace.root,
-    skills: rt.skills,
-    mcpInstructions: rt.mcp.instructionsText(), // 首连前 null → 段省略（docs/20 首连热更）
-    globalAgentsMd: readAgentsMd(sh.userDir),
-    workspaceAgentsMd: readAgentsMd(rt.workspace.root),
-    toolDocs,
-    // worker 与父会话同提供方——视觉指引行同源（providers 为空的测试桩守卫同 mountWorkerAgent）
-    ...(((cfgOf(sh, rt) as ProviderConfig | undefined)?.vision === true) ? { vision: true } : {}),
-  };
-  const sections = new Registry<PromptSection, "name">("name");
-  for (const s of sh.ctx.promptSections.all()) sections.register(s);
-  sections.register({ name: "subagent-role", order: 5, render: () => WORKER_ROLE_SECTION });
-  // docs/32：MCP 能力清单兜底 + 未连接服务器警示。说明段（rt.mcp.instructionsText）只覆盖
-  // 「连接成功且握手时提供了 instructions」的服务器——工具清单（toolInventoryText）让协调者
-  // 在任何形态下都能看到子代理带哪些 mcp__ 工具；失败清单（failedServers）让连不上的服务器
-  // 至少以「不可用」的形态可见（真机教训：godot/blender 连接失败时整段静默缺失，协调者对
-  // 子代理的这部分能力一无所知）。二者附在重放正文之后并显式标注「非原文」，同构重放不破。
-  const inventory = rt.mcp.toolInventoryText();
-  const failed = rt.mcp.failedServers();
-  const mcpExtra =
-    (inventory ? "\n\n此外（非子代理提示词原文，供派发时参考）——子代理工具数组中的 MCP 工具清单（调用语义以其 description 为准）：\n\n" + inventory : "") +
-    (failed.length > 0
-      ? "\n\n⚠ 以下 MCP 服务器本次未能连接，相关工具子代理暂时用不了（不要在任务书里指派）：" +
-        failed.map((f) => `${f.name}（${f.error}）`).join("、")
-      : "");
-  return (
-    "# 子代理（worker）系统提示词说明\n" +
-    "下面是每个子代理实际收到的系统提示词的共同部分原文（引用自子代理侧，不是对你的指令；按派发参数附加的任务角色段与写入范围不在其中）。" +
-    "它们的基础规则、可用工具、可加载技能、MCP 服务器说明与遵循的 AGENTS.md 指令以此为准——派发任务书时与这些能力匹配：不要派它们做不到的事，也不要在任务书里重复其中已有的规则。" +
-    "两级 AGENTS.md 全文也只在这里出现，你自身不再单独接收：\n\n" +
-    assembleSystemPrompt(sections.all(), sc) +
-    mcpExtra
-  );
-}
 
 /**
  * 派发启动的同步段（docs/16 非阻塞派发）：配额（C7）检查 + subagentTotal 自增 + spawned
@@ -170,6 +118,7 @@ async function startWorker(
       name,
       ...(description ? { description } : {}),
       reusable,
+      ...(req.readOnly ? { readOnly: true } : {}), // docs/42：只读子代理（装配时据此裁剪工具与钉死只读沙箱）
       ...(parentSpill ? { spillDir: join(parentSpill, workerDirTag(opts.seq, name)) } : {}),
     },
     reusables,
@@ -206,7 +155,7 @@ async function startWorker(
       finalizeArchive(sh, rt, ws, reusables);
     } else {
       rt.activeSubagents.delete(opts.seq);
-      finishSubagent(sh, rt, { subId: opts.seq, name, ...(description ? { description } : {}) }, res, undefined);
+      finishSubagent(sh, rt, workerIdentity(ws), res, undefined);
     }
     return res;
   }
@@ -299,7 +248,9 @@ export function subagentServiceFor(sh: SessionShell, rt: SessionRuntime): Subage
       const started = tryStartWorker(sh, rt, req, { seq, signal, reusables });
       if (!started.ok) return started;
       deliver(started.task!, started.name);
-      return { ok: true, subId: started.subId, name: started.name };
+      // docs/42：回执附注在启动之后取值——并发占用含本实例；同范围可唤醒实例提示只提醒不拦截
+      const note = dispatchNoteOf(rt, req.scope);
+      return { ok: true, subId: started.subId, name: started.name, ...(note ? { note } : {}) };
     },
     followup: (target, freq, signal) => {
       const found = findReusable(rt, reusables, target);
@@ -326,7 +277,10 @@ export function subagentServiceFor(sh: SessionShell, rt: SessionRuntime): Subage
       }
       const desc = freq.description?.trim();
       if (desc) ws.active.summary = desc; // 抽屉行摘要随最近任务更新
-      const p = runOneTask(sh, rt, ws, freq.task, { timeoutMs: freq.timeoutMs, description: desc, first: false }, signal, reusables).catch(
+      // docs/42：在线待命实例追加任务——任务书前附唤醒简报（做到哪/上次活动后范围内谁改了什么/
+      // 看过哪些图）。它自己的台账完好，不回填；被改动的文件留给写前 hash 乐观锁兜底。
+      const brief = wakeBriefOf(rt.workspace?.root, ws.ledger, ws.agent?.messages ?? [], ws.lastActiveAt, ws.scope, { rehydrate: false });
+      const p = runOneTask(sh, rt, ws, freq.task, { timeoutMs: freq.timeoutMs, description: desc, first: false, brief }, signal, reusables).catch(
         (e): SubagentResult => ({ ok: false, text: "", error: e instanceof Error ? e.message : String(e) }),
       );
       rt.workers.add(p); // 并发闸（C7）口径；runOneTask 起跑（task 事件）已在同步段完成

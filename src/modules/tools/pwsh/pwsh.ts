@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { join } from "node:path";
 import { checkCommandAgainstWorkspace, isReadOnlyPwshCommand, pathHintsOutsideScope } from "../../../workspace.ts";
 import { THRESHOLDS } from "../../../config.ts";
 import type { Tool, ToolContext } from "../../../tools/registry.ts";
@@ -15,6 +16,49 @@ interface CollectResult {
   stdout: string;
   stderr: string;
   spawnError?: Error;
+  /** 直接子进程（pwsh）的 PID（docs/42：超时/中断回执里报出——树杀失败时可人工清理） */
+  pid?: number;
+}
+
+/** 剥离终端转义序列（docs/42）：ANSI CSI（颜色/光标控制）与 OSC（窗口标题/超链接）。程序向管道
+ *  输出时常仍带颜色码（pytest / npm / python rich 等）——模型读到的是 `[31;1m` 这类噪音，还占
+ *  修剪预算。只作用于入模型文本；采集上限处被截断的半截序列一并清掉。 */
+export function stripAnsi(s: string): string {
+  return s
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b$/g, "");
+}
+
+/** 终止整棵进程树（docs/42）。Node 的 child.kill() 在 Windows 上只 TerminateProcess 直接子进程
+ *  （pwsh）——它启动的脚本（python 等）成为孤儿继续跑：占 CPU、继续改工作区文件，还攥着继承来的
+ *  stdout 管道句柄不放，'close' 迟迟不触发，工具调用要等脚本自己跑完才返回（真机实录：300 s
+ *  超时后又挂了很久才拿到 `exit code: unknown`）。taskkill /T /F 按父子关系杀整棵树；用
+ *  SystemRoot 绝对路径调系统二进制（不依赖 PATH，也不给工作区里的同名程序可乘之机）。
+ *  非自生成环境（pid 未知/非 Windows/taskkill 失败）回落 child.kill()。 */
+function killTree(child: ChildProcess): void {
+  const pid = child.pid;
+  if (process.platform === "win32" && pid !== undefined) {
+    try {
+      const exe = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+      const r = spawnSync(exe, ["/PID", String(pid), "/T", "/F"], { windowsHide: true, timeout: 10_000, stdio: "ignore" });
+      if (r.status === 0) return;
+    } catch {
+      /* 回落 child.kill() */
+    }
+  }
+  try {
+    child.kill();
+  } catch {
+    /* 已退出 */
+  }
+}
+
+/** run_pwsh 子进程环境（docs/42）：缺省 PYTHONUNBUFFERED=1——Python 的 stdout 接管道/文件时是
+ *  块缓冲（实测 line_buffering=False），被超时终止时缓冲区里的进度行全部丢失，「跑到哪了」无从
+ *  得知；行级无缓冲让进度如实落进已捕获输出。宿主环境已显式设置则尊重（含显式关闭）。 */
+function childEnv(): NodeJS.ProcessEnv {
+  return process.env.PYTHONUNBUFFERED === undefined ? { ...process.env, PYTHONUNBUFFERED: "1" } : process.env;
 }
 
 /** 启动一个子进程并采集输出（超时/中断/UTF-8/采集上限）。child 可来自沙箱受限启动。 */
@@ -31,10 +75,10 @@ function collectChild(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill();
+      killTree(child);
     }, opts.timeoutMs);
 
-    const onAbort = () => child.kill();
+    const onAbort = () => killTree(child);
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
     const collect = (chunks: Buffer[]) => (d: Buffer) => {
@@ -64,18 +108,26 @@ function collectChild(
         stdout: Buffer.concat(outChunks).toString("utf8"),
         stderr: Buffer.concat(errChunks).toString("utf8"),
         ...(spawnError ? { spawnError } : {}),
+        ...(child.pid !== undefined ? { pid: child.pid } : {}),
       });
     });
   });
 }
 
 function formatResult(r: CollectResult): string {
+  // docs/42：超时回执把「发生了什么、还剩什么、接下来怎么办」说清——此前只有「超时被终止」几个字，
+  // 模型不知道进程树是否清干净、输出是否完整、半成品在哪（真机反馈：只能盲目重跑并拆分）
+  const timeoutNote = r.timedOut
+    ? `（超时被终止：已达本次 timeout_ms 上限${r.pid !== undefined ? `，进程树 PID ${r.pid} 已一并终止` : "，进程树已一并终止"}；` +
+      "以上是超时前已捕获的输出，脚本未跑完——工作区可能留有半成品文件。长任务请拆成可续跑的小步并逐步落盘中间结果，" +
+      `或在设置里调大 pwshMaxTimeoutMs（当前单次上限 ${THRESHOLDS.pwshMaxTimeoutMs} ms））`
+    : "";
   const head =
     `exit code: ${r.code ?? "unknown"}` +
-    `${r.timedOut ? "（超时被终止）" : ""}` +
+    timeoutNote +
     `${r.interrupted ? "（被用户中断）" : ""}` +
     `${r.overLimit ? "（输出超过采集上限，已丢弃部分内容）" : ""}`;
-  const body = `\n\n[stdout]\n${r.stdout || "(空)"}\n\n[stderr]\n${r.stderr || "(空)"}`;
+  const body = `\n\n[stdout]\n${stripAnsi(r.stdout) || "(空)"}\n\n[stderr]\n${stripAnsi(r.stderr) || "(空)"}`;
   return head + body;
 }
 
@@ -89,6 +141,7 @@ export async function runPwsh(
   const child = spawn("pwsh", ["-NoProfile", "-NonInteractive", "-Command", preamble + command], {
     cwd: opts.cwd,
     windowsHide: true,
+    env: childEnv(), // docs/42：PYTHONUNBUFFERED=1（进度行及时进已捕获输出）
   });
   const r = await collectChild(child, opts);
   if (r.spawnError) {
@@ -161,7 +214,8 @@ export function createPwshTool(deps?: SystemToolDeps): Tool {
       "在本机 Windows PowerShell 7 (pwsh) 中执行一条命令。工作目录为工作区根目录。" +
       "可用于查看/创建/修改工作区内文件、运行脚本和程序、查询系统信息。" +
       "注意：默认（workspace-write）只允许修改工作区内的文件，读操作不受限；" +
-      "引用工作区外路径或系统级操作会触发审批或沙箱拦截。",
+      "引用工作区外路径或系统级操作会触发审批或沙箱拦截。" +
+      `单次执行有超时上限（最大 ${THRESHOLDS.pwshMaxTimeoutMs} ms）：预计更久的计算请拆成可续跑的小步、每步落盘中间结果；Python 输出默认无缓冲，进度打印会如实进入返回文本。`,
     parameters: {
       type: "object",
       properties: {
@@ -176,7 +230,10 @@ export function createPwshTool(deps?: SystemToolDeps): Tool {
             "可选。仅当上一条命令刚被沙箱拒绝、且你确实需要更宽权限时使用：一句话说明理由，" +
             "本次执行将转交用户人工批准。不要在普通调用时填写。",
         },
-        timeout_ms: { type: "integer", description: `可选，超时毫秒数，默认 ${THRESHOLDS.pwshTimeoutMs}，最大 ${THRESHOLDS.pwshMaxTimeoutMs}` },
+        timeout_ms: {
+          type: "integer",
+          description: `可选，超时毫秒数，默认 ${THRESHOLDS.pwshTimeoutMs}，最大 ${THRESHOLDS.pwshMaxTimeoutMs}。预计更久的计算请拆成可续跑的小步并逐步落盘中间结果；超时会终止整棵进程树并返回已捕获的部分输出`,
+        },
       },
       required: ["command", "description"],
     },
@@ -197,8 +254,11 @@ export function createPwshTool(deps?: SystemToolDeps): Tool {
       // 守卫（提示层，永远跑）：产出 reasons 喂给审批卡，不再承担放行/拦截裁决
       const check = checkCommandAgainstWorkspace(command, ctx.workspace.root);
       // docs/30：沙箱模式 live 读（deps 会话闭包；无 deps 的测试桩回退 ctx 快照）——每个
-      // 裁决点各读一次，运行中改模式/审批卡上切模式，裁决与执行就用当下生效值
-      const modeOf = (): SandboxMode => deps?.sandboxMode() ?? (ctx.sandboxMode ?? "workspace-write");
+      // 裁决点各读一次，运行中改模式/审批卡上切模式，裁决与执行就用当下生效值。
+      // docs/42：只读子代理（ctx.readOnly）钉死 read-only——会话切到全开放、审批卡「解除沙箱并放行」
+      // 都给它开不了口子（只读是协调者派发时的结构性决定，不是审批事项）
+      const modeOf = (): SandboxMode =>
+        ctx.readOnly ? "read-only" : deps?.sandboxMode() ?? (ctx.sandboxMode ?? "workspace-write");
       // 子代理 scope 越界（docs/5 §5.4）：文件级硬约束的 pwsh 侧补丁——守卫检测到引用
       // scope 外路径时强制弹卡（任何沙箱模式都弹，含 danger-full-access），由用户裁决。
       // 检测是启发式（与 checkCommandAgainstWorkspace 同族），如实标注为诚实边界。
@@ -258,7 +318,8 @@ export function createPwshTool(deps?: SystemToolDeps): Tool {
       }
 
       // 升级重试：刚有命令被沙箱拒绝（有额度）+ 本次带 justification → 走人工审批，批准后以无约束方式执行一次
-      if (escalationCredits > 0 && justification) {
+      // （docs/42：只读子代理不走升级——提权后是无约束执行，只读约束不允许经审批被绕过）
+      if (!ctx.readOnly && escalationCredits > 0 && justification) {
         escalationCredits--;
         const decision = await askApproval(
           ["上一条命令刚被沙箱拒绝，模型为本次命令申请提权", ...check.reasons],
@@ -277,7 +338,9 @@ export function createPwshTool(deps?: SystemToolDeps): Tool {
       // 用户都不知道提权没发生（真机实录：删除命令连试多次全败却无一卡）。给一句明示：
       // 刚被拒（本拒绝攒出 1 点）→ 指引立即带 justification 重试即可弹卡；未被拒 → 说明无需提权。
       if (justification) {
-        const hint = escalationCredits > 0
+        const hint = ctx.readOnly
+          ? "（只读模式：本会话被限定为只读，justification 提权不生效——需要写入的工作请写进报告，由协调者另行安排可写实例。）"
+          : escalationCredits > 0
           ? "（本次 justification 未生效：申请时升级额度为 0；该命令刚被沙箱拒绝、现已攒出 1 点额度——下一次调用带 justification 重试即可转人工审批。）"
           : "（本次 justification 未生效：升级额度为 0，且本命令并未被沙箱拒绝——无需提权，请直接使用以上结果。）";
         return out + "\n" + hint;

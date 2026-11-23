@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createPwshTool, runPwsh } from "./pwsh.ts";
+import { readFileSync } from "node:fs";
+import { createPwshTool, runPwsh, stripAnsi } from "./pwsh.ts";
 import { createWorkspace } from "../../../workspace.ts";
 import type { ToolContext } from "../../../tools/registry.ts";
 import type { SystemToolDeps } from "../../../core/types.ts";
@@ -446,4 +447,97 @@ test("真机回归：justification 带了但额度为 0 且未被拒 → 明示�
   } finally {
     setSandboxRunner(noBackend);
   }
+});
+
+// ---------- docs/42：超时回执（部分输出/PID/进程树）、无缓冲、ANSI 剥离、只读子代理 ----------
+
+test("docs/42 stripAnsi：CSI 颜色/光标序列与 OSC 标题被剥离，普通文本（含方括号）原样", () => {
+  assert.equal(stripAnsi("\x1b[31;1mred\x1b[0m plain"), "red plain");
+  assert.equal(stripAnsi("\x1b]0;title\x07after"), "after");
+  assert.equal(stripAnsi("\x1b]8;;https://x\x1b\\link\x1b]8;;\x1b\\."), "link.");
+  assert.equal(stripAnsi("a[31]b (c) [x]"), "a[31]b (c) [x]", "方括号数字不是转义序列");
+  assert.equal(stripAnsi("进度 50%\x1b"), "进度 50%", "采集截断处的半截 ESC 一并清掉");
+});
+
+test("docs/42 runPwsh：超时返回已捕获的部分输出与 PID，整棵进程树被终止（孙进程不残留、调用即时返回）", async () => {
+  // 先打印一行进度，再拉一个会睡 60 s 的孙进程（打印其 PID），自己再睡 30 s——旧实现只杀 pwsh：
+  // 孙进程成为孤儿并攥着继承的 stdout 管道，'close' 要等它睡完才触发
+  const cmd =
+    "Write-Output 'step-1 done'; " +
+    "$g = Start-Process -NoNewWindow -PassThru pwsh -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60'; " +
+    "Write-Output \"GPID=$($g.Id)\"; Start-Sleep -Seconds 30";
+  const t0 = Date.now();
+  const out = await runPwsh(cmd, { cwd: WS.root, timeoutMs: 4_000 });
+  const elapsed = Date.now() - t0;
+  assert.ok(out.includes("超时被终止"), out);
+  assert.ok(out.includes("step-1 done"), `超时前已捕获的输出如实返回：\n${out}`);
+  assert.match(out, /进程树 PID \d+ 已一并终止/, "回执报出进程树 PID");
+  assert.ok(out.includes("pwshMaxTimeoutMs"), "给出下一步指引（拆分/落盘中间结果/调大上限）");
+  assert.ok(elapsed < 20_000, `调用应在超时后很快返回，而不是等孙进程睡完 60 s（实际 ${elapsed}ms）`);
+  const gpid = Number(/GPID=(\d+)/.exec(out)?.[1]);
+  assert.ok(Number.isInteger(gpid) && gpid > 0, `应拿到孙进程 PID：${out}`);
+  await new Promise((r) => setTimeout(r, 300)); // taskkill 异步收尾的余量
+  assert.throws(() => process.kill(gpid, 0), "孙进程已随进程树终止（kill(pid, 0) 应抛 ESRCH）");
+});
+
+test("docs/42 runPwsh：子进程缺省 PYTHONUNBUFFERED=1（Python 行缓冲，进度不丢）；宿主显式设置则尊重", async () => {
+  const prev = process.env.PYTHONUNBUFFERED;
+  try {
+    delete process.env.PYTHONUNBUFFERED;
+    const dflt = await runPwsh('Write-Output "PYUNC=$env:PYTHONUNBUFFERED"', { cwd: WS.root, timeoutMs: 30_000 });
+    assert.match(dflt, /PYUNC=1/);
+    process.env.PYTHONUNBUFFERED = "0";
+    const explicit = await runPwsh('Write-Output "PYUNC=$env:PYTHONUNBUFFERED"', { cwd: WS.root, timeoutMs: 30_000 });
+    assert.match(explicit, /PYUNC=0/, "宿主已显式设置则原样传递");
+  } finally {
+    if (prev === undefined) delete process.env.PYTHONUNBUFFERED;
+    else process.env.PYTHONUNBUFFERED = prev;
+  }
+});
+
+test("docs/42 runPwsh：输出里的 ANSI 颜色码被剥离后入模型", async () => {
+  const out = await runPwsh('[Console]::WriteLine("$([char]27)[32;1mgreen$([char]27)[0m plain")', { cwd: WS.root, timeoutMs: 30_000 });
+  assert.ok(out.includes("green plain"), out);
+  assert.ok(!out.includes("\x1b"), "转义序列不进模型文本");
+});
+
+test("docs/42 只读子代理：ctx.readOnly 钉死只读沙箱（会话全开放也不放开）、不可提权（justification 不弹卡）", async () => {
+  const modes: string[] = [];
+  let denied = 0;
+  setSandboxRunner({
+    name: "fake",
+    available: () => true,
+    run: async (_c, policy) => {
+      modes.push(policy.mode);
+      // 第一次：模拟写入被拒（攒升级额度）；第二次：带 justification 的重试
+      if (denied++ === 0) return { code: 1, timedOut: false, interrupted: false, overLimit: false, stdout: "", stderr: "Remove-Item: Access to the path is denied." };
+      return { code: 0, timedOut: false, interrupted: false, overLimit: false, stdout: "read-ok", stderr: "" };
+    },
+  });
+  try {
+    const tool = createPwshTool();
+    const asks: ApprovalRequest[] = [];
+    const ctx = makeCtx({
+      sandboxMode: "danger-full-access", // 会话本身全开放
+      readOnly: true, // 只读子代理
+      requestApproval: async (req) => {
+        asks.push(req);
+        return "allowed-once" as const;
+      },
+    });
+    await tool.execute({ command: "Remove-Item out.txt", description: "只读实例的写尝试" }, ctx);
+    const retry = await tool.execute({ command: "Remove-Item out.txt", description: "带 justification 重试", justification: "想提权" }, ctx);
+    assert.deepEqual(modes, ["read-only", "read-only"], "两条都按只读沙箱执行（不因会话全开放而无约束）");
+    assert.equal(asks.length, 0, "只读实例不走升级链路：不弹提权卡");
+    assert.ok(retry.includes("只读模式") && retry.includes("提权不生效"), retry);
+  } finally {
+    setSandboxRunner(noBackend);
+  }
+});
+
+test("docs/42 源码哨兵：沙箱受限执行的 PYTHONUNBUFFERED 还原必须用 delete（赋 undefined 会写成字符串 \"undefined\"）", () => {
+  const src = readFileSync(new URL("../../sandbox/windows-acl/windows-acl.ts", import.meta.url), "utf8");
+  assert.ok(src.includes('process.env.PYTHONUNBUFFERED = "1"'), "受限进程创建前设置无缓冲");
+  assert.ok(src.includes("delete process.env.PYTHONUNBUFFERED"), "创建后用 delete 还原");
+  assert.ok(!/process\.env\.PYTHONUNBUFFERED = prev/.test(src), "不得用赋值还原（undefined → \"undefined\"）");
 });

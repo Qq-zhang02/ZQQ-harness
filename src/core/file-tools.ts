@@ -272,6 +272,8 @@ export interface WriteGateInput {
   writeScope?: string[];
   sandboxMode?: SandboxMode;
   alwaysConfirm?: boolean;
+  /** 只读会话（docs/42 只读子代理）：写入一律硬拒（不走审批——只读是派发时的结构性决定） */
+  readOnly?: boolean;
   description?: string;
   requestApproval(req: ApprovalRequest): Promise<ApprovalDecision>;
 }
@@ -297,8 +299,18 @@ function relInsideScope(rel: string, prefixes: string[]): boolean {
  * - workspace-write：工作区内直接写；区外弹审批（等价 pwsh 的"沙箱拒绝→升级→审批"终点）；
  * - read-only：一律弹审批（等价 pwsh 的"拒绝→升级"终点，但一步到位）。
  * 只有 allowed-once 放行且仅限当次；野值/无人值守由 requestApproval 归一 unavailable。
+ * docs/42：readOnly（只读子代理）排在一切之前硬拒——只读是协调者派发时的结构性决定，不是用户
+ * 审批事项；正常装配下只读实例根本没有写入工具（mountWorkerAgent 不装），此处是纵深。
  */
 export async function adjudicateWrite(input: WriteGateInput): Promise<WriteGate> {
+  if (input.readOnly === true) {
+    return {
+      proceed: false,
+      text:
+        `错误：本实例为只读模式，不能${input.verb}文件：${input.abs}。` +
+        "需要落盘的内容请写进报告，由协调者安排可写实例——只读约束不能经审批放开。",
+    };
+  }
   if (input.writeScope && input.writeScope.length > 0) {
     const rel = relative(input.workspaceRoot, input.abs);
     if (!relInsideScope(rel, input.writeScope)) {

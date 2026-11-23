@@ -284,3 +284,18 @@ test("裁决矩阵：scope 分区硬拒不走审批；scope 内放行；前缀�
   const noScope = await adjudicateWrite(gateInput({ spy, abs: "F:/ws/anywhere.txt" }));
   assert.deepEqual(noScope, { proceed: true }); // 缺省=整个工作区，行为与现状一致
 });
+
+test("裁决矩阵（docs/42）：readOnly 硬拒不走审批——scope 之内、任何沙箱模式都拒（只读是结构性决定）", async () => {
+  for (const sandboxMode of ["danger-full-access", "workspace-write", "read-only"] as const) {
+    const spy: Spy = { asks: [], decide: () => "allowed-once" };
+    const out = await adjudicateWrite(gateInput({ spy, abs: "F:/ws/ro.md", readOnly: true, sandboxMode }));
+    assert.equal(out.proceed, false, `${sandboxMode} 下只读也拒`);
+    assert.ok(!out.proceed && out.text.includes("只读模式") && out.text.includes("F:/ws/ro.md") && out.text.includes("不能经审批放开"), out.text);
+    assert.equal(spy.asks.length, 0, "不弹审批卡（审批开不了只读的口子）");
+  }
+  // readOnly 缺省/false：裁决与此前完全一致
+  const spy: Spy = { asks: [], decide: () => "allowed-once" };
+  assert.deepEqual(await adjudicateWrite(gateInput({ spy, readOnly: false })), { proceed: true });
+  assert.deepEqual(await adjudicateWrite(gateInput({ spy, readOnly: undefined, inside: false, abs: "C:/x.txt" })).then((r) => r.proceed), true, "区外照常走审批");
+  assert.equal(spy.asks.length, 1);
+});

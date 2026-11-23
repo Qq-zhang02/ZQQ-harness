@@ -82,6 +82,12 @@ export interface ChatImage {
   data: string;
 }
 
+/** 文本模型省略图像时留在请求里的占位说明（docs/42 修订；两条提供方路线共用同一文案）。
+ *  只改请求投影、不动历史消息——换回有视觉能力的模型后图像块原样恢复（已被图片预算移出的除外）。 */
+export function imageOmittedNote(count: number): string {
+  return `[图片未随请求发送（${count} 张）：当前模型不支持视觉，本次只发文字；图片仍保留在对话历史里，换回有视觉能力的模型后恢复显示]`;
+}
+
 export type ChatMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string; images?: ChatImage[] }
@@ -101,6 +107,9 @@ export interface ChatParams {
   onReplayDegrade?: (reason: string, source: ThinkingBlock) => void;
   /** 当前对话的思考档位；不传用提供方配置档位 */
   effort?: EffortSetting;
+  /** 图像省略（docs/42 修订，DSH 口径）：true=本次请求的模型不支持视觉——带图消息只发文本，
+   *  图像块在请求内换成省略说明（imageOmittedNote）。缺省=照常投递图像。 */
+  omitImages?: boolean;
   signal?: AbortSignal;
 }
 

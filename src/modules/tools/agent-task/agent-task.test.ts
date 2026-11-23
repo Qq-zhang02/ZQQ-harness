@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { createFileLedger } from "../../../core/file-tools.ts";
 import type { SubagentDispatch, SubagentFollowup, SubagentRequest, SystemToolDeps } from "../../../core/types.ts";
 import type { Tool, ToolContext } from "../../../tools/registry.ts";
-import { createAgentFollowupTool, createAgentTaskTool, createArchiveSubagentTool, createStopSubagentTool, createSubagentStatusTool, formatWorkerResult, fmtDur, parseTaskItem } from "./agent-task.ts";
+import { createAgentFollowupTool, createAgentTaskTool, createArchiveSubagentTool, createStopSubagentTool, createSubagentStatusTool, dispatchAck, formatWorkerResult, fmtDur, parseTaskItem, taskItemProperties } from "./agent-task.ts";
 
 function makeTool(capture?: { req?: SubagentRequest; signal?: AbortSignal }, dispatch?: SubagentDispatch): Tool {
   const deps = {
@@ -100,7 +100,7 @@ test("formatWorkerResult：失败带残局速览与复活/接续指引（docs/41
   assert.ok(out.includes("[子代理 demo 失败] 子代理超时（300000ms）（3 轮）"), out);
   assert.ok(out.includes("死前进展："), "残局速览段");
   assert.ok(out.includes("已完成 4 个工具调用"), "速览内容");
-  assert.ok(out.includes("read_archive（subId=2）"), "一次性失败也带 read_archive 指引（docs/41 修复）");
+  assert.ok(out.includes("read_archive（subId=2"), "一次性失败也带 read_archive 指引（docs/41 修复；docs/42 起附 summary=true 摘要版提示）");
   assert.ok(out.includes("agent_followup 从存档唤醒复活"), "复活指引");
   assert.ok(out.includes("[[过程档案#2]]"), "过程档案标记");
   // 无速览/无 transcript 的失败保持原样（不加空指引）
@@ -316,6 +316,10 @@ test("formatWorkerResult：contextPct 落 (30,35) → 附「上下文过长」�
   assert.ok(out.includes("超过 30%"), "预警线数字");
   assert.ok(out.includes("agent_followup"), "仍邀请追加（未拒收）");
   assert.ok(out.includes("达到 35% 后追加将被拒绝"), "预告拒收线");
+  // docs/42：预警 ≠ 必须重派——两种处置并列，且写明「保留原实例时不要再派新实例写同一目录」
+  assert.ok(out.includes("两种处置按用户意愿选"), "预警并列两种处置");
+  assert.ok(out.includes("①保留它继续") && out.includes("不要再派新实例写同一目录"), "保留原实例的处置与同目录单实例纪律");
+  assert.ok(out.includes("②archive_subagent 归档后 agent_task 重新派发"), "归档重派仍是选项之一");
 });
 
 // ---------- docs/11 W1：归档原因说明（docs/16：暂停状态报随 facing 通道退役——暂停通知走送达消息） ----------
@@ -356,4 +360,57 @@ test("subagent_status：状态表文案透传与 all 参数透传；接缝缺失
   assert.deepEqual(seen, { all: true });
   const bare = createSubagentStatusTool({ ledger: createFileLedger() } as unknown as SystemToolDeps);
   assert.ok((await bare.execute({}, tctx)).includes("不是协调者会话"));
+});
+
+// ---------- docs/42：只读子代理参数 / 派发回执附注 / 提供方限流建议 ----------
+
+test("docs/42 parseTaskItem：readOnly——true 透传、false/缺省不写字段、非布尔报错；schema 声明并说明结构性保证", () => {
+  const ro = parseTaskItem({ description: "d", task: "t", readOnly: true });
+  assert.ok(!("error" in ro));
+  assert.deepEqual(ro, { task: "t", description: "d", readOnly: true });
+  for (const args of [{ description: "d", task: "t", readOnly: false }, { description: "d", task: "t" }]) {
+    const r = parseTaskItem(args);
+    assert.ok(!("error" in r));
+    assert.equal("readOnly" in r, false, "缺省/false 不写字段（旧语义不变）");
+  }
+  assert.deepEqual(parseTaskItem({ description: "d", task: "t", readOnly: "yes" }), { error: "错误：readOnly 只能是布尔值（true=只读；缺省 false=可写）。" });
+  const props = taskItemProperties() as Record<string, { type?: string; description?: string }>;
+  assert.equal(props.readOnly?.type, "boolean");
+  assert.ok(props.readOnly!.description!.includes("只读沙箱") && props.readOnly!.description!.includes("不可提权"), "描述写明保证而非口号");
+  // agent_task 工具本体：readOnly 随请求透传给服务层
+  const cap: { req?: SubagentRequest } = {};
+  void cap;
+});
+
+test("docs/42 agent_task：服务层回执附注（同范围可唤醒实例/并发占用/近期限流）原样附在回执尾；无附注时回执与此前逐字一致", async () => {
+  const note = "⚠ 写入范围重叠：本会话已有同范围的子代理 r1#4（空闲待命，有过程存档）——若这是接续它的工作，优先用 agent_followup（按 subId）唤醒它而非新派；…\n（当前运行中子代理 2/3）";
+  const withNote = makeTool(undefined, { ok: true, subId: 8, name: "handover", note });
+  const out = await withNote.execute({ description: "d", task: "t", name: "handover" }, tctx);
+  assert.ok(out.startsWith("[子代理 handover#8 已派发]"), out);
+  assert.ok(out.includes("⚠ 写入范围重叠：本会话已有同范围的子代理 r1#4"), "重叠提示进入回执");
+  assert.ok(out.trimEnd().endsWith("（当前运行中子代理 2/3）"), "附注在回执尾部（派发事实在前）");
+  const plain = await makeTool().execute({ description: "d", task: "t", name: "p" }, tctx);
+  assert.equal(plain, dispatchAck("p", 7, false), "无附注：回执 = 既有 dispatchAck 文本");
+  assert.ok(!plain.includes("⚠"));
+  // agent_followup 的回执不带附注（唤醒简报是给子代理的，不进协调者回执）
+  const fdeps = {
+    ledger: createFileLedger(),
+    subagent: { followup: () => ({ ok: true, subId: 4, name: "r1" }), dispatch: () => ({ ok: false, error: "x" }) },
+  } as unknown as SystemToolDeps;
+  const f = await createAgentFollowupTool(fdeps).execute({ subId: 4, task: "继续" }, tctx);
+  assert.ok(f.startsWith("[子代理 r1#4 已派发]") && !f.includes("唤醒简报"), f);
+});
+
+test("docs/42 formatWorkerResult：提供方限流按类附建议（速率限制→降并发/串行；用量上限→等重置）；普通失败不带", () => {
+  const base = { ok: false as const, text: "", subId: 3, transcript: "sub-3-x/transcript.json" };
+  const rate = formatWorkerResult({ ...base, error: "已达到速率限制，请您控制请求频率", limitKind: "rate" }, "x");
+  assert.ok(rate.includes("⚠ 提供方速率限制") && rate.includes("调小 subagentMaxConcurrent") && rate.includes("agent_followup 复活同一子代理续做"), rate);
+  assert.ok(!rate.includes("用量上限"), "速率限制不带用量上限建议");
+  const cap = formatWorkerResult({ ...base, error: "已达到 5 小时的使用上限，限额将在 18:41:01 重置", limitKind: "cap" }, "x");
+  assert.ok(cap.includes("⚠ 提供方用量上限") && cap.includes("立即重试无益") && !cap.includes("速率限制"), cap);
+  const plain = formatWorkerResult({ ...base, error: "子代理超时（300000ms）" }, "x");
+  assert.ok(!plain.includes("提供方"), "普通失败不臆测限流");
+  // 顺序：失败归因 → 限流建议 → 死前进展 → 复活指引（先知道「为什么挂」，再看到「做到哪」）
+  assert.ok(rate.indexOf("⚠ 提供方速率限制") < rate.indexOf("（半成品已保留"), rate);
+  assert.equal(formatWorkerResult({ ok: false, text: "", error: "失败" }, "n"), "[子代理 n 失败] 失败", "无存档失败文案不变");
 });

@@ -5,6 +5,7 @@ import { chooseCutIndex, isTurnBoundary, isContextOverflowError } from "./compac
 import type { ChatMessage, ChatParams, ChatResult, LLMProvider } from "./llm/provider.ts";
 import { ToolRegistry, type Tool } from "./tools/registry.ts";
 import { createWorkspace } from "./workspace.ts";
+import { messageTokens } from "./tokens.ts";
 
 const tokenOf = (m: ChatMessage) => (typeof m.content === "string" ? Math.ceil(m.content.length / 10) : 1) + 1;
 
@@ -138,6 +139,60 @@ function makeCompactAgent(script: ((p: ChatParams) => ChatResult)[], compaction:
   });
   return { agent, provider, sink };
 }
+
+// ---------- docs/42 修订：图像块随历史常驻；压缩时被摘要区间里的图随消息移除，保留尾部的图照常携带 ----------
+
+test("compact：压缩前每次请求都携带图像块；压缩后被摘要区间里的图移除、保留尾部的图照常携带，摘要输入带图片路径", async () => {
+  const IMG = { mime: "image/png" as const, data: "aGVsbG8=" };
+  const toolCall = (id: string): ChatResult => ({ content: "", toolCalls: [{ id, name: "read_image", arguments: "{}" }], usage: null });
+  const final = (text: string): ChatResult => ({ content: text, toolCalls: [], usage: null });
+  const provider = new ScriptedProvider([() => toolCall("a"), () => final("第一轮完成"), () => toolCall("b"), () => final("第二轮完成")]);
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "read_image",
+    description: "读图",
+    parameters: { type: "object", properties: {} },
+    execute: async () => "无图回退",
+    executeImage: async () => ({ text: "[已读取图片 fig.png]", images: [IMG] }),
+  });
+  let summarized: ChatMessage[] = [];
+  const agent = new Agent({
+    provider,
+    registry,
+    workspace: createWorkspace(process.cwd()),
+    ui: stubUi([]),
+    requestApproval: async () => "allowed-once",
+    settings: { alwaysConfirm: false, effort: "default" },
+    maxToolRounds: 5,
+    vision: true,
+    compaction: {
+      contextLength: () => 1,
+      summarize: async (ms) => {
+        summarized = ms;
+        return "摘要：用户在验证压缩功能。";
+      },
+    },
+  });
+  await agent.run("第一轮");
+  await agent.run("第二轮");
+  const isToolWithImage = (m: ChatMessage): m is Extract<ChatMessage, { role: "tool" }> => m.role === "tool" && !!m.images?.length;
+  const imagesPerRequest = provider.calls.map((c) => c.messages.filter(isToolWithImage).length);
+  assert.deepEqual(imagesPerRequest, [0, 1, 1, 2], "压缩前：图像块随其后的每次请求携带（不按次数退役）");
+  assert.equal(agent.messages.filter(isToolWithImage).length, 2);
+  // 保留预算 = 第二轮（user 起到末尾）的 token 量：第一轮（含图 a）进摘要区，第二轮（含图 b）留在尾部
+  const secondUser = agent.messages.findIndex((m) => m.role === "user" && m.content === "第二轮");
+  const tailTokens = agent.messages.slice(secondUser).reduce((s, m) => s + messageTokens(m), 0);
+  const outcome = await agent.compact({ keepTokens: tailTokens + 16 });
+  assert.ok(outcome.ok, outcome.ok ? "" : outcome.reason);
+  const withImages = agent.messages.filter(isToolWithImage);
+  assert.equal(withImages.length, 1, "被摘要区间里的图随消息移除，保留尾部的图仍在");
+  assert.equal((withImages[0] as { toolCallId: string }).toolCallId, "b");
+  assert.equal(agent.messages[1]!.role, "user");
+  assert.ok(String(agent.messages[1]!.content).startsWith("[历史摘要（系统压缩生成）]"));
+  // 引用仍在：摘要输入带着 read_image 的结果文本（含图片路径），模型可按路径重读
+  assert.ok(summarized.some((m) => m.role === "tool" && m.content.includes("[已读取图片 fig.png]")));
+  assert.ok(!summarized.some((m) => (m as { toolCallId?: string }).toolCallId === "b"), "尾部不进摘要");
+});
 
 test("compact：压缩后 contextEstimate 下降且 system 保留，摘要消息入历史", async () => {
   const { agent } = makeCompactAgent([]);

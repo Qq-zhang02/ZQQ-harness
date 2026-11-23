@@ -80,6 +80,7 @@ const def: SystemToolDef = {
           ...(ctx.writeScope ? { writeScope: ctx.writeScope } : {}),
           sandboxMode: deps.sandboxMode(), // docs/30：live 读——运行中改沙箱模式，本次裁决即用新值
           alwaysConfirm: deps.alwaysConfirm(),
+          readOnly: ctx.readOnly === true, // docs/42：只读子代理硬拒（纵深——正常装配下它没有本工具）
           description: String(args.description ?? "") || undefined,
           requestApproval: ctx.requestApproval,
         });

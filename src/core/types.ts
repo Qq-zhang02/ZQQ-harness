@@ -16,6 +16,7 @@ import type { ServerRequest } from "./http.ts";
 import type { SessionHost, SessionRuntime } from "./host.ts";
 import type { HarnessContext } from "./context.ts";
 import type { FileLedger } from "./file-tools.ts";
+import type { ProviderLimitKind } from "./progress.ts";
 
 // ---------- 系统提示 section（§4.4） ----------
 
@@ -219,6 +220,9 @@ export interface SubagentRequest {
   /** 可复用子代理（docs/9）：任务完成后驻留待命（完整上下文延续），可经 followup 追加任务、
    *  archive 归档；缺省/显式 false = 一次性（任务结束即自动归档，现状语义）。 */
   reusable?: boolean;
+  /** 只读子代理（docs/42）：不装配 write_file/edit_file 与 MCP 工具，run_pwsh 钉死只读沙箱且
+   *  不可提权——「只报告不写文件」的结构性保证（此前只能靠任务书文字约束）。 */
+  readOnly?: boolean;
 }
 
 /** 向空闲待命的可复用子代理追加的任务（docs/9）：task 作为新 user 消息接在既有历史上
@@ -269,6 +273,9 @@ export interface SubagentResult {
   /** 失败时的残局速览（docs/41）：从 worker 活历史尾部提取——已完成工具调用统计/涉及
    *  写入文件/最近动作/最后助手文本，让协调者知道「做到哪」；成功路径不生成。 */
   progressDigest?: string;
+  /** 失败原因为提供方限流时的归类（docs/42）：rate=速率限制（降并发/稍后重试）、cap=用量上限
+   *  （须等额度重置）。由 providerLimitOf 从 error 文案识别；工具层据此附对应建议。 */
+  limitKind?: import("./progress.ts").ProviderLimitKind;
 }
 
 /**
@@ -276,8 +283,10 @@ export interface SubagentResult {
  * stop/archive 与报告对应）；ok=false 为配额/寻址/状态校验未过（error 是面向
  * 协调者的完整文案，工具层原样返回）。任务的真实结果不由本回执携带——结算（完成/失败/
  * 暂停后恢复完成/归档中止）后一律由服务层经 deliverToCoordinator 自动送达协调者收件箱。
+ *  note（docs/42，可选）：受理回执的附注——同写入范围已有可唤醒实例的提示、当前并发占用与
+ *  近期限流记录；只提醒不拦截（是否改用 agent_followup 由协调者判断）。
  */
-export type SubagentDispatch = { ok: true; subId: number; name: string } | { ok: false; error: string };
+export type SubagentDispatch = { ok: true; subId: number; name: string; note?: string } | { ok: false; error: string };
 
 /**
  * 子代理服务（按会话实例化：provider/工作区/技能/AGENTS.md 随会话）。

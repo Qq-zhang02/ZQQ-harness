@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { OpenAICompatProvider, toSdkMessages } from "./provider.ts";
+import { imageOmittedNote } from "../../../llm/provider.ts";
 import type { ChatMessage, ChatResult, LLMProvider } from "../../../llm/provider.ts";
 
 const toolMsg: ChatMessage = {
@@ -237,6 +238,39 @@ test("toSdkMessages：tool 消息带图 → tool 文本消息 + 紧随合成 use
   // 无图 tool 消息保持单条（形状不变）
   const plain = asRecords(toSdkMessages([{ role: "tool", toolCallId: "c1", content: "ok" }], false));
   assert.equal(plain.length, 1);
+});
+
+// ---------- docs/42 修订：文本模型的请求省略图像（omitImages）——只改请求投影，历史不动 ----------
+
+test("toSdkMessages：omitImages=true 时带图 tool/user 消息只发文本 + 省略说明（不产生合成多模态消息）；缺省逐字节不变、历史对象不动", () => {
+  const toolImg: ChatMessage = { role: "tool", toolCallId: "c9", content: "[已读取图片 pic.png]", images: [{ mime: "image/png", data: "QUJD" }] };
+  const userImg: ChatMessage = { role: "user", content: "看图", images: [{ mime: "image/jpeg", data: "REVG" }, { mime: "image/jpeg", data: "REVG" }] };
+  const out = asRecords(toSdkMessages([toolImg, userImg], false, { omitImages: true }));
+  assert.equal(out.length, 2, "tool 消息不再带出合成 user 多模态消息");
+  assert.equal(out[0]!.role, "tool");
+  assert.equal(out[0]!.content, `[已读取图片 pic.png]\n${imageOmittedNote(1)}`);
+  assert.equal(out[1]!.role, "user");
+  assert.equal(out[1]!.content, `看图\n${imageOmittedNote(2)}`, "省略说明带张数");
+  const wire = JSON.stringify(out);
+  assert.ok(!wire.includes("QUJD") && !wire.includes("REVG") && !wire.includes("image_url"), "请求里不含任何图像字节");
+  // 缺省（不传 / omitImages=false）逐字节不变
+  assert.deepEqual(toSdkMessages([toolImg, userImg], false, { omitImages: false }), toSdkMessages([toolImg, userImg], false));
+  assert.equal(toSdkMessages([toolImg, userImg], false).length, 3);
+  // 历史消息对象未被改动（换回视觉模型即恢复）
+  assert.equal(toolImg.images?.length, 1);
+  assert.equal(userImg.images?.length, 2);
+});
+
+test("chat：omitImages=true 时请求体不带 image_url（文本模型省略图像的端到端接线）；缺省照常携带", async () => {
+  const imgMsg: ChatMessage = { role: "user", content: "看图", images: [{ mime: "image/png", data: "QUJD" }] };
+  const p = makeProvider();
+  const stub = stubClient(p);
+  await p.chat({ messages: [imgMsg], omitImages: true });
+  assert.ok(!JSON.stringify(stub.bodies[0]!.messages).includes("image_url"), "省略图像：请求体不含 image_url");
+  const p2 = makeProvider();
+  const stub2 = stubClient(p2);
+  await p2.chat({ messages: [imgMsg] });
+  assert.ok(JSON.stringify(stub2.bodies[0]!.messages).includes("image_url"), "缺省照常携带");
 });
 
 // ---------- docs/35 真机待办3：流式 usage 的各家端点形状（实测四家） ----------

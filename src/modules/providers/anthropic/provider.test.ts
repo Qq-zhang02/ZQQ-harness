@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AnthropicProvider, replayableThinking, toAnthropicMessages } from "./provider.ts";
+import { imageOmittedNote } from "../../../llm/provider.ts";
 import type { ChatMessage, ThinkingBlock } from "../../../llm/provider.ts";
 
 const th = (over: Partial<ThinkingBlock> = {}): ThinkingBlock => ({
@@ -318,6 +319,37 @@ test("toAnthropicMessages：tool 消息带图 → tool_result content 数组（t
   // 无图 tool 消息 content 仍是字符串（形状不变）
   const plain = toAnthropicMessages([{ role: "tool", toolCallId: "c1", content: "ok" }]) as Array<{ content: Array<Record<string, unknown>> }>;
   assert.equal(plain[0]!.content[0]!.content, "ok");
+});
+
+// ---------- docs/42 修订：文本模型的请求省略图像（omitImages）——只改请求投影，历史不动 ----------
+
+test("toAnthropicMessages：omitImages=true 时带图 user/tool 消息只发文本 + 省略说明；缺省逐字节不变、历史对象不动", () => {
+  const userImg: ChatMessage = { role: "user", content: "看图", images: [{ mime: "image/png", data: "QUJD" }] };
+  const toolImg: ChatMessage = { role: "tool", toolCallId: "c9", content: "[已读取图片 pic.png]", images: [{ mime: "image/png", data: "QUJD" }, { mime: "image/png", data: "QUJD" }] };
+  const out = toAnthropicMessages([userImg, toolImg], undefined, { omitImages: true });
+  assert.equal(out.length, 2);
+  assert.equal(out[0]!.content, `看图\n${imageOmittedNote(1)}`, "user 消息回到纯字符串");
+  const block = (out[1]!.content as Array<Record<string, unknown>>)[0]!;
+  assert.equal(block.type, "tool_result");
+  assert.equal(block.content, `[已读取图片 pic.png]\n${imageOmittedNote(2)}`, "tool_result 的 content 回到字符串");
+  assert.ok(!JSON.stringify(out).includes("QUJD"), "请求里不含任何图像字节");
+  assert.deepEqual(toAnthropicMessages([userImg, toolImg]), toAnthropicMessages([userImg, toolImg], undefined, { omitImages: false }));
+  assert.ok(JSON.stringify(toAnthropicMessages([userImg, toolImg])).includes("QUJD"), "缺省照常携带");
+  assert.equal(toolImg.images?.length, 2, "历史消息对象未被改动");
+});
+
+test("chat：omitImages=true 时请求体不含图像块、带省略说明（端到端接线）；缺省照常携带", async () => {
+  const imgMsg: ChatMessage = { role: "user", content: "看图", images: [{ mime: "image/png", data: "QUJD" }] };
+  const stub = withFetchStub(() => sseResponse(MIN_EVENTS));
+  try {
+    await makeProvider().chat({ messages: [imgMsg], omitImages: true });
+    const wire = JSON.stringify(stub.bodies[0]!.messages);
+    assert.ok(!wire.includes("QUJD") && wire.includes(imageOmittedNote(1)));
+    await makeProvider().chat({ messages: [imgMsg] });
+    assert.ok(JSON.stringify(stub.bodies[1]!.messages).includes("QUJD"), "缺省照常携带");
+  } finally {
+    stub.restore();
+  }
 });
 
 // ---------- docs/37：DeepSeek/MiMo 等 anthropic 兼容端的核查补齐 ----------

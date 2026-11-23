@@ -11,8 +11,7 @@
  */
 import { join } from "node:path";
 import { THRESHOLDS } from "../config.ts";
-import { loadMcpConfig } from "../mcp/manager.ts";
-import { ToolRegistry, type Tool } from "../tools/registry.ts";
+import { ToolRegistry } from "../tools/registry.ts";
 import { Agent, type AgentUi } from "../agent.ts";
 import { createWorkspace, readAgentsMd } from "../workspace.ts";
 import type { ProviderConfig } from "../providers/store.ts";
@@ -25,6 +24,8 @@ import type { ActiveSubagent, SessionRuntime } from "../core/host.ts";
 import { cfgOf, clipToolArgs, compactionDepsOf, reportUsage, type SessionShell } from "./session-runtime.ts";
 import { archiveSourceOf, requestArchiveWorker } from "./subagent-archive.ts";
 import { contextPctOf, deliverToCoordinator } from "./subagent-report.ts";
+import { workerMcpToolsOf } from "./subagent-mcp.ts";
+import { READONLY_ROLE_SECTION } from "./subagent-brief.ts";
 import type { WorkerSession } from "./subagent-records.ts";
 
 /** worker 系统提示的 order 5 子代理职责段（docs/5 §8；协调者唯一能看到的是最终报告）。
@@ -36,6 +37,10 @@ export const WORKER_ROLE_SECTION = [
   "- 你无法直接向用户提问：不确定之处写进报告的「未决问题」，由协调者裁决或转询用户；不要替用户假设意图后自行推进方向性变更。",
   "- 遇到写入被拒（文件已被他人修改/超出范围）时：重新读取最新内容再操作，不要盲目重试。",
   "- 调用解释器与外部程序用 PATH 短名（python、node、pwsh 等），不要写绝对路径——引用工作区外的绝对路径会触发用户审批卡，拖慢任务。",
+  "- 长任务留痕：单次 run_pwsh 有超时上限——预计更久的计算拆成可续跑的小步、每步把中间结果落盘；任务较长时在阶段间隙把「已完成/下一步」写进你产出目录下的进展文件（被超时/打断中断后，接续的实例靠它知道下一步）。",
+  "- 读图节制：read_image 的图像块随历史保留在上下文里（之后可随时回看，也持续占视觉 token）——看到后立即把观察结论写成文字；同一版本只读一次，改图后读新文件。",
+  "- 任务书给了并发数/调用预算（读图、运行次数上限）时严格遵守；上下文吃紧时优先保证结论与产出落盘。",
+  "- pandas 按列取值一律用 r['列名']（属性访问会与方法名冲突，如 rank）。",
   "- 完成后输出报告（这是协调者唯一能看到的内容）：①结论（完成/部分完成/失败及原因）" +
     "②产出物清单（路径+一句话说明）③关键决定与假设 ④未决问题与建议后续任务。" +
     "报告精炼，细节写入工作区文件并引用路径。",
@@ -46,6 +51,10 @@ export function workerDirTag(seq: number, name: string): string {
   const safe = name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 40) || "anon";
   return `sub-${seq}-${safe}`;
 }
+
+/** 只读子代理（docs/42）不装配的文件写入工具——不装比「装了再拒」更干净：模型从一开始就
+ *  看不到写入工具，不会先试再吃闭门羹；文件工具自身对 ctx.readOnly 仍硬拒（纵深）。 */
+const WRITE_TOOLS = new Set(["write_file", "edit_file"]);
 
 /** 过程流单字段字符预算（方案 B 事件量控制）：preview 已由 agent.ts 的 previewArgs（160）截断，
  *  output（工具完整输出）在这里截到预算内 + 截断标记；全文始终有 A 的 transcript 落盘兜底。 */
@@ -61,65 +70,6 @@ function clipEventText(s: string): string {
 const SUBAGENT_DELTA_FLUSH_MS = 120;
 
 /**
- * worker 共享 MCP 工具（docs/6 P2 路线 A）：首个 runWorker 懒加载。连接挂在本会话的
- * rt.mcp 上——协调者会话（唯一会派 worker 的形态）该 manager 闲置（createRuntime 与
- * bindWorkspace 对 coordinator 都跳过 apply，D3），专供 worker 正好；进程退出随
- * server.ts 既有 rt.mcp.stop() 统一回收，与普通会话同等待遇（server.ts 零改动）。
- * 工具注册进一次性模板 registry 再拍快照：McpManager.apply 是「一次性 apply 到一个
- * registry」的形态，快照复制给每个 worker 的独立 registry（execute 闭包无状态，
- * 共享同一批连接——每 server 一个进程，不是每 worker 一个）。
- * 每会话只连一次（rt.workerMcp 的 promise 缓存：同轮多 agent_task 并行首派不会双连，docs/15）；
- * 单服务器失败由 apply 内建隔离，整体异常降级为 null（worker 照旧不带 mcp__ 工具，
- * 不因 MCP 故障拒派）。红线不破：协调者自己的 rt.registry 仍仅 agent_task(s)、
- * 系统提示仍无 MCP 段（本函数不触碰它们）。
- * docs/20 修订：连接不再只等首个 worker 派发——协调者会话创建（createRuntime）与
- * bindWorkspace 会 fire-and-forget 预热本函数（「子代理系统提示词说明」段需要说明书；
- * 真机反馈：未预热时新会话首轮协调者对子代理 MCP 能力一无所知）。
- */
-/** 失败重试前的宽限延迟（docs/32）：冷启动型服务器（如 godot-ai attach 先拉起后端再应答
- *  握手，健康检查上限可超过单次握手超时）首轮必超时——宽限一程后整体重连一次（stopAll
- *  幂等：已成功的服务器进程已在、秒连；失败者赶上后端就绪窗口）。仍失败才对本会话定局。 */
-const WORKER_MCP_RETRY_DELAY_MS = 10_000;
-
-export async function workerMcpToolsOf(sh: SessionShell, rt: SessionRuntime): Promise<readonly Tool[] | null> {
-  rt.workerMcp ??= (async (): Promise<readonly Tool[] | null> => {
-    try {
-      const globalCfg = await loadMcpConfig([sh.globalMcpFile]);
-      const wsCfg = rt.workspace ? await loadMcpConfig([join(rt.workspace.root, "mcp.json")]) : { mcpServers: {} };
-      if (Object.keys(globalCfg.mcpServers).length === 0 && Object.keys(wsCfg.mcpServers).length === 0) return null;
-      const template = new ToolRegistry();
-      try {
-        await rt.mcp.apply(globalCfg, wsCfg, template);
-        // docs/32：失败服务器不判死刑（真机实证：godot 冷启动 > 20s 握手超时被记入 failures
-        // 永不重试，而 1 分钟后的普通对话因后端已被拉起而秒连——表现为「只有普通对话注入了」）
-        if (rt.mcp.failedServers().length > 0) {
-          await new Promise((r) => setTimeout(r, WORKER_MCP_RETRY_DELAY_MS));
-          await rt.mcp.apply(globalCfg, wsCfg, template);
-        }
-      } catch (e) {
-        console.warn(`[subagent] worker MCP 装配失败（降级为不带 mcp__ 工具）：${e instanceof Error ? e.message : String(e)}`);
-        return null;
-      }
-      // docs/20：MCP 说明书随协调者的「子代理系统提示词说明」段注入——连接收尾（含重试）
-      // 后重建一次协调者系统提示（本 promise 缓存保证只触发一次；协调者 rt.agent 在任何
-      // 派发发生前已装配就位）。独立 try：刷新异常绝不影响 worker 拿工具（测试桩 agent 可能缺该方法）。
-      try {
-        rt.agent?.refreshSystemPrompt();
-      } catch {
-        /* 刷新失败不阻断 worker 装配 */
-      }
-      return template.list();
-    } catch (e) {
-      // docs/32：整体意外拒绝也降级 null——??= 缓存 rejected promise 一旦发生，后续全部
-      // worker 装配（await 处）都会失败且无重试入口。
-      console.warn(`[subagent] worker MCP 装配失败（降级为不带 mcp__ 工具）：${e instanceof Error ? e.message : String(e)}`);
-      return null;
-    }
-  })();
-  return rt.workerMcp;
-}
-
-/**
  * worker 控制句柄与驻留上下文的同步构造（docs/9；docs/17 起首派发与重启唤醒共用）：
  * gate/active/ws 三件同步建好并登记（rt.activeSubagents.set；可复用再 reusables.set +
  * requestArchive 挂载）——登记先于装配，返回后句柄即可施控（装配窗口的打断/归档由
@@ -129,7 +79,7 @@ export async function workerMcpToolsOf(sh: SessionShell, rt: SessionRuntime): Pr
 export function createWorkerSession(
   sh: SessionShell,
   rt: SessionRuntime,
-  fixed: { seq: number; name: string; description?: string; reusable: boolean; spillDir?: string },
+  fixed: { seq: number; name: string; description?: string; reusable: boolean; spillDir?: string; readOnly?: boolean },
   reusables: Map<number, WorkerSession>,
   broadcastSpawned: boolean,
 ): WorkerSession {
@@ -159,8 +109,11 @@ export function createWorkerSession(
     name,
     status: "run",
     ...(reusable ? { reusable: true, tasks: 0, ...(description ? { summary: description } : {}) } : {}),
+    ...(fixed.readOnly ? { readOnly: true } : {}),
     stop: (via: "ui" | "model" = "model") => {
-      if (active.status !== "run") return; // idle 无任务在执行；重复调用幂等（标记已置/abort 幂等）
+      // docs/42：status 仍为 run 的收尾窗口内（abort 已发出、任务尚未结算）重复打断直接空转——
+      // 此前每次重复都再送一条状态通知（真机：同一子代理被打断的状态消息连送 5 次）
+      if (active.status !== "run" || ws.stopRequested) return; // idle 无任务在执行；重复调用幂等
       ws.stopRequested = true; // ws 级：装配窗口与任务间隙的打断由 runOneTask 开始时消费
       ws.cur?.ctl.abort(); // 中止当前任务（请求/工具/审批一并取消），收尾由 runOneTask 既有链路完成
       if (via === "ui") {
@@ -191,6 +144,7 @@ export function createWorkerSession(
     usage: { prompt: 0, completion: 0, reasoning: 0, cacheHit: 0 },
     elapsedMs: 0,
     lastOk: false,
+    ...(fixed.readOnly ? { readOnly: true } : {}),
   };
   if (reusable) {
     active.requestArchive = (via) => requestArchiveWorker(sh, rt, ws, reusables, via);
@@ -310,6 +264,7 @@ export async function mountWorkerAgent(sh: SessionShell, rt: SessionRuntime, ws:
   const spillDir = ws.spillDir;
   const privateTempDir = join(sh.sandboxTmpRoot, rt.id, ws.dirTag);
   const w = rt.workspace ?? createWorkspace(process.cwd());
+  const readOnly = ws.readOnly === true; // docs/42 只读子代理：裁剪写入工具与 MCP，run_pwsh 钉死只读沙箱
   const workerDeps: SystemToolDeps = {
     ctx: sh.ctx,
     workspace: () => w,
@@ -320,7 +275,7 @@ export async function mountWorkerAgent(sh: SessionShell, rt: SessionRuntime, ws:
         ? ws.approval({ ...r, command: `[子代理 ${name}] ${r.command}`, subagent: name })
         : Promise.resolve("unavailable" satisfies ApprovalDecision),
     alwaysConfirm: () => rt.settings.alwaysConfirm,
-    sandboxMode: () => rt.settings.sandboxMode,
+    sandboxMode: () => (readOnly ? "read-only" : rt.settings.sandboxMode), // docs/42：只读实例不随会话沙箱档位放开
     spillDir: () => spillDir,
     privateTempDir: () => privateTempDir,
     mcpStatus: () => rt.mcp.status(),
@@ -342,18 +297,19 @@ export async function mountWorkerAgent(sh: SessionShell, rt: SessionRuntime, ws:
     // docs/17：read_archive 的存档解析（主会话 toolDeps 注入同一实现——见 archiveSourceOf）
     archiveSource: archiveSourceOf(sh, rt),
   };
+  ws.ledger = workerDeps.ledger; // docs/42：复活路径回填已读台账的入口（reviveFollowup → rehydrateLedger）
   const registry = new ToolRegistry();
   for (const def of sh.ctx.tools.all()) {
     const audience = def.audience ?? "worker";
     // docs/32 三值受众：coordinator 与 front（ask_user 等）都不进 worker——子代理不确定时
     // 自行向协调者报告（结构性禁直问用户），仅装 worker 受众（无 agent_task 同款禁嵌套 D6）
-    if (audience !== "worker") continue;
+    if (audience !== "worker" || (readOnly && WRITE_TOOLS.has(def.name))) continue; // docs/42：只读实例不装文件写入工具
     registry.register({ ...def.create(workerDeps), summary: def.summary });
   }
   // worker 带真 MCP 工具（docs/6 P2 路线 A，修订偏差 19）：与普通会话同一信任模型
   // （用户显式配置的可信工具，不走 pwsh 工作区守卫与审批）——worker 无需再绕行
-  // run_pwsh 模拟 MCP 查询而触发审批卡。
-  const mcpTools = await workerMcpToolsOf(sh, rt);
+  // run_pwsh 模拟 MCP 查询而触发审批卡。docs/42：正因不走沙箱，只读实例不装 MCP 工具。
+  const mcpTools = readOnly ? null : await workerMcpToolsOf(sh, rt);
   for (const t of mcpTools ?? []) registry.register(t);
 
   // 系统提示 = 父会话 sections（sessionKind=normal 渲染：base 安全规则/工具/技能/两级 AGENTS.md）
@@ -361,6 +317,7 @@ export async function mountWorkerAgent(sh: SessionShell, rt: SessionRuntime, ws:
   const sections = new Registry<PromptSection, "name">("name");
   for (const s of sh.ctx.promptSections.all()) sections.register(s);
   sections.register({ name: "subagent-role", order: 5, render: () => WORKER_ROLE_SECTION });
+  if (readOnly) sections.register({ name: "subagent-readonly", order: 5, render: () => READONLY_ROLE_SECTION });
   const sys = ws.system?.trim();
   if (sys) sections.register({ name: "subagent-system", order: 5, render: () => sys });
 
@@ -378,12 +335,15 @@ export async function mountWorkerAgent(sh: SessionShell, rt: SessionRuntime, ws:
     mcpInstructions: mcpTools && mcpTools.length > 0 ? rt.mcp.instructionsText() : null, // worker 带 MCP 时说明段照常渲染（sessionKind=normal）
     // scope 写入分区（§5.4）：透传工具上下文（文件三工具硬拒 / pwsh 守卫弹卡）
     ...(ws.scope && ws.scope.length > 0 ? { writeScope: ws.scope } : {}),
-    // docs/12 R2：worker 与父会话同提供方——视觉能力同源（图片直看指引；worker 要看
-    // 磁盘图片仍走 view_image，指引行里已划清边界）。providers 为空的测试桩守卫同 :623。
+    // docs/12 R2/docs/34：worker 与父会话同提供方——视觉能力同源（读盘上图片用 read_image）。
+    // providers 为空的测试桩守卫同 :623。
     ...((cfgOf(sh, rt) as ProviderConfig | undefined)?.vision === true ? { vision: true } : {}),
     // docs/18：pauseGate/interruptSignal（轮边界挂起/打断重发）已随暂停机制退役——打断
     // 走 ctl.abort 的既有中止链（AgentDeps 两字段删除）。
-    sandboxMode: rt.settings.sandboxMode,
+    sandboxMode: readOnly ? "read-only" : rt.settings.sandboxMode,
+    ...(readOnly ? { readOnly: true } : {}), // docs/42：只读实例——写入工具硬拒、run_pwsh 不可提权
+    // docs/42：上下文越过预警线（subagentWarnContextPct）时一次性提示模型精简收尾（长度非法=0 → 不触发）
+    contextWarn: { contextLength: () => (cfgOf(sh, rt) as ProviderConfig | undefined)?.contextLength ?? 0, warnPct: THRESHOLDS.subagentWarnContextPct },
     spillDir: () => spillDir,
     privateTempDir: () => privateTempDir,
     compaction: compactionDepsOf(sh, rt, { backup: false }), // 同款压缩；worker 历史不落盘无备份

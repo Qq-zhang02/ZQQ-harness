@@ -81,8 +81,9 @@ export function estTokens(s: string): number {
 }
 
 /** 不带缓存的逐消息计数（消息正文 + 工具调用参数 + 角色框架开销 + 图片固定估算；
- *  passbackThinking 时计入思考回传文本）。count 可注入（测试用）。 */
-export function messageTokenCount(m: ChatMessage, count: (s: string) => number, passbackThinking = false): number {
+ *  passbackThinking 时计入思考回传文本；omitImages 时图像不计——文本模型的请求不带图像块，
+ *  计数口径与实际请求同源）。count 可注入（测试用）。 */
+export function messageTokenCount(m: ChatMessage, count: (s: string) => number, passbackThinking = false, omitImages = false): number {
   let n = count(typeof m.content === "string" ? m.content : "");
   if (m.role === "assistant") {
     // ?? []：宽容畸形存档（assistant 消息缺 toolCalls 字段——手改/外部生成的档），
@@ -91,35 +92,44 @@ export function messageTokenCount(m: ChatMessage, count: (s: string) => number, 
     if (passbackThinking && m.thinking) n += count(m.thinking.text);
   }
   // docs/34：read_image 的图像挂 tool 消息——与 user 图像同款固定估算
-  if ((m.role === "user" || m.role === "tool") && m.images) n += m.images.length * THRESHOLDS.imageTokenEst;
+  if (!omitImages && (m.role === "user" || m.role === "tool") && m.images) n += m.images.length * THRESHOLDS.imageTokenEst;
   return n + MESSAGE_FRAME_TOKENS;
 }
 
 // ---- 逐消息缓存：history 是 push-only、消息对象不可变，可安全按对象身份缓存 ----
-// passback 与 plain 分开缓存：同一消息在开关/档位变化前后会被两种口径计数
-const msgTokenCache = new WeakMap<ChatMessage, { plain: number; passback: number }>();
+// passback 与 plain 分开缓存：同一消息在开关/档位变化前后会被两种口径计数；
+// 带图/省略图像（docs/42 修订：文本模型的请求不带图像块）同理各存一份
+interface CachedCounts {
+  plain: number;
+  passback: number;
+}
+const msgTokenCache = new WeakMap<ChatMessage, { withImages: CachedCounts; noImages: CachedCounts }>();
 
 /** 单条消息 token 数（按消息对象身份缓存；system 重建等场景产生新对象自然失效重算）。
- *  passbackThinking=true 按"思考文本回传"口径计数（与回传条件对齐，见 agent.thinkingPassbackOf）。 */
-export function messageTokens(m: ChatMessage, count: (s: string) => number = estTokens, passbackThinking = false): number {
+ *  passbackThinking=true 按"思考文本回传"口径计数（与回传条件对齐，见 agent.thinkingPassbackOf）；
+ *  omitImages=true 不计图像块（文本模型的请求口径，见 ChatParams.omitImages）。 */
+export function messageTokens(m: ChatMessage, count: (s: string) => number = estTokens, passbackThinking = false, omitImages = false): number {
   let hit = msgTokenCache.get(m);
   if (!hit) {
-    hit = { plain: messageTokenCount(m, count, false), passback: -1 };
+    hit = { withImages: { plain: messageTokenCount(m, count), passback: -1 }, noImages: { plain: -1, passback: -1 } };
     msgTokenCache.set(m, hit);
   }
-  if (!passbackThinking) return hit.plain;
-  if (hit.passback < 0) hit.passback = messageTokenCount(m, count, true);
-  return hit.passback;
+  const c = omitImages ? hit.noImages : hit.withImages;
+  const key = passbackThinking ? "passback" : "plain";
+  if (c[key] < 0) c[key] = messageTokenCount(m, count, passbackThinking, omitImages);
+  return c[key];
 }
 
 /** 按请求内容计算输入 token 构成：system 消息拆出技能清单单列，工具 schema 与服务器 instructions 归 MCP，其余归消息。
- *  thinkingPassback 为逐消息回传判定（与 provider 回传条件对齐）；判定为真的 assistant 消息其 thinking.text 计入 messages 分类。 */
+ *  thinkingPassback 为逐消息回传判定（与 provider 回传条件对齐）；判定为真的 assistant 消息其 thinking.text 计入 messages 分类。
+ *  omitImages（docs/42 修订）：文本模型的请求不带图像块，图像固定估算不计入。 */
 export function estimateBreakdown(
   messages: ChatMessage[],
   tools: ToolSchema[],
   skills: SkillInfo[] = [],
   mcpInstructions: string | null = null,
   thinkingPassback?: (m: ChatMessage) => boolean,
+  omitImages = false,
 ): UsageBreakdown {
   const first = messages[0];
   const skillsText = skillListText(skills);
@@ -139,7 +149,7 @@ export function estimateBreakdown(
   }
   const rest = first?.role === "system" ? messages.slice(1) : messages;
   for (const m of rest) {
-    bd.messages += messageTokens(m, estTokens, thinkingPassback?.(m) ?? false); // 逐消息缓存命中，不再全量重算
+    bd.messages += messageTokens(m, estTokens, thinkingPassback?.(m) ?? false, omitImages); // 逐消息缓存命中，不再全量重算
   }
   return bd;
 }

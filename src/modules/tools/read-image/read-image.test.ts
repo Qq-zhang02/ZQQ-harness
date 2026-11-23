@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileLedger } from "../../../core/file-tools.ts";
-import { IMAGE_RULES } from "../../../config.ts";
+import { IMAGE_RULES, THRESHOLDS, initConfig } from "../../../config.ts";
 import type { ProviderConfig } from "../../../providers/store.ts";
 import type { SystemToolDeps } from "../../../core/types.ts";
 import type { ToolContext } from "../../../tools/registry.ts";
@@ -50,7 +50,9 @@ test("read_image：成功路径——魔数识别 PNG、信封说明 + 图像块
     assert.equal(out.images?.[0]!.mime, "image/png");
     assert.equal(out.images?.[0]!.data, PNG_B64, "字节原样（不做重编码）");
     assert.ok(out.text.includes("已读取图片 pic.png") && out.text.includes("image/png"), out.text);
-    assert.ok(out.text.includes("重复出现"), "提醒每轮重放占视觉 token");
+    // docs/42 修订：图像块随历史保留（可随时回看）——信封写明预算张数（阈值键同源插值），不再声称按次数退役
+    assert.ok(out.text.includes("之后随历史保留在上下文里") && out.text.includes(`上限 ${THRESHOLDS.imageContextMaxCount} 张`), out.text);
+    assert.ok(!out.text.includes("自动退役"), "「看过即退役」文案已撤销");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -92,6 +94,24 @@ test("read_image：大小超限拒绝（IMAGE_RULES 单张上限）；JPEG/GIF/W
     // execute 回退路径：只返回文本不带图（注册表优先 executeImage，此处防御直调）
     const plain = await makeTool(dir, true).execute({ path: "j.jpg" }, tctx(dir));
     assert.ok(plain.includes("已读取图片 j.jpg"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("read_image：工具描述与信封随图片预算热应用改口（docs/42 修订；调用期读 THRESHOLDS）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zqq-readimg-"));
+  try {
+    writeFileSync(join(dir, "pic.png"), Buffer.from(PNG_B64, "base64"));
+    initConfig({ disabledModules: [], thresholds: { imageContextMaxCount: 7 } });
+    try {
+      const t = makeTool(dir, true);
+      assert.ok(t.description.includes("上限 7 张") && t.description.includes("随历史保留在上下文里"), t.description);
+      const out = await t.executeImage!({ path: "pic.png" }, tctx(dir));
+      assert.ok(out.text.includes("上限 7 张"), out.text);
+    } finally {
+      initConfig({ disabledModules: [], thresholds: {} });
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

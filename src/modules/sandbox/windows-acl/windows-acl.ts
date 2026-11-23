@@ -383,6 +383,10 @@ export class WindowsAclRunner implements SandboxRunner {
     // CreateProcessAsUserW 是同步 FFI 调用，JS 单线程下"改→spawn→还原"窗口内无并发。
     const prevTmp = process.env.TMP;
     const prevTemp = process.env.TEMP;
+    // docs/42：Python 行级无缓冲——受限执行的输出落文件（块缓冲），超时被杀时缓冲区里的进度
+    // 全丢；与 TMP/TEMP 同款同步窗口设置（宿主已显式设置则不动）
+    const prevUnbuffered = process.env.PYTHONUNBUFFERED;
+    if (prevUnbuffered === undefined) process.env.PYTHONUNBUFFERED = "1";
     process.env.TMP = policy.privateTempDir;
     process.env.TEMP = policy.privateTempDir;
     try {
@@ -414,6 +418,8 @@ export class WindowsAclRunner implements SandboxRunner {
       );
       process.env.TMP = prevTmp;
       process.env.TEMP = prevTemp;
+      // 还原必须用 delete：process.env 赋 undefined 会被转成字符串 "undefined"（Python 视为已设置）
+      if (prevUnbuffered === undefined) delete process.env.PYTHONUNBUFFERED;
       if (!ok) throw new Error(`CreateProcessAsUserW 失败：code=${F().GetLastError()}`);
       hProcess = koffi.decode(pi, 0, "uint64");
       hThread = koffi.decode(pi, 8, "uint64");

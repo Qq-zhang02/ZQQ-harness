@@ -60,6 +60,11 @@ export interface SubagentRecord {
    *  重启后实例不在线，agent_followup 自动从过程存档唤醒）；archived=已归档（仍可 followup
    *  从存档唤醒复活，一次性转正为可复用）；旧档缺省＝一次性已完成（=archived 语义）。 */
   state?: "idle" | "archived";
+  /** 写入分区（docs/42；首派发 scope 快照，相对工作区根的前缀；缺省=整个工作区）：派发回执
+   *  「同范围已有可唤醒实例」提示的比对依据。 */
+  scope?: string[];
+  /** 只读子代理（docs/42）：只读子代理/旧档缺省不写。 */
+  readOnly?: boolean;
   /** 完成时间（ISO；可复用子代理为最近一次任务结束/归档时间） */
   at: string;
 }
@@ -84,6 +89,11 @@ export interface SubagentArchiveMeta {
   effort?: EffortSetting;
   scope?: string[];
   system?: string;
+  /** 只读子代理（docs/42；复活时照此重装：不装写入工具、run_pwsh 钉死只读沙箱） */
+  readOnly?: boolean;
+  /** 存档时刻的进展速览（docs/42；progressDigestOf 口径）——唤醒简报的现成数据源，
+   *  旧档缺省 = 无（消费方按历史现算） */
+  progress?: string;
 }
 
 export interface SessionData extends SessionMeta {

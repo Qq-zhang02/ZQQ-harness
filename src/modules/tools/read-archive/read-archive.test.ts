@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { toolReadArchive } from "./index.ts";
-import { createReadArchiveTool, renderArchiveMessages } from "./read-archive.ts";
+import { createReadArchiveTool, renderArchiveMessages, renderArchiveSummary } from "./read-archive.ts";
 import { buildContext } from "../../../core/context.ts";
 import { loadConfig } from "../../../config.ts";
 import { createFileLedger } from "../../../core/file-tools.ts";
@@ -113,4 +113,34 @@ test("read_archive：超 archiveRenderMaxChars 预算截为头部 + 省略标记
   assert.ok(out.includes("[后文已省略"), "带省略标记");
   assert.ok(out.startsWith("存档注入 · 过程存档 · 子代理 big#1"), "头部标签保留");
   assert.ok((await tool.execute({ subId: 1 }, tctx)).length < 200_000, "重复调用结果稳定（无状态）");
+});
+
+test("read_archive summary=true：摘要版=任务书/助手说明/操作索引/进展速览，不含工具结果全文；完整版不变", async () => {
+  const big = "RESULT-BODY-" + "x".repeat(50_000);
+  const messages: ChatMessage[] = [
+    { role: "user", content: "任务书：整理结果" },
+    { role: "assistant", content: "先读数据", toolCalls: [{ id: "c1", name: "read_file", arguments: '{"path":"data.csv"}' }] },
+    { role: "tool", toolCallId: "c1", content: big },
+    { role: "assistant", content: null, toolCalls: [{ id: "c2", name: "run_pwsh", arguments: '{"command":"python 01.py"}' }] },
+    { role: "tool", toolCallId: "c2", content: "exit code: 0\n\n[stdout]\nok" },
+    { role: "assistant", content: "第一步完成，接下来出图。", toolCalls: [{ id: "c3", name: "run_pwsh", arguments: '{"command":"python 02.py"}' }] },
+    { role: "tool", toolCallId: "c3", content: "exit code: unknown（超时被终止：…）" },
+  ];
+  const deps = depsWith(() => ({ ok: true, label: "过程存档 · 子代理 s#1", messages }));
+  const tool = createReadArchiveTool(deps);
+  const sum = await tool.execute({ subId: 1, summary: true }, tctx);
+  assert.ok(sum.startsWith("存档注入（摘要版） · 过程存档 · 子代理 s#1 · 共 7 条消息"), sum.slice(0, 80));
+  assert.ok(!sum.includes("RESULT-BODY"), "摘要版不含工具结果全文");
+  assert.ok(sum.includes("[任务书（1 条）]\n- 任务书：整理结果"), sum);
+  assert.ok(sum.includes("[过程说明（2 条助手文本）]\n- 先读数据\n- 第一步完成，接下来出图。"), sum);
+  assert.ok(sum.includes("[操作索引（3 个工具调用）]\n- read_file data.csv\n- run_pwsh python 01.py\n- run_pwsh python 02.py（超时）"), "索引：工具 + 路径/命令 + 成败标记");
+  assert.ok(sum.includes("最后成功的命令：python 01.py"), "进展速览随摘要给出");
+  assert.ok(sum.length < 2_000, `摘要版应是索引级体量：${sum.length}`);
+  // 完整版不受影响
+  const full = await tool.execute({ subId: 1 }, tctx);
+  assert.ok(full.startsWith("存档注入 · 过程存档 · 子代理 s#1") && full.includes("RESULT-BODY"), "缺省仍是完整版");
+  assert.ok(full.length > sum.length * 20, `完整版远大于摘要版：${full.length} vs ${sum.length}`);
+  // 无工具调用的存档：索引段给占位，不报错
+  const bare = renderArchiveSummary([{ role: "user", content: "只有任务书" }]);
+  assert.ok(bare.includes("[操作索引（0 个工具调用）]\n-（无）") && !bare.includes("[进展速览]"), bare);
 });

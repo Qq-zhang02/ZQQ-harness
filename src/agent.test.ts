@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Agent, runSubagent, type AgentSettings, type AgentUi } from "./agent.ts";
-import type { ChatMessage, ChatParams, ChatResult, EffortSetting, LLMProvider } from "./llm/provider.ts";
+import { Agent, runSubagent, type AgentDeps, type AgentSettings, type AgentUi } from "./agent.ts";
+import type { ChatImage, ChatMessage, ChatParams, ChatResult, EffortSetting, LLMProvider } from "./llm/provider.ts";
 import { estTokens, messageTokens } from "./tokens.ts";
 import { THRESHOLDS, initConfig, isThinkingEffort, reasoningPassbackEnabled } from "./config.ts";
 import { ToolRegistry, type Tool } from "./tools/registry.ts";
@@ -1130,4 +1130,239 @@ test("docs/15：协调者同轮多个工具调用并行执行（w2 无需等 w1 
     assert.equal(r?.finalText, "完成");
     assert.equal(t.entered(), 1, "w1 完成后 w2 才执行");
   }
+});
+
+// ---------- docs/42：图片常驻与图片预算（修订：「看过即退役」已撤销）/ 纯文本模型省略图像 / 上下文预警线提示 / readOnly ----------
+
+const IMG = { mime: "image/png" as const, data: "aGVsbG8=" };
+
+/** 带图工具：executeImage 返回 images（read_image 的最小替身，缺省一张小图）；ctxSink 捕获工具上下文。 */
+function imageTool(ctxSink: Array<Record<string, unknown>>, images: ChatImage[] = [IMG]): Tool {
+  return {
+    name: "read_image",
+    description: "读图测试工具",
+    parameters: { type: "object", properties: {}, required: [] },
+    execute: async () => "[已读取图片] 回退文本",
+    executeImage: async (_args, ctx) => {
+      const { requestApproval, ...rest } = ctx as unknown as { requestApproval: unknown } & Record<string, unknown>;
+      ctxSink.push(rest);
+      return { text: "[已读取图片 fig.png]", images };
+    },
+  };
+}
+
+function makeImageAgent(script: ChatResult[], extra: Partial<AgentDeps> = {}, images: ChatImage[] = [IMG]) {
+  const provider = new FakeProvider(script);
+  const registry = new ToolRegistry();
+  registry.register(echoTool);
+  const ctxSink: Array<Record<string, unknown>> = [];
+  registry.register(imageTool(ctxSink, images));
+  const sink: string[] = [];
+  const agent = new Agent({
+    provider,
+    registry,
+    workspace: createWorkspace(process.cwd()),
+    ui: stubUi(sink),
+    requestApproval: async () => "allowed-once",
+    settings: { alwaysConfirm: false, effort: "high" },
+    maxToolRounds: 8,
+    ...extra,
+  });
+  return { agent, provider, sink, ctxSink };
+}
+
+const tcall = (id: string, name: string, args = "{}"): ChatResult => ({ content: "", toolCalls: [{ id, name, arguments: args }], usage: null });
+
+/** 一段历史里仍保留的图像块总数（tool + user 消息）。 */
+const imagesIn = (ms: readonly ChatMessage[]): number =>
+  ms.reduce((s, m) => s + ((m.role === "tool" || m.role === "user") ? (m.images?.length ?? 0) : 0), 0);
+
+/** 第 i 次请求携带的图像块总数。 */
+const imgCountOf = (calls: ChatParams[], i: number): number => imagesIn(calls[i]!.messages);
+
+type ToolMsg = Extract<ChatMessage, { role: "tool" }>;
+const isToolWithId = (id: string) => (m: ChatMessage): m is ToolMsg => m.role === "tool" && m.toolCallId === id;
+
+test("docs/42 修订 图像常驻：tool 消息的图像块随其后的每次请求携带（不再按次数退役），历史对象与文本不动；用户贴图同样常驻", async () => {
+  const { agent, provider } = makeImageAgent([
+    tcall("a", "read_image"),
+    tcall("b", "echo_tool", '{"value":"x"}'),
+    tcall("c", "echo_tool", '{"value":"y"}'),
+    { content: "结论：图没问题", toolCalls: [], usage: null },
+  ], { vision: true });
+  await agent.run("看图");
+  assert.equal(provider.calls.length, 4);
+  assert.deepEqual([0, 1, 2, 3].map((i) => imgCountOf(provider.calls, i)), [0, 1, 1, 1], "读图之后的每次请求都携带图像块（模型可随时回看）");
+  const kept = agent.messages.find((m) => m.role === "tool" && m.content.includes("已读取图片"));
+  assert.ok(kept && kept.role === "tool" && kept.images?.length === 1, "历史里的 tool 消息仍带 images");
+  assert.equal(kept!.content, "[已读取图片 fig.png]", "未超预算：不移出、不改文本");
+  assert.ok(provider.calls.every((c) => c.omitImages === undefined), "视觉会话的请求不带 omitImages 字段（字节不变）");
+  // 用户贴图是用户内容：同样常驻
+  const { agent: a2, provider: p2 } = makeImageAgent([{ content: "ok", toolCalls: [], usage: null }], { vision: true });
+  await a2.run("看这张", undefined, [IMG]);
+  assert.ok(p2.calls[0]!.messages.some((m) => m.role === "user" && m.images?.length === 1));
+  assert.ok(a2.messages.some((m) => m.role === "user" && m.images?.length === 1), "用户图仍在历史");
+});
+
+test("docs/42 修订 图片预算·张数：超过 imageContextMaxCount 后把最早的已看过的工具读图成批移出到 75%（新建对象、追加移出说明、UI 提示）；历史对象不复用", async () => {
+  initConfig({ disabledModules: [], thresholds: { imageContextMaxCount: 4, imageContextMaxBytes: 1024 * 1024 } });
+  try {
+    // 每轮读一张、共 6 张：maxCount=4 → 第 5 张入场后（请求前）移出最早的 2 张到 ≤3（4×0.75），
+    // 之后第 6 张入场不再触发（4 ≤ 4）——成批移出，缓存只失效一次
+    const script: ChatResult[] = [];
+    for (let k = 0; k < 6; k++) script.push(tcall(`c${k}`, "read_image"));
+    script.push({ content: "完成", toolCalls: [], usage: null });
+    const { agent, provider, sink } = makeImageAgent(script, { vision: true, maxToolRounds: 20 });
+    await agent.run("逐张看图");
+    assert.equal(provider.calls.length, 7);
+    assert.deepEqual([0, 1, 2, 3, 4, 5, 6].map((i) => imgCountOf(provider.calls, i)), [0, 1, 2, 3, 4, 3, 4]);
+    const toolMsgs = agent.messages.filter((m) => m.role === "tool");
+    const evicted = toolMsgs.filter((m) => m.content.includes("图片已移出上下文"));
+    assert.deepEqual(evicted.map((m) => m.toolCallId), ["c0", "c1"], "最早的已看过的两张被移出");
+    assert.ok(evicted.every((m) => !m.images), "被移出的消息不再带 images");
+    assert.ok(evicted[0]!.content.startsWith("[已读取图片 fig.png]\n[图片已移出上下文（1 张）"), evicted[0]!.content);
+    assert.ok(evicted.every((m) => m.content.includes("可按原路径重新 read_image")), "移出说明指引按路径重读");
+    assert.deepEqual(toolMsgs.filter((m) => m.images?.length).map((m) => m.toolCallId), ["c2", "c3", "c4", "c5"], "其余的图照常保留");
+    // 新建对象：第 4 次请求（移出前）携带的 c0 消息对象 ≠ 现在历史里同位置的对象
+    const before = provider.calls[4]!.messages.find(isToolWithId("c0"));
+    const after = agent.messages.find(isToolWithId("c0"));
+    assert.ok(before !== after && before!.images?.length === 1 && !after!.images, "移出 = 换成不带 images 的新对象（逐对象缓存按身份失效）");
+    assert.ok(sink.some((x) => x.includes("[图片预算]") && x.includes("4 张 / 1 MiB") && x.includes("2 张图片")), "UI 提示预算上限与移出张数");
+    // 实测锚点随前缀替换失效：移出后总量回退纯估算口径（不再按旧锚点外推）
+    assert.equal(agent.contextEstimate().breakdown.other, 0);
+  } finally {
+    initConfig({ disabledModules: [], thresholds: {} });
+  }
+});
+
+test("docs/42 修订 图片预算·字节：imageContextMaxBytes 独立生效（大图场景兜住单次请求的图片载荷），同样成批移到 75%", async () => {
+  initConfig({ disabledModules: [], thresholds: { imageContextMaxCount: 100, imageContextMaxBytes: 10_000 } });
+  try {
+    // 每张 base64 4000 字符 = 解码 3000 字节：第 4 张入场后 12000 > 10000 → 移出最早的 2 张（余 6000 ≤ 7500）
+    const big = { mime: "image/png" as const, data: "A".repeat(4000) };
+    const script: ChatResult[] = [0, 1, 2, 3].map((k) => tcall(`c${k}`, "read_image"));
+    script.push({ content: "完成", toolCalls: [], usage: null });
+    const { agent, provider, sink } = makeImageAgent(script, { vision: true }, [big]);
+    await agent.run("看大图");
+    assert.deepEqual([0, 1, 2, 3, 4].map((i) => imgCountOf(provider.calls, i)), [0, 1, 2, 3, 2]);
+    assert.deepEqual(
+      agent.messages.filter((m): m is ToolMsg => m.role === "tool" && !m.images).map((m) => m.toolCallId),
+      ["c0", "c1"],
+    );
+    assert.ok(sink.some((x) => x.includes("100 张 / 10 KB") && x.includes("2 张图片")), "UI 提示按 KB 显示字节上限");
+  } finally {
+    initConfig({ disabledModules: [], thresholds: {} });
+  }
+});
+
+test("docs/42 修订 图片预算·移出顺序：工具读图先于用户贴图（贴图不能按路径重读）；贴图自身超预算时只移最早的几张（按张，不整条丢）", async () => {
+  initConfig({ disabledModules: [], thresholds: { imageContextMaxCount: 2, imageContextMaxBytes: 1024 * 1024 } });
+  try {
+    // 用户贴 2 张占满预算 → 模型再读 1 张工具图：新读的图被移出，用户贴图保留
+    const { agent, sink } = makeImageAgent([tcall("a", "read_image"), { content: "完成", toolCalls: [], usage: null }], { vision: true });
+    await agent.run("看这两张", undefined, [IMG, IMG]);
+    const pasted = agent.messages.find((m) => m.role === "user" && m.content === "看这两张");
+    assert.ok(pasted?.role === "user" && pasted.images?.length === 2, "用户贴图保留");
+    const toolMsg = agent.messages.find((m) => m.role === "tool" && m.toolCallId === "a");
+    assert.ok(toolMsg?.role === "tool" && !toolMsg.images, "预算被贴图占满：模型还没看过的新工具图被移出");
+    assert.ok(toolMsg!.content.includes("若预算仍被占满，重读的图还会被移出"), "说明里讲清预算状况，避免反复重读");
+    assert.ok(sink.some((x) => x.includes("[图片预算]")));
+    // 用户一次贴 4 张、预算 2 张：只移最早的 2 张，后 2 张照常发送（按张移出，不整条丢失）
+    const { agent: a2, provider: p2 } = makeImageAgent([{ content: "ok", toolCalls: [], usage: null }], { vision: true });
+    await a2.run("贴四张", undefined, [IMG, IMG, IMG, IMG]);
+    const userMsg = a2.messages.find((m) => m.role === "user" && m.content.startsWith("贴四张"));
+    assert.ok(userMsg?.role === "user" && userMsg.images?.length === 2, "同一条消息里只移出最早的 2 张");
+    assert.ok(userMsg!.content.includes("[图片已移出上下文（2 张）"));
+    assert.equal(imgCountOf(p2.calls, 0), 2, "首次请求就按预算发送");
+  } finally {
+    initConfig({ disabledModules: [], thresholds: {} });
+  }
+});
+
+test("docs/42 修订 纯文本模型：请求标记 omitImages（提供方投影省略图像），历史里的图原样保留、换回视觉模型即恢复；token 估算同步不计图像；不发图就不移出", async () => {
+  initConfig({ disabledModules: [], thresholds: {} });
+  try {
+    const { agent, provider } = makeImageAgent(
+      [tcall("a", "read_image"), tcall("b", "read_image"), tcall("c", "read_image"), { content: "完成", toolCalls: [], usage: null }],
+      { vision: true, maxToolRounds: 20 },
+    );
+    await agent.run("看图");
+    assert.ok(provider.calls.every((c) => c.omitImages === undefined), "视觉会话：不带 omitImages");
+    assert.equal(imagesIn(agent.messages), 3, "前置：缺省预算下 3 张图都在");
+    const withImages = agent.contextEstimate().total;
+    // 切到纯文本模型并把预算收紧到 1 张：历史里的图一张也不移出（不发图就没有超预算可言）
+    initConfig({ disabledModules: [], thresholds: { imageContextMaxCount: 1, imageContextMaxBytes: 1024 } });
+    agent.setVision(false);
+    await agent.run("换成纯文本模型后继续");
+    assert.equal(provider.calls.at(-1)!.omitImages, true, "请求标记省略图像");
+    assert.equal(imagesIn(agent.messages), 3, "历史里的 3 张图原样保留");
+    const omitted = agent.contextEstimate().total;
+    assert.ok(omitted < withImages, `省略口径不计图像 token：${withImages} → ${omitted}`);
+    // 预算恢复缺省后换回视觉模型：图像块恢复携带（被预算移出的除外——本例没有被移出）
+    initConfig({ disabledModules: [], thresholds: {} });
+    agent.setVision(true);
+    await agent.run("换回视觉模型再看");
+    assert.equal(provider.calls.at(-1)!.omitImages, undefined);
+    assert.equal(imgCountOf(provider.calls, provider.calls.length - 1), 3, "换回即恢复显示");
+  } finally {
+    initConfig({ disabledModules: [], thresholds: {} });
+  }
+});
+
+test("docs/42 修订 图片预算·恢复档：restore 的图按「已看过」处理——历史本身超预算时下一次请求前即移出最早的", async () => {
+  initConfig({ disabledModules: [], thresholds: { imageContextMaxCount: 2, imageContextMaxBytes: 1024 * 1024 } });
+  try {
+    const { agent, provider } = makeImageAgent([{ content: "ok", toolCalls: [], usage: null }], { vision: true });
+    const img = (id: string): ChatMessage => ({ role: "tool", toolCallId: id, content: `[已读取图片 ${id}.png]`, images: [IMG] });
+    agent.restore([
+      { role: "user", content: "旧任务" },
+      { role: "assistant", content: null, toolCalls: ["a", "b", "c"].map((id) => ({ id, name: "read_image", arguments: "{}" })) },
+      img("a"),
+      img("b"),
+      img("c"),
+      { role: "assistant", content: "旧任务完成", toolCalls: [] },
+    ]);
+    await agent.run("继续");
+    // maxCount=2 → 目标 ≤1（2×0.75）：a、b 移出，c 留下
+    const toolMsgs = provider.calls[0]!.messages.filter((m) => m.role === "tool");
+    assert.deepEqual(toolMsgs.map((m) => m.toolCallId), ["a", "b", "c"]);
+    assert.deepEqual(toolMsgs.map((m) => m.images?.length ?? 0), [0, 0, 1]);
+    assert.equal(imagesIn(agent.messages), 1);
+  } finally {
+    initConfig({ disabledModules: [], thresholds: {} });
+  }
+});
+
+test("docs/42 上下文预警线提示：占用越过 warnPct 时向历史注入一次系统提示（tool 消息之后的 user 消息），后续 run 不重复", async () => {
+  const script: ChatResult[] = [
+    tcall("a", "echo_tool", '{"value":"1"}'),
+    { content: "完成一", toolCalls: [], usage: null },
+    tcall("b", "echo_tool", '{"value":"2"}'),
+    { content: "完成二", toolCalls: [], usage: null },
+  ];
+  const { agent, provider, sink } = makeImageAgent(script, {
+    contextWarn: { contextLength: () => 50, warnPct: 25 }, // 窗口给得很小：首轮之后占用必然越过预警线
+  });
+  await agent.run("任务一");
+  const nudges = agent.messages.filter((m) => m.role === "user" && m.content.includes("系统提示：你的上下文占用已达"));
+  assert.equal(nudges.length, 1, "一次 Agent 生命周期只提示一次");
+  const at = agent.messages.indexOf(nudges[0]!);
+  assert.equal(agent.messages[at - 1]!.role, "tool", "插在本轮 tool 消息之后（合法形状：tool → user）");
+  assert.ok(sink.some((x) => x.includes("已越过预警线 25%")), "UI 信息行同步可见");
+  assert.ok(provider.calls[1]!.messages.some((m) => m.role === "user" && m.content.includes("请立即精简操作")), "下一次请求携带该提示（模型收得到）");
+  await agent.run("任务二");
+  assert.equal(agent.messages.filter((m) => m.role === "user" && m.content.includes("系统提示：你的上下文占用已达")).length, 1, "后续任务不重复提示");
+  // 未装配 contextWarn 的 Agent：零影响
+  const plain = makeImageAgent(script);
+  await plain.agent.run("任务一");
+  assert.equal(plain.agent.messages.filter((m) => m.role === "user" && m.content.includes("系统提示：你的上下文占用已达")).length, 0);
+});
+
+test("docs/42 readOnly：deps.readOnly 随工具上下文下发（缺省不下发字段）", async () => {
+  const { agent, ctxSink } = makeImageAgent([tcall("a", "read_image"), { content: "ok", toolCalls: [], usage: null }], { readOnly: true });
+  await agent.run("t");
+  assert.equal(ctxSink[0]!.readOnly, true);
+  const plain = makeImageAgent([tcall("a", "read_image"), { content: "ok", toolCalls: [], usage: null }]);
+  await plain.agent.run("t");
+  assert.equal("readOnly" in plain.ctxSink[0]!, false, "缺省不带字段（普通会话字节不变）");
 });

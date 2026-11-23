@@ -15,6 +15,7 @@ import type { Agent } from "../agent.ts";
 import type { ApprovalDecision, ApprovalRequest } from "../approval/types.ts";
 import type { EffortSetting } from "../llm/provider.ts";
 import type { SubagentRecord } from "./sessions.ts";
+import type { FileLedger } from "../core/file-tools.ts";
 
 /** 控制动作的壳侧副作用接缝（docs/35 真机待办4）：活动句柄路径本就持有 sh 广播/送达/落盘；
  *  休眠待命记录（服务重启后残留）的归档同样需要这三件事——由两处调用方（createRuntime 工具
@@ -110,6 +111,26 @@ export interface WorkerSession {
   effort?: EffortSetting;
   scope?: string[];
   system?: string;
+  /** 只读子代理（docs/42）：首派发从 req 捕获、唤醒从存档 meta 回填——mountWorkerAgent 据此裁剪
+   *  写入工具/MCP 并把 run_pwsh 钉在只读沙箱。 */
+  readOnly?: boolean;
+  /** 本实例的 per-reader 已读台账视图（docs/42；mountWorkerAgent 装配时回填）——复活时回填
+   *  「上次见过且未变动」文件的指纹，免掉唤醒后编辑自建文件必先重读的一轮。 */
+  ledger?: FileLedger;
+  /** 最近一次任务收尾时刻（epoch ms，docs/42）：下一次 followup 的唤醒简报以它为基准扫描
+   *  写入范围内的磁盘变动。 */
+  lastActiveAt?: number;
+}
+
+/** finishSubagent 的身份参数（审计记录字段快照）：subId/name/description + docs/42 的 scope/readOnly。 */
+export function workerIdentity(ws: WorkerSession): { subId: number; name: string; description?: string; scope?: string[]; readOnly?: boolean } {
+  return {
+    subId: ws.subId,
+    name: ws.name,
+    ...(ws.description ? { description: ws.description } : {}),
+    ...(ws.scope && ws.scope.length > 0 ? { scope: ws.scope } : {}),
+    ...(ws.readOnly ? { readOnly: true } : {}),
+  };
 }
 
 /** 用量盒 → { usage? } 拼装（有量才带字段；原 runWorker 成功路径同款）。 */
@@ -142,6 +163,8 @@ export function reusableRecord(ws: WorkerSession, state: "idle" | "archived"): S
     ...(ws.tasks > 0 ? { tasks: ws.tasks } : {}),
     ...(ws.contextPct !== undefined ? { contextPct: ws.contextPct } : {}),
     ...(ws.elapsedMs > 0 ? { elapsedMs: ws.elapsedMs } : {}),
+    ...(ws.scope && ws.scope.length > 0 ? { scope: ws.scope } : {}),
+    ...(ws.readOnly ? { readOnly: true } : {}),
     state,
     at: new Date().toISOString(),
   };
@@ -178,7 +201,7 @@ export function finalizeArchive(sh: SessionShell, rt: SessionRuntime, ws: Worker
 export function finishSubagent(
   sh: SessionShell,
   rt: SessionRuntime,
-  id: { subId: number; name: string; description?: string },
+  id: { subId: number; name: string; description?: string; scope?: string[]; readOnly?: boolean },
   res: SubagentResult,
   transcript?: string,
 ): void {

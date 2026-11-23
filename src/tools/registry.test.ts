@@ -20,6 +20,25 @@ test("未知工具返回错误字符串而非抛异常", async () => {
   assert.ok(out.includes("未知工具"));
 });
 
+// ---------- docs/42 修订：工具结果剪枝保留图像块（图像是内容本体，不当文本剪） ----------
+
+test("executeWithMeta：带图工具的文本被修剪时 images 原样保留（预算只作用于文本）", async () => {
+  const r = new ToolRegistry();
+  const IMG = { mime: "image/png" as const, data: "aGVsbG8=" };
+  r.register({
+    name: "read_image",
+    description: "带图工具",
+    parameters: { type: "object", properties: {} },
+    execute: async () => "回退文本",
+    executeImage: async () => ({ text: "x".repeat(5000), images: [IMG] }),
+  });
+  const out = await r.executeWithMeta("read_image", "{}", { ...makeCtx(), toolResultMaxChars: 1000 });
+  assert.ok(out.prunedChars > 0, "文本超预算被剪");
+  assert.ok(out.text.length < 2000);
+  assert.deepEqual(out.images, [IMG], "图像块不占文本预算、不被剪掉");
+  assert.equal(out.full, "x".repeat(5000), "UI 仍拿完整输出");
+});
+
 test("非法 JSON 参数返回错误字符串", async () => {
   const r = new ToolRegistry();
   r.register(echoTool);

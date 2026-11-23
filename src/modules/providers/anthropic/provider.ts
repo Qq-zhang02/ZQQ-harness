@@ -20,6 +20,7 @@ import type {
   ToolSchema,
   UsageInfo,
 } from "../../../llm/provider.ts";
+import { imageOmittedNote } from "../../../llm/provider.ts";
 import { isThinkingEffort } from "../../../config.ts";
 
 export interface AnthropicOptions {
@@ -124,18 +125,23 @@ function stripCacheControl(messages: Array<{ content: unknown }>): void {
   }
 }
 
-/** 映射 harness 消息：system 由调用方单独处理；tool 消息合并为 user 的 tool_result 块。 */
+/** 映射 harness 消息：system 由调用方单独处理；tool 消息合并为 user 的 tool_result 块。
+ *  projection.omitImages（docs/42 修订）：文本模型的请求省略图像——带图消息只发文本 + 省略说明；历史不动。 */
 export function toAnthropicMessages(
   messages: ChatMessage[],
   replay?: ReplayOptions,
+  projection?: Pick<ChatParams, "omitImages">,
 ): Array<{ role: "user" | "assistant"; content: unknown }> {
+  const omit = projection?.omitImages === true;
   const out: Array<{ role: "user" | "assistant"; content: unknown }> = [];
   for (const m of messages) {
     if (m.role === "system") continue;
     if (m.role === "user") {
       // docs/10 R3：带图 user 消息转多模态 blocks（text + image base64 source）；
       // 无图保持纯字符串（字节不变）
-      if (m.images && m.images.length > 0) {
+      if (m.images && m.images.length > 0 && omit) {
+        out.push({ role: "user", content: `${m.content}\n${imageOmittedNote(m.images.length)}` });
+      } else if (m.images && m.images.length > 0) {
         out.push({
           role: "user",
           content: [
@@ -163,17 +169,21 @@ export function toAnthropicMessages(
       out.push({ role: "assistant", content: blocks.length > 0 ? blocks : [{ type: "text", text: "(空回复)" }] });
       continue;
     }
-    // docs/34：read_image 的图像投影——tool_result 官方支持 content 数组（text + image base64 块）
+    // docs/34：read_image 的图像投影——tool_result 官方支持 content 数组（text + image base64 块）；
+    // docs/42 修订：文本模型的请求省略图像（content 回到字符串 + 省略说明）
+    const imgs = m.images;
     const block =
-      m.images && m.images.length > 0
-        ? {
-            type: "tool_result",
-            tool_use_id: m.toolCallId,
-            content: [
-              { type: "text", text: m.content },
-              ...m.images.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mime, data: img.data } })),
-            ],
-          }
+      imgs && imgs.length > 0
+        ? omit
+          ? { type: "tool_result", tool_use_id: m.toolCallId, content: `${m.content}\n${imageOmittedNote(imgs.length)}` }
+          : {
+              type: "tool_result",
+              tool_use_id: m.toolCallId,
+              content: [
+                { type: "text", text: m.content },
+                ...imgs.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mime, data: img.data } })),
+              ],
+            }
         : { type: "tool_result", tool_use_id: m.toolCallId, content: m.content };
     const last = out[out.length - 1];
     const lastContent = last && last.role === "user" ? (last.content as Array<Record<string, unknown>>) : null;
@@ -233,7 +243,7 @@ export class AnthropicProvider implements LLMProvider {
       model: this.model,
       max_tokens: Math.max(maxTokens, budget ? budget + BUDGET_MIN_HEADROOM_TOKENS : BUDGET_MIN_HEADROOM_TOKENS),
       // 思考开启才回放 thinking 块（签名对齐/降级见 replayableThinking）；思考关闭保持纯净历史
-      messages: toAnthropicMessages(params.messages, budget ? { model: this.model, onDegrade: params.onReplayDegrade } : undefined),
+      messages: toAnthropicMessages(params.messages, budget ? { model: this.model, onDegrade: params.onReplayDegrade } : undefined, params),
       stream: true,
     };
     const system = params.messages

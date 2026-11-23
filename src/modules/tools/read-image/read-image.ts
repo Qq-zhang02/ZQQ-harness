@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import type { ChatImage } from "../../../llm/provider.ts";
 import type { Tool, ToolContext } from "../../../tools/registry.ts";
 import type { SystemToolDeps } from "../../../core/types.ts";
-import { IMAGE_RULES } from "../../../config.ts";
+import { IMAGE_RULES, THRESHOLDS } from "../../../config.ts";
 import { isInsideWorkspace } from "../../../workspace.ts";
 
 /** 文件魔数 → MIME（无扩展名也能识别；不认识返回 null）。 */
@@ -67,8 +67,9 @@ async function readImage(args: Record<string, unknown>, ctx: ToolContext, deps: 
   }
   return {
     text:
-      `[已读取图片 ${rel}] 格式 ${mime} · ${kb(bytes.length)}。图片已作为图像块进入本对话——你在下一次请求中会直接看到它。` +
-      `注意：它会随历史在后续每轮请求中重复出现（持续占视觉 token）；同一张图重复 read_image 会产生重复图像块，不要反复读同一张。`,
+      `[已读取图片 ${rel}] 格式 ${mime} · ${kb(bytes.length)}。图片已作为图像块进入本对话——下一次请求你会直接看到它，之后随历史保留在上下文里（可随时回看），` +
+      `直到被压缩摘要替换，或会话内图片超出预算（上限 ${THRESHOLDS.imageContextMaxCount} 张）时最早的图被移出。` +
+      `看到后把观察结论写成文字；同一张图不要重复读——改图后读新文件即可。`,
     images: [{ mime, data: bytes.toString("base64") }],
   };
 }
@@ -84,7 +85,8 @@ export function createReadImageTool(deps: SystemToolDeps): Tool {
       "直接读取工作区内的图片文件，图片作为图像块进入本对话（下一次请求你将原生看到它，无需文字转述）。" +
       "仅当本会话模型有视觉能力时可用（无视觉时调用会被拒绝，请改用 view_image 借视觉模型出文字描述）。" +
       "支持 PNG/JPEG/GIF/WebP（按文件魔数识别）；单张不超过大小上限；路径相对工作区根。" +
-      "图片会随历史在后续每轮请求中重复出现（持续占视觉 token）——不要反复读同一张图；读后及时用文字总结观察结论。",
+      `图片随历史保留在上下文里（之后可随时回看，也持续占视觉 token）——直到被压缩摘要替换，或会话内图片超出预算（上限 ${THRESHOLDS.imageContextMaxCount} 张）时最早的图被移出。` +
+      "读后用文字总结观察结论，不要反复读同一张图；改图后读新文件即可。",
     parameters: {
       type: "object",
       properties: {
