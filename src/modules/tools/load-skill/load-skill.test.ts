@@ -3,9 +3,9 @@
  * deps 用真实 buildContext 构造（类型安全），skills 注入临时目录扫描结果；
  * 模块 setup → ctx.tools 注册 → create 实例化，与 server 组装同路径。
  */
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toolLoadSkill } from "./index.ts";
@@ -18,8 +18,15 @@ import type { ToolContext } from "../../../tools/registry.ts";
 
 const NO_CTX = {} as ToolContext;
 
+/** 本文件建过的临时目录：全部用例跑完后清掉（此前从不清理，每跑一次 npm test 漏一个 sk-t-*）。 */
+const tempDirs: string[] = [];
+after(() => {
+  for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
+});
+
 test("load_skill：模块注册 → 每会话实例化 → 按名返回 SKILL.md 全文，未知技能报错", async () => {
   const g = mkdtempSync(join(tmpdir(), "sk-t-"));
+  tempDirs.push(g);
   mkdirSync(join(g, "demo"));
   writeFileSync(join(g, "demo", "SKILL.md"), "---\nname: demo\ndescription: d\n---\n技能正文XYZ");
   const skills = scanSkills([{ dir: g, source: "global" }]);

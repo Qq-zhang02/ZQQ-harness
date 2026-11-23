@@ -10,7 +10,7 @@
  * docs/16：dispatch/followup 同步受理回执；任务结算（完成/失败/暂停后恢复完成/归档中止）
  * 一律经收件箱自动送达（测试直调场景消息留在 rt.inbox 供断言）；轮末排空的相邻报告合并。
  */
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -94,12 +94,20 @@ interface Harness {
   toolCalls: string[];
 }
 
+/** 本文件建过的临时用户目录：全部用例跑完后统一清掉。此前每个用例各建一份、从不清理——
+ *  每跑一次 npm test 在系统临时目录漏 ~31 个 zqq-suba-u-*（2026-11-24 实测已堆到 7800+）。 */
+const tempUserDirs: string[] = [];
+after(() => {
+  for (const d of tempUserDirs) rmSync(d, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+});
+
 /** 最小壳 + 假会话：runWorker 只消费这些面。 */
 function makeHarness(
   script: ChatResult[],
   opts?: { approval?: boolean; approvalSink?: string[]; scopeSink?: (string[] | undefined)[]; llm?: LLMProvider; contextLength?: number },
 ): Harness {
   const userDir = mkdtempSync(join(tmpdir(), "zqq-suba-u-"));
+  tempUserDirs.push(userDir);
   writeFileSync(join(userDir, "AGENTS.md"), "全局规则：保持谨慎。\n", "utf8");
   const ctx = buildContext(
     {
@@ -217,6 +225,7 @@ test("runWorker：审批路由到父会话并带 [子代理 name] 标注", async
 test("subagentServiceFor：缺省名自动编号 sub-1/sub-2（服务实例内计数）", async () => {
   const names: string[] = [];
   const userDir = mkdtempSync(join(tmpdir(), "zqq-suba-n-"));
+  tempUserDirs.push(userDir);
   const ctx = buildContext(
     {
       userDir,

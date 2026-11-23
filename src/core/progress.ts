@@ -152,10 +152,20 @@ export type ProviderLimitKind = "rate" | "cap";
  * 从错误文案识别提供方限流（docs/42）。提供方没有额度查询接口，「事前知道余额」做不到——
  * 限流发生后如实归类并给出对应建议，是能做的那一半。速率类特征优先于额度类（两家文案都带
  * 「上限/限制」字样时，速率限制有更具体的特征词）。认不出返回 undefined（不臆测）。
+ *
+ * 额度类不收裸词（docs/42 修订）：初版含裸「上限 / exceed / insufficient」，上下文超长类报错
+ * （`context_length_exceeded`、「超过模型上限」…）会被判成 cap——协调者因此被告知「等额度
+ * 重置、重试无益」，而正解是压缩后重派。漏判只是不给建议，误判是给错建议：额度类只认带
+ * 限定的写法，且先排除上下文/输出超长。
  */
 export function providerLimitOf(error: string | undefined): ProviderLimitKind | undefined {
   if (!error) return undefined;
   if (/rate[\s_-]?limit|速率限制|频率限制|请求过于频繁|too many requests|\b429\b|requests?\s*(?:per|\/)\s*(?:second|minute|day)|\brpm\b|\btpm\b/i.test(error)) return "rate";
-  if (/使用上限|用量上限|额度上限|限额|额度不足|余额不足|quota|exceed|insufficient|usage cap|上限/i.test(error)) return "cap";
+  // 上下文/输出超长不是限流——等额度重置没用，重试前要先压缩或重派
+  if (/context[\s_-]*length|上下文|prompt is too long|too many tokens|max[\s_-]*tokens?|长度上限|输出上限/i.test(error)) return undefined;
+  if (
+    /使用上限|用量上限|额度上限|额度不足|余额不足|欠费|限额|已达[^。，,\n]{0,12}上限|quota|insufficient[\s_]+(?:balance|quota|funds|credits?)|exceeded (?:your |the )?(?:current )?(?:quota|balance|credit)|usage cap/i.test(error)
+  )
+    return "cap";
   return undefined;
 }

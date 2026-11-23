@@ -1,7 +1,8 @@
 /**
  * SA4 浏览器端到端冒烟的桩 LLM 服务（零 token）：本地 OpenAI 兼容 SSE 端点，
  * 按「最后一条 user 消息 + 是否已含 tool 消息」路由脚本化应答——
- *   协调者首轮（用户目标）→ tool_calls: agent_tasks 派 2 个 worker（alpha/beta）；
+ *   协调者首轮（用户目标）→ 同一轮两个 agent_task 调用，并行派 2 个 worker（alpha/beta）
+ *     （docs/15：agent_tasks 批量工具已退役，旧桩还在发它会得到「未知工具」）；
  *   worker（task 文本）→ 直接交最终报告（不走工具，验证收尾链路）；
  *   协调者末轮（含 tool 结果）→ 最终答复。
  * 用法：node scripts/e2e-sa4-stub-llm.mjs [port=18901]
@@ -22,7 +23,9 @@ const chunk = (delta, finish = null, extra = {}) =>
     ...extra,
   });
 
-/** 一段完整应答 → SSE 响应体（文本按 2~3 段流出，带 usage 与 [DONE]）。 */
+/** 一段完整应答 → SSE 响应体（文本按 2~3 段流出，带 usage 与 [DONE]）。
+ *  tool 分支的 payload 是参数对象数组：每个元素一个 agent_task 调用，同轮并行派发
+ *  （SDK 按 index 聚合；每个调用先发 name、再发 arguments）。 */
 function sseBody(kind, payload) {
   const events = [];
   events.push(chunk({ role: "assistant" }));
@@ -31,21 +34,23 @@ function sseBody(kind, payload) {
     const cuts = [0, Math.floor(t.length / 2), t.length];
     for (let i = 0; i < 2; i++) events.push(chunk({ content: t.slice(cuts[i], cuts[i + 1]) }));
   } else {
-    // tool_calls：name + arguments 两个 delta（SDK 按 index 聚合，arguments 可分片）
-    events.push(chunk({ tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "agent_tasks", arguments: "" } }] }));
-    events.push(chunk({ tool_calls: [{ index: 0, function: { arguments: payload } }] }));
+    events.push(
+      chunk({
+        tool_calls: payload.map((_, i) => ({ index: i, id: `call-${i + 1}`, type: "function", function: { name: "agent_task", arguments: "" } })),
+      }),
+    );
+    payload.forEach((c, i) => events.push(chunk({ tool_calls: [{ index: i, function: { arguments: JSON.stringify(c) } }] })));
   }
   events.push(chunk({}, "stop"));
-  events.push(JSON.stringify({ id: "chatcmpl-stub", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 321, completion_tokens: 45 } }));
+  events.push(JSON.stringify({ id: "chatcmplet-stub", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 321, completion_tokens: 45 } }));
   return events.map((e) => `data: ${e}\n\n`).join("") + "data: [DONE]\n\n";
 }
 
-const TASKS_ARGS = JSON.stringify({
-  tasks: [
+// docs/15：agent_tasks 批量工具已退役——并行派发 = 同一轮多个 agent_task 调用（与 e2e-dbg-switch-stub 同款）
+const TASK_ITEMS = [
     { name: "alpha", description: "写 alpha 模块报告", task: "写 alpha 模块：在工作区根创建 alpha.md，内容为一行完成说明，然后交报告。" },
     { name: "beta", description: "写 beta 模块报告", task: "写 beta 模块：在工作区根创建 beta.md，内容为一行完成说明，然后交报告。" },
-  ],
-});
+];
 
 const server = createServer((req, res) => {
   if (req.method !== "POST" || !req.url.endsWith("/chat/completions")) {
@@ -66,7 +71,7 @@ const server = createServer((req, res) => {
     const hasTool = msgs.some((m) => m.role === "tool");
     let bodyOut;
     if (userText.includes("派两个子代理") && !hasTool) {
-      bodyOut = sseBody("tool", TASKS_ARGS);
+      bodyOut = sseBody("tool", TASK_ITEMS);
     } else if (userText.startsWith("写 alpha")) {
       bodyOut = sseBody("text", "结论：完成。产出物：alpha.md（一行说明）。关键决定：无。未决问题：无。");
     } else if (userText.startsWith("写 beta")) {
@@ -78,7 +83,7 @@ const server = createServer((req, res) => {
     }
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     res.end(enc.encode(bodyOut));
-    console.log(`[stub-llm] ${userText.slice(0, 24).replace(/\n/g, " ")} → ${hasTool ? "final" : userText.includes("派两个") ? "agent_tasks" : "report"}`);
+    console.log(`[stub-llm] ${userText.slice(0, 24).replace(/\n/g, " ")} → ${hasTool ? "final" : userText.includes("派两个") ? "agent_task x2" : "report"}`);
   });
 });
 

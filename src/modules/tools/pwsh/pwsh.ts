@@ -171,6 +171,13 @@ function refusalText(decision: ApprovalDecision): string {
   }
 }
 
+/** 受限进程不能用管道抓子进程输出时的 stderr 特征（真机实测，docs/42 修订）：R 的
+ *  system2(stdout=TRUE) 报 CreatePipe failed；Python 的 capture_output=True 在 subprocess
+ *  的 _get_handles 里建管道时抛 PermissionError（回溯帧带 _get_handles）；
+ *  Node 的 spawn/spawnSync 报 `spawnSync <cmd> EPERM`。只认这几种带限定的写法——
+ *  EPERM / 拒绝访问 本身还会出现在真正的区外写入被拒上，不能当特征词。 */
+const PIPE_REFUSED = /CreatePipe failed|_get_handles|_make_inheritable|\bspawn(?:Sync)? \S+ EPERM\b/;
+
 // ---- 升级重试（escalation）：沙箱拒绝后记一次"升级额度"；下一次调用只要带 justification
 // 就转交人工审批（额度无论批准与否都被消费）。不要求逐字节复现被拒命令——模型换一种
 // 写法实现同一意图时同样能走到审批，人工在审批卡上看到完整命令后自行把关。 ----
@@ -191,8 +198,19 @@ export function createPwshTool(deps?: SystemToolDeps): Tool {
     opts: { timeoutMs: number; signal?: AbortSignal },
   ): Promise<string> {
     const runner = getSandboxRunner();
-    const r = await runner.run(command, policy, opts);
-    // 拒绝识别只看 stderr，不设 exit-code 门槛（真机回归 docs/30 §5）：Remove-Item 等
+      const r = await runner.run(command, policy, opts);
+      // 管道限制先于拒绝识别（docs/42 修订）：Python 那条的「拒绝访问」会被下面的拒绝识别
+      // 命中，R / Node 两条则无任何提示——三者都不是权限不足，申请解除沙箱是把模型引向
+      // 错路（放开了整条命令，只为抓一个子进程的输出）。不攒升级额度。
+      if (PIPE_REFUSED.test(r.stderr)) {
+        return (
+          `[sandbox: 受限进程不能用管道抓子进程的输出（${MODE_LABEL[policy.mode]} 模式）]\n` +
+          formatResult({ ...r, spawnError: undefined }) +
+          "\n这不是权限不足，不必申请解除沙箱。把子进程的输出改成写文件后再读（R 的 system2 传 stdout = \"文件名\"；" +
+          "Python 的 subprocess.run 传 stdout = open(文件, \"w\")），或不抓输出、让它直接打印。"
+        );
+      }
+      // 拒绝识别只看 stderr，不设 exit-code 门槛（真机回归 docs/30 §5）：Remove-Item 等
     // 非终止性错误后脚本继续执行（Test-Path/Write-Output），pwsh 整体 exit 0——按旧口径
     // （code!==0 且 stderr 命中）这类拒绝完全漏检：不打 [sandbox:] 标、不攒升级额度，
     // 模型带 justification 重试被静默忽略，永远走不到人工审批。误攒成本可控：额度只在

@@ -384,6 +384,62 @@ function fakeRunner(stderr: string, stdout = "文件还存在吗: True", code = 
   };
 }
 
+// ---------- 管道限制（真机实测，docs/42 修订）：受限进程不能用管道抓子进程输出 ----------
+// R system2(stdout=TRUE) → CreatePipe failed；Python capture_output=True → 回溯带 _get_handles 的
+// PermissionError [WinError 5] 拒绝访问（撞上上面的拒绝识别）；Node spawn 管道 → spawnSync cmd EPERM。
+// 旧口径：R / Node 无任何提示，Python 被说成「工作区外写入被拒」并建议申请解除沙箱（方向错）。
+
+const PY_PIPE_REFUSED =
+  '  File "D:\\Python\\Lib\\subprocess.py", line 1389, in _get_handles\n' +
+  "PermissionError: [WinError 5] 拒绝访问。";
+
+test("管道限制：抓子进程输出的报错不打「区外写入被拒」、不攒升级额度，给出改写文件的指引", async () => {
+  const cases = [
+    'Error in system2("cmd", c("/c", "echo hi"), stdout = TRUE) : \n  CreatePipe failed',
+    PY_PIPE_REFUSED,
+    "Error: spawnSync cmd EPERM",
+  ];
+  for (const stderr of cases) {
+    setSandboxRunner(fakeRunner(stderr, "", 1));
+    try {
+      const tool = createPwshTool(); // 独立实例：验证管道报错不攒升级额度
+      let asked = 0;
+      const ctx = makeCtx({
+        sandboxMode: "workspace-write",
+        requestApproval: async () => {
+          asked++;
+          return "allowed-once" as const;
+        },
+      });
+      const out = await tool.execute({ command: "Rscript run.R", description: "跑脚本" }, ctx);
+      assert.ok(out.includes("[sandbox: 受限进程不能用管道抓子进程的输出"), stderr);
+      assert.ok(out.includes("写文件"), "给出替代写法");
+      assert.ok(!out.includes("工作区外写入/删除被拒绝"), "不再误报成区外写入被拒：" + stderr);
+      assert.ok(!out.includes("justification 参数"), "不引导申请解除沙箱");
+      // 随后带 justification 也不弹卡：管道报错没攒出额度（权限本就够，提权不是出路）
+      const second = await tool.execute(
+        { command: 'Write-Output "x"', description: "带 justification 试提权", justification: "想提权" },
+        ctx,
+      );
+      assert.equal(asked, 0, "额度未攒出，不弹卡");
+      assert.ok(second.includes("升级额度为 0"), "明示 justification 未生效");
+    } finally {
+      setSandboxRunner(noBackend); // 还原全局接缝
+    }
+  }
+});
+
+test("管道限制：真正的区外写入被拒（EPERM / 拒绝访问，无管道特征）仍走拒绝识别", async () => {
+  setSandboxRunner(fakeRunner("EPERM: operation not permitted, mkdir 'C:\\Windows\\x'", "", 1));
+  try {
+    const tool = createPwshTool();
+    const out = await tool.execute({ command: "node -e \"fs.mkdirSync('C:/Windows/x')\"", description: "建区外目录" }, makeCtx({ sandboxMode: "workspace-write" }));
+    assert.ok(!out.includes("不能用管道抓子进程"), "不带管道特征不误判");
+  } finally {
+    setSandboxRunner(noBackend);
+  }
+});
+
 test("真机回归：exit 0 的非终止性拒绝也识别——打 [sandbox:] 标并攒升级额度", async () => {
   setSandboxRunner(fakeRunner(CLIXML_DENIED));
   try {

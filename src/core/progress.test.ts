@@ -110,3 +110,19 @@ test("providerLimitOf：速率限制与用量上限各归其类（真机文案�
   assert.equal(providerLimitOf("网络炸了"), undefined);
   assert.equal(providerLimitOf(undefined), undefined);
 });
+
+test("providerLimitOf：上下文/输出超长不是限流——带「上限 / exceed」的非额度报错不得判成 cap（docs/42 修订）", () => {
+  // 初版收了裸「上限 / exceed / insufficient」：下面四条实测全被判成 cap，协调者收到
+  // 「等额度重置、重试无益」——而上下文超长的正解是压缩后重派
+  assert.equal(providerLimitOf("Error code: 400 - {'code': 'context_length_exceeded'}"), undefined);
+  assert.equal(providerLimitOf("This model's maximum context length is 131072 tokens, however you requested 132000 tokens"), undefined);
+  assert.equal(providerLimitOf("请求的 tokens 超过模型上限"), undefined);
+  assert.equal(providerLimitOf("prompt is too long: 209033 tokens > 200000 maximum"), undefined);
+  assert.equal(providerLimitOf("max_tokens 超过输出上限"), undefined);
+  // 裸词换成带限定的写法后，已知的额度类文案仍认得
+  assert.equal(providerLimitOf("Insufficient Balance"), "cap");
+  assert.equal(providerLimitOf("当前 API 的免费调用总量已达上限，请充值后重试"), "cap");
+  assert.equal(providerLimitOf("You have exceeded your usage cap"), "cap");
+  // 按 token 计的速率限制（带 token rate limit 字样）不被「超长排除」误伤
+  assert.equal(providerLimitOf("Requests have exceeded token rate limit of your current S0 pricing tier"), "rate");
+});

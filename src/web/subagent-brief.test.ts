@@ -8,7 +8,7 @@
  *  - 重复打断的状态通知去重（B6）
  * 全部走真实文件工具（write_file/edit_file）与真实存档落盘，只把 LLM 换成脚本桩。
  */
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,8 +81,16 @@ interface Harness {
 }
 
 /** 最小壳：真实文件三工具 + run_pwsh + 回显桩；工作区根 = 临时目录（子目录即各 scope）。 */
+/** makeHarness 建过的根目录：各用例自己 rmSync 之外，全部用例跑完后再兜底清一次。
+ *  各用例清完后仍会漏一个（2026-11-24 实测：每次运行剩一个只含 spill/ 的空壳）——这里兜底。 */
+const tempRoots: string[] = [];
+after(() => {
+  for (const d of tempRoots) rmSync(d, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+});
+
 function makeHarness(llm: LLMProvider, opts?: { approval?: boolean }): Harness {
   const root = mkdtempSync(join(tmpdir(), "zqq-brief-"));
+  tempRoots.push(root);
   const ctx = buildContext(
     { userDir: root, globalSkillsDir: join(root, "skills"), globalMcpFile: join(root, "mcp.json"), workspacesFile: join(root, "workspaces.json"), sessionsDir: join(root, "sessions") },
     loadConfig(),

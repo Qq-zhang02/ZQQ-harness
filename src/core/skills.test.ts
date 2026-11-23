@@ -1,12 +1,18 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseSkillMd, scanSkills, skillListText } from "./skills.ts";
 import type { ToolContext } from "../tools/registry.ts";
 
 const NO_CTX = {} as ToolContext;
+
+/** 本文件建过的临时目录：全部用例跑完后清掉（此前从不清理，每跑一次 npm test 漏两个 sk-*）。 */
+const tempDirs: string[] = [];
+after(() => {
+  for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
+});
 
 test("parseSkillMd 解析 frontmatter 的 name/description", () => {
   const m = parseSkillMd("---\nname: demo\ndescription: 演示技能\n---\n\n正文内容");
@@ -19,6 +25,7 @@ test("parseSkillMd 解析 frontmatter 的 name/description", () => {
 test("scanSkills：全局+工作区合并，同名工作区覆盖，缺 name 用目录名", () => {
   const g = mkdtempSync(join(tmpdir(), "sk-g-"));
   const w = mkdtempSync(join(tmpdir(), "sk-w-"));
+  tempDirs.push(g, w);
   mkdirSync(join(g, "alpha"));
   writeFileSync(join(g, "alpha", "SKILL.md"), "---\nname: alpha\ndescription: 全局版\n---\n正文");
   mkdirSync(join(g, "beta"));

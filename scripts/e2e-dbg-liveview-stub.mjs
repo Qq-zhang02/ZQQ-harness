@@ -2,7 +2,8 @@
  * docs/8 第三棒真机验证桩 LLM（零 token）：在 e2e-dbg-switch-stub 基础上让 worker 走
  * 「思考 + 多轮 write_file 工具调用 + 延迟报告」——抽屉详情页实时轮询（思考/正文/工具
  * 全量）、刷新不丢、长记录滚动三条验收的数据源。
- *   协调者首轮（「派两个子代理」）→ tool_calls: agent_tasks（alpha/beta）；
+ *   协调者首轮（「派两个子代理」）→ 同一轮两个 agent_task 调用，并行派 alpha/beta
+ *     （docs/15：agent_tasks 批量工具已退役，旧桩还在发它会得到「未知工具」）；
  *   worker alpha（task 以「写 alpha」开头）→ 每轮延迟 3s 回 tool_calls: write_file
  *     （alpha-r1..r6.md，首轮带 reasoning_content 思考），第 7 轮延迟 25s 后交报告；
  *   worker beta（「写 beta」）→ 1 轮工具后立即交报告；
@@ -26,7 +27,9 @@ const chunk = (delta, finish = null) =>
     choices: [{ index: 0, delta, finish_reason: finish }],
   });
 
-/** kind: "text" | "tool" | "thinkTool"（先思考再工具调用）；toolName 参数化（协调者=agent_tasks，worker=write_file） */
+/** kind: "text" | "tool" | "thinkTool"（先思考再工具调用）。tool 分支的 payload 有两种：单调用时是
+ *  arguments 字符串（toolName 缺省 write_file）；数组时每个元素是一个 agent_task 的参数对象
+ *  （同轮多调用——协调者派发。SDK 按 index 聚合，每个调用先发 name、再发 arguments）。 */
 function sseBody(kind, payload, toolName = "write_file") {
   const events = [];
   events.push(chunk({ role: "assistant" }));
@@ -35,20 +38,27 @@ function sseBody(kind, payload, toolName = "write_file") {
     events.push(chunk({ content: payload.slice(Math.floor(payload.length / 2)) }));
   } else {
     if (kind === "thinkTool") events.push(chunk({ reasoning_content: "思考：先创建文件，再逐轮补齐内容。这一段是 worker 的思考过程。" }));
-    events.push(chunk({ tool_calls: [{ index: 0, id: "call-" + Math.random().toString(36).slice(2, 8), type: "function", function: { name: toolName, arguments: "" } }] }));
-    events.push(chunk({ tool_calls: [{ index: 0, function: { arguments: payload } }] }));
+    // 数组（协调者派发）的元素是参数对象，逐个序列化；单调用（worker）的 payload 本就是 arguments 字符串
+    const calls = Array.isArray(payload)
+      ? payload.map((args, i) => ({ i, name: "agent_task", args: JSON.stringify(args) }))
+      : [{ i: 0, name: toolName, args: payload }];
+    events.push(
+      chunk({
+        tool_calls: calls.map((c) => ({ index: c.i, id: "call-" + Math.random().toString(36).slice(2, 8), type: "function", function: { name: c.name, arguments: "" } })),
+      }),
+    );
+    for (const c of calls) events.push(chunk({ tool_calls: [{ index: c.i, function: { arguments: c.args } }] }));
   }
   events.push(chunk({}, "stop"));
-  events.push(JSON.stringify({ id: "chatcmpl-stub", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 321, completion_tokens: 45 } }));
+  events.push(JSON.stringify({ id: "chatcmplet-stub", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 321, completion_tokens: 45 } }));
   return events.map((e) => `data: ${e}\n\n`).join("") + "data: [DONE]\n\n";
 }
 
-const TASKS_ARGS = JSON.stringify({
-  tasks: [
-    { name: "alpha", description: "写 alpha 多轮文件", task: "写 alpha 模块：逐轮创建 alpha-r1 到 alpha-r6 文件，然后交报告。" },
-    { name: "beta", description: "写 beta 文件", task: "写 beta 模块：创建 beta.md，然后交报告。" },
-  ],
-});
+// docs/15：agent_tasks 批量工具已退役——并行派发 = 同一轮两个 agent_task 调用（sseBody 的 tool 分支按数组逐 call 下发）
+const TASK_ITEMS = [
+  { name: "alpha", description: "写 alpha 多轮文件", task: "写 alpha 模块：逐轮创建 alpha-r1 到 alpha-r6 文件，然后交报告。" },
+  { name: "beta", description: "写 beta 文件", task: "写 beta 模块：创建 beta.md，然后交报告。" },
+];
 
 /** worker 请求序号（per task 前缀）：区分工具轮与收尾轮 */
 const roundOf = new Map();
@@ -75,6 +85,7 @@ const server = createServer((req, res) => {
     const lastUser = [...msgs].reverse().find((m) => m.role === "user");
     const userText = String(lastUser?.content ?? "");
     const hasTool = msgs.some((m) => m.role === "tool");
+    console.log(`[e2e-dbg-liveview-stub] <- ${userText.slice(0, 24).replace(/\n/g, " ")}${hasTool ? " (含 tool 消息)" : ""}`);
     const send = (kind, payload, toolName) => {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
       res.end(enc.encode(sseBody(kind, payload, toolName)));
@@ -84,7 +95,7 @@ const server = createServer((req, res) => {
       return;
     }
     if (userText.includes("派两个子代理") && !hasTool) {
-      send("tool", TASKS_ARGS, "agent_tasks");
+      send("tool", TASK_ITEMS);
       return;
     }
     if (userText.startsWith("写 alpha")) {

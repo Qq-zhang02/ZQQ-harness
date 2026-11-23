@@ -2,7 +2,7 @@
  * docs/8 需求二排查 + 需求一（W2-L2）真机验证用桩 LLM（零 token）：在 e2e-sa4-stub-llm.mjs
  * 基础上给 worker 应答加可调延迟（默认 25s），为「worker 运行中切走会话再切回」与
  * 「运行中发消息即时应答」的浏览器复现留出窗口。
- *   协调者首轮（用户说「派两个子代理」）→ tool_calls: agent_tasks（alpha/beta）；
+ *   协调者首轮（用户说「派两个子代理」）→ 同一轮两个 agent_task 调用，并行派 alpha/beta（docs/15：agent_tasks 已退役）；
  *   worker（task 以「写 alpha」/「写 beta」开头）→ 延迟 WORKER_DELAY_MS 后交报告；
  *   W2-L2 interim 旁路（含「[子代理任务仍在执行中」合成状态占位）→ 即时文本回应；
  *   协调者末轮（含 tool 消息、无状态占位）→ 最终答复。

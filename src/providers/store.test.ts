@@ -55,6 +55,7 @@ test("迁移：无 providers.json 时从 .credentials.yaml 生成并填好 DeepS
 test("已有 providers.json 原样加载；损坏时重新生成", () => {
   withEnv(undefined, () => {
     const userDir = tempDir();
+    const cwd = tempDir(); // 此前两处内联 tempDir() 从不清理——每跑一次漏两个 zqq-prov-*
     try {
       const file = join(userDir, "providers.json");
       writeFileSync(
@@ -65,15 +66,16 @@ test("已有 providers.json 原样加载；损坏时重新生成", () => {
         }),
         "utf8",
       );
-      const loaded = ensureProvidersFile(userDir, tempDir(), registeredFormats);
+      const loaded = ensureProvidersFile(userDir, cwd, registeredFormats);
       assert.equal(loaded.data.providers[0].name, "My LLM");
       assert.equal(loaded.data.active, "my-llm");
 
       writeFileSync(file, "{broken", "utf8");
-      const reseeded = ensureProvidersFile(userDir, tempDir(), registeredFormats);
+      const reseeded = ensureProvidersFile(userDir, cwd, registeredFormats);
       assert.equal(reseeded.data.providers[0].id, "deepseek");
     } finally {
       rmSync(userDir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
     }
   });
 });
